@@ -1,4 +1,4 @@
-@import url("https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Sora:wght@600;700;800&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Sora:wght@600;700;800&family=Orbitron:wght@500;700&display=swap");
 
 :root {
   color-scheme: light dark;
@@ -41,6 +41,50 @@
   }
 }
 
+@keyframes auth-bg-drift {
+  0% {
+    background-position: 0 0, 100% 100%;
+  }
+
+  50% {
+    background-position: 48% 54%, 30% 72%;
+  }
+
+  100% {
+    background-position: 0 0, 100% 100%;
+  }
+}
+
+@keyframes auth-glitch {
+  0% {
+    text-shadow: 1px 1px #00ffff, -1px -1px #ff2ec2;
+    transform: translate(0);
+  }
+
+  25% {
+    transform: translate(-0.4px, 0.5px);
+  }
+
+  50% {
+    transform: translate(0.4px, -0.5px);
+  }
+
+  75% {
+    transform: translate(-0.45px, 0.35px);
+  }
+
+  100% {
+    text-shadow: 0 0 5px #00ffff;
+    transform: translate(0);
+  }
+}
+
+@keyframes auth-caret-blink {
+  50% {
+    border-color: transparent;
+  }
+}
+
 html,
 body,
 #root {
@@ -73,46 +117,236 @@ textarea:focus-visible {
 }
 
 .authPage {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
   height: 100%;
   display: grid;
   place-items: center;
-  background:
-    radial-gradient(820px 430px at 12% -22%, color-mix(in srgb, var(--accent), transparent 46%), transparent 58%),
-    radial-gradient(900px 460px at 94% 118%, color-mix(in srgb, var(--orange), transparent 72%), transparent 56%),
-    linear-gradient(154deg, color-mix(in srgb, var(--bg), #0d172c 34%), color-mix(in srgb, var(--panel), #050a15 42%));
+  background: #0a0a0a;
   color: var(--text);
   font-family: var(--font-ui);
   padding: 20px;
 }
 
-.authCard {
-  width: min(420px, 100%);
-  background: color-mix(in srgb, var(--panel), var(--bg) 18%);
-  border: 1px solid color-mix(in srgb, var(--card-border), transparent 22%);
-  border-radius: 18px;
-  padding: 24px;
-  box-shadow: var(--surface-shadow-strong);
-  backdrop-filter: blur(12px);
+.authPage::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  background:
+    radial-gradient(circle at 30% 30%, #6a00f4 0%, transparent 70%),
+    radial-gradient(circle at 70% 70%, #ff2ec2 0%, transparent 70%);
+  opacity: 0.44;
+  animation: auth-bg-drift 20s linear infinite;
 }
 
-.authCard h1 {
+.authPage::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: repeating-linear-gradient(
+    180deg,
+    rgba(0, 255, 255, 0.03) 0px,
+    rgba(0, 255, 255, 0.03) 1px,
+    transparent 1px,
+    transparent 5px
+  );
+  pointer-events: none;
+}
+
+.authCard {
+  width: min(430px, 100%);
+  background: color-mix(in srgb, #6a00f4, transparent 74%);
+  border: 1px solid color-mix(in srgb, #00ffff, transparent 52%);
+  border-radius: 16px;
+  padding: 24px;
+  box-shadow: 0 0 20px rgba(255, 46, 194, 0.42), 0 0 10px rgba(0, 255, 255, 0.34), var(--surface-shadow-strong);
+  backdrop-filter: blur(9px);
+  position: relative;
+  z-index: 2;
+}
+
+.authPage .authBackButton {
+  border: 1px solid color-mix(in srgb, #00ffff, transparent 52%);
+  background: color-mix(in srgb, #1b1b1b, transparent 16%);
+  color: #e5e5e5;
+  padding: 0.4rem 0.95rem;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, color 0.16s ease;
+}
+
+.authPage .authBackButton:hover {
+  color: #00ffff;
+  border-color: color-mix(in srgb, #00ffff, transparent 18%);
+  box-shadow: 0 0 10px rgba(0, 255, 255, 0.28);
+}
+
+.authPage .site-title {
   margin: 0;
-  font-family: var(--font-display);
-  letter-spacing: -0.02em;
-  font-size: 1.72rem;
+  font-family: "Orbitron", var(--font-display);
+  color: #ff2ec2;
+  text-align: center;
+  font-size: clamp(1.8rem, 3.5vw, 2.35rem);
+  letter-spacing: 0.06em;
+  animation: auth-glitch 3s infinite;
+}
+
+.authSiteTitle {
+  margin-top: 6px;
+}
+
+.typing-text {
+  border-right: 2px solid #ff2ec2;
+  padding-right: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  display: inline-block;
+  animation: auth-caret-blink 0.75s step-end infinite;
+}
+
+.glitch-text {
+  animation: auth-glitch 1.6s infinite;
+}
+
+.authModeTitle {
+  margin: 10px 0 2px;
+  font-family: "Orbitron", var(--font-display);
+  text-align: center;
+  font-size: 1.08rem;
+  letter-spacing: 0.08em;
+  color: #e5e5e5;
 }
 
 .authSubtitle {
-  margin: 8px 0 18px;
-  color: var(--muted);
-  font-size: 0.94rem;
+  margin: 8px 0 16px;
+  color: color-mix(in srgb, #e5e5e5, #00ffff 18%);
+  font-size: 0.88rem;
+  text-align: center;
 }
 
 .authTabs {
   display: grid;
   grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.authTabs .tab {
+  border: 1px solid color-mix(in srgb, #00ffff, transparent 52%);
+  background: color-mix(in srgb, #1b1b1b, transparent 18%);
+  color: #e5e5e5;
+  border-radius: 10px;
+  padding: 10px;
+  cursor: pointer;
+  font-family: "Orbitron", var(--font-ui);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  transition: border-color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease, color 0.16s ease;
+}
+
+.authTabs .tab:hover {
+  transform: translateY(-1px);
+  color: #00ffff;
+  border-color: color-mix(in srgb, #00ffff, transparent 20%);
+}
+
+.authTabs .tab.active {
+  background: color-mix(in srgb, #ff2ec2, transparent 16%);
+  border-color: color-mix(in srgb, #ff2ec2, transparent 20%);
+  color: #1b1b1b;
+  box-shadow: 0 0 12px rgba(255, 46, 194, 0.38);
+}
+
+.authForm {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.authForm label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.84rem;
+  color: color-mix(in srgb, #e5e5e5, #00ffff 20%);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 700;
+}
+
+.authForm input:not([type="checkbox"]) {
+  border: 1px solid color-mix(in srgb, #00ffff, transparent 52%);
+  border-radius: 10px;
+  padding: 11px 12px;
+  background: color-mix(in srgb, #1b1b1b, transparent 10%);
+  color: #e5e5e5;
+  outline: none;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, color 0.16s ease;
+}
+
+.authForm input:not([type="checkbox"]):focus {
+  border-color: color-mix(in srgb, #00ffff, transparent 18%);
+  box-shadow: 0 0 8px rgba(0, 255, 255, 0.28);
+}
+
+.authRememberMe {
+  flex-direction: row;
+  align-items: center;
   gap: 8px;
-  margin-bottom: 14px;
+  color: color-mix(in srgb, #e5e5e5, #00ffff 20%);
+  text-transform: none;
+  letter-spacing: 0.01em;
+}
+
+.authRememberMe input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: #ff2ec2;
+}
+
+.authError {
+  margin: 0;
+  color: #ff2ec2;
+  font-size: 0.9rem;
+  text-align: center;
+  text-shadow: 0 0 10px rgba(255, 46, 194, 0.3);
+}
+
+.authSubmit {
+  border: 0;
+  border-radius: 10px;
+  padding: 12px;
+  margin-top: 4px;
+  background: #ff2ec2;
+  color: #1b1b1b;
+  font-family: "Orbitron", var(--font-ui);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: transform 0.16s ease, box-shadow 0.16s ease, background-color 0.16s ease;
+  box-shadow: 0 0 12px rgba(0, 255, 255, 0.28);
+}
+
+.authSubmit:hover {
+  transform: translateY(-1px);
+  background: #00ffff;
+  box-shadow: 0 0 16px rgba(0, 255, 255, 0.45);
+}
+
+.authSubmit:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+@media (max-width: 560px) {
+  .authCard {
+    padding: 20px 16px 18px;
+  }
+
+  .authModeTitle {
+    font-size: 0.96rem;
+  }
 }
 
 .tab {
@@ -136,70 +370,6 @@ textarea:focus-visible {
   border-color: color-mix(in srgb, var(--accent), #fff 18%);
   color: var(--text-on-accent);
   box-shadow: 0 8px 18px color-mix(in srgb, var(--accent), transparent 72%);
-}
-
-.authForm {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.authForm label {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  font-size: 0.9rem;
-}
-
-.authForm input:not([type="checkbox"]) {
-  border: 1px solid color-mix(in srgb, var(--card-border), transparent 20%);
-  border-radius: 12px;
-  padding: 11px 12px;
-  background: color-mix(in srgb, var(--card), transparent 6%);
-  color: var(--text);
-  outline: none;
-  transition: border-color 0.16s ease, background-color 0.16s ease;
-}
-
-.authForm input:not([type="checkbox"]):focus {
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--card), #ffffff 2%);
-}
-
-.authRememberMe {
-  flex-direction: row;
-  align-items: center;
-  gap: 8px;
-  color: var(--muted);
-}
-
-.authRememberMe input[type="checkbox"] {
-  width: 16px;
-  height: 16px;
-  accent-color: var(--accent);
-}
-
-.authError {
-  margin: 0;
-  color: var(--hot);
-  font-size: 0.9rem;
-}
-
-.authSubmit {
-  border: 0;
-  border-radius: 12px;
-  padding: 12px;
-  background: linear-gradient(130deg, color-mix(in srgb, var(--accent), #fff 10%), var(--accent-strong));
-  color: var(--text-on-accent);
-  font-weight: 700;
-  cursor: pointer;
-  transition: transform 0.16s ease, filter 0.16s ease;
-  box-shadow: 0 10px 24px color-mix(in srgb, var(--accent), transparent 75%);
-}
-
-.authSubmit:hover {
-  transform: translateY(-1px);
-  filter: brightness(1.04);
 }
 
 .page {
@@ -1044,7 +1214,14 @@ textarea:focus-visible {
 }
 
 .activeGlytchSwitchButton {
-  align-self: flex-start;
+  align-self: stretch;
+  width: 100%;
+  text-align: center;
+}
+
+.activeGlytchSection > .channelItem {
+  width: 100%;
+  text-align: center;
 }
 
 .glytchInvitePanel {

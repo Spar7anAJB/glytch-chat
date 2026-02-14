@@ -1,3 +1,4 @@
+import { useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
 
 export type AuthMode = "login" | "signup";
@@ -34,6 +35,40 @@ function AuthPage({
   onSubmit,
   onBack,
 }: AuthPageProps) {
+  const typingPhrases = useMemo(() => ["Welcome to", "Glytch Chat"], []);
+  const [typingPhraseIndex, setTypingPhraseIndex] = useState(0);
+  const [typingCharIndex, setTypingCharIndex] = useState(0);
+  const [typingDeleting, setTypingDeleting] = useState(false);
+  const typingText = typingPhrases[typingPhraseIndex]?.slice(0, typingCharIndex) || "";
+
+  useEffect(() => {
+    const currentPhrase = typingPhrases[typingPhraseIndex] || "";
+    let delayMs = typingDeleting ? 55 : 105;
+
+    if (!typingDeleting && typingCharIndex >= currentPhrase.length) {
+      delayMs = 950;
+    } else if (typingDeleting && typingCharIndex <= 0) {
+      delayMs = 280;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      if (!typingDeleting && typingCharIndex >= currentPhrase.length) {
+        setTypingDeleting(true);
+        return;
+      }
+      if (typingDeleting && typingCharIndex <= 0) {
+        setTypingDeleting(false);
+        setTypingPhraseIndex((prev) => (prev + 1) % typingPhrases.length);
+        return;
+      }
+      setTypingCharIndex((prev) => prev + (typingDeleting ? -1 : 1));
+    }, delayMs);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [typingCharIndex, typingDeleting, typingPhraseIndex, typingPhrases]);
+
   return (
     <main className="authPage">
       <section className="authCard" aria-label="Authentication">
@@ -41,7 +76,10 @@ function AuthPage({
           Back
         </button>
 
-        <h1>Glytch Chat</h1>
+        <h1 className="site-title authSiteTitle">
+          <span className="typing-text">{typingText}</span>
+        </h1>
+        <p className="glitch-text authModeTitle">{mode === "login" ? "Login" : "Sign Up"}</p>
         <p className="authSubtitle">Login or create an account to continue.</p>
 
         <div className="authTabs">
