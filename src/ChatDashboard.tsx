@@ -57,6 +57,7 @@ import {
   setVoiceState,
   searchGifLibrary,
   sendFriendRequest,
+  ingestRemoteMessageAsset,
   updateGlytchRolePermissions,
   updateGlytchRolePriority,
   updateMyPresence,
@@ -229,7 +230,7 @@ type GlytchInviteMessagePayload = {
 
 type TextPostMode = GlytchChannel["text_post_mode"];
 type AppThemeMode = "dark" | "light";
-type AppThemePreset = "default" | "ocean" | "sunset" | "mint";
+type AppThemePreset = "default" | "simplistic" | "ocean" | "sunset" | "mint";
 type AppThemePalette = {
   bg: string;
   panel: string;
@@ -260,13 +261,13 @@ const SHOWCASE_MAX_MODULES = 12;
 const SHOWCASE_MAX_ENTRIES = 16;
 const MAX_RENDERED_MESSAGES = 120;
 const DEFAULT_DM_CHAT_BACKGROUND: BackgroundGradient = {
-  from: "#111b2f",
-  to: "#0d1730",
+  from: "#1b1030",
+  to: "#0b0918",
   mode: "gradient",
 };
 const DEFAULT_GLYTCH_CHAT_BACKGROUND: BackgroundGradient = {
-  from: "#0f1c31",
-  to: "#0b1528",
+  from: "#200d38",
+  to: "#0c0a1d",
   mode: "gradient",
 };
 const SHOWCASE_MAX_TITLE_LENGTH = 60;
@@ -298,6 +299,23 @@ const SHOWCASE_KIND_EMPTY_COPY: Record<ShowcaseKind, string> = {
 const APP_THEME_PALETTES: Record<AppThemeMode, Record<AppThemePreset, AppThemePalette>> = {
   dark: {
     default: {
+      bg: "#0a0a0a",
+      panel: "#170f25",
+      panelBorder: "#47246f",
+      text: "#e5e5e5",
+      muted: "#b79ed0",
+      accent: "#ff2ec2",
+      accentStrong: "#00ffff",
+      card: "#23113a",
+      cardBorder: "#6a00f4",
+      bubbleBot: "#2a1642",
+      bubbleMe: "#45185e",
+      hot: "#ff2ec2",
+      orange: "#1e90ff",
+      warn: "#2b1846",
+      violet: "#6a00f4",
+    },
+    simplistic: {
       bg: "#050914",
       panel: "#0c1629",
       panelBorder: "#1f3352",
@@ -368,6 +386,23 @@ const APP_THEME_PALETTES: Record<AppThemeMode, Record<AppThemePreset, AppThemePa
   },
   light: {
     default: {
+      bg: "#f8efff",
+      panel: "#efe0fb",
+      panelBorder: "#c189ea",
+      text: "#2d1344",
+      muted: "#6f4b91",
+      accent: "#ff2ec2",
+      accentStrong: "#00c8d8",
+      card: "#e8d2fb",
+      cardBorder: "#a85edc",
+      bubbleBot: "#ead9fb",
+      bubbleMe: "#ffd5f0",
+      hot: "#ff2ec2",
+      orange: "#1e90ff",
+      warn: "#e2c9f7",
+      violet: "#d7b0f3",
+    },
+    simplistic: {
       bg: "#edf2fb",
       panel: "#e2eafc",
       panelBorder: "#b6ccfe",
@@ -503,7 +538,7 @@ function normalizeTextPostMode(raw: unknown): TextPostMode {
 }
 
 function normalizeAppTheme(raw: unknown): AppThemePreset {
-  if (raw === "ocean" || raw === "sunset" || raw === "mint") {
+  if (raw === "simplistic" || raw === "ocean" || raw === "sunset" || raw === "mint") {
     return raw;
   }
   return "default";
@@ -998,16 +1033,16 @@ function buildProfileForm(profile: Profile | null): ProfileForm {
   const legacyThemeValue = typeof theme.appTheme === "string" ? theme.appTheme : "";
   const isLegacyLightPreset = legacyThemeValue === "light";
   const appThemeMode = isLegacyLightPreset ? "light" : normalizeAppThemeMode(theme.appThemeMode);
-  const appTheme = isLegacyLightPreset ? "default" : normalizeAppTheme(legacyThemeValue);
+  const appTheme = isLegacyLightPreset ? "simplistic" : normalizeAppTheme(legacyThemeValue);
   return {
     avatarUrl: profile?.avatar_url || "",
     bannerUrl: profile?.banner_url || "",
     bio: profile?.bio || "",
     presenceStatus: normalizePresenceStatus(profile?.presence_status),
-    speakingRingColor: typeof theme.speakingRingColor === "string" ? theme.speakingRingColor : "#46d28f",
-    accentColor: typeof theme.accentColor === "string" ? theme.accentColor : "#2f9bff",
-    backgroundFrom: typeof theme.backgroundFrom === "string" ? theme.backgroundFrom : "#0c1629",
-    backgroundTo: typeof theme.backgroundTo === "string" ? theme.backgroundTo : "#193a58",
+    speakingRingColor: typeof theme.speakingRingColor === "string" ? theme.speakingRingColor : "#00ffff",
+    accentColor: typeof theme.accentColor === "string" ? theme.accentColor : "#ff2ec2",
+    backgroundFrom: typeof theme.backgroundFrom === "string" ? theme.backgroundFrom : "#1a1130",
+    backgroundTo: typeof theme.backgroundTo === "string" ? theme.backgroundTo : "#0b0a16",
     cardStyle: theme.cardStyle === "solid" ? "solid" : "glass",
     appThemeMode,
     appTheme,
@@ -1185,8 +1220,8 @@ export default function ChatDashboard({
   const [joinInviteBusyMessageId, setJoinInviteBusyMessageId] = useState<number | null>(null);
   const [showQuickThemeEditor, setShowQuickThemeEditor] = useState(false);
   const [quickThemeModeDraft, setQuickThemeModeDraft] = useState<"gradient" | "image">("gradient");
-  const [quickThemeFromDraft, setQuickThemeFromDraft] = useState("#111b2f");
-  const [quickThemeToDraft, setQuickThemeToDraft] = useState("#0d1730");
+  const [quickThemeFromDraft, setQuickThemeFromDraft] = useState(DEFAULT_DM_CHAT_BACKGROUND.from);
+  const [quickThemeToDraft, setQuickThemeToDraft] = useState(DEFAULT_DM_CHAT_BACKGROUND.to);
   const [quickThemeImageDraft, setQuickThemeImageDraft] = useState("");
   const [quickThemeImageUploadBusy, setQuickThemeImageUploadBusy] = useState(false);
   const [quickThemeBusy, setQuickThemeBusy] = useState(false);
@@ -4845,21 +4880,29 @@ export default function ChatDashboard({
 
     setChatError("");
 
-    let uploadedAttachmentUrl: string | null = selectedGif?.url || null;
-    let uploadedAttachmentType: MessageAttachmentType | null = selectedGif ? "gif" : null;
+    const uploadContext = viewMode === "dm" ? "dm" : "glytch";
+    const uploadContextId = viewMode === "dm" ? activeConversationId! : activeChannelId!;
+    let uploadedAttachmentUrl: string | null = null;
+    let uploadedAttachmentType: MessageAttachmentType | null = null;
 
-    if (composerAttachment) {
+    if (composerAttachment || selectedGif) {
+      setMessageMediaBusy(true);
       try {
-        setMessageMediaBusy(true);
-        const uploaded = await uploadMessageAsset(
-          accessToken,
-          currentUserId,
-          composerAttachment.file,
-          viewMode === "dm" ? "dm" : "glytch",
-          viewMode === "dm" ? activeConversationId! : activeChannelId!,
-        );
-        uploadedAttachmentUrl = uploaded.url;
-        uploadedAttachmentType = uploaded.attachmentType;
+        if (composerAttachment) {
+          const uploaded = await uploadMessageAsset(
+            accessToken,
+            currentUserId,
+            composerAttachment.file,
+            uploadContext,
+            uploadContextId,
+          );
+          uploadedAttachmentUrl = uploaded.url;
+          uploadedAttachmentType = uploaded.attachmentType;
+        } else if (selectedGif) {
+          const uploaded = await ingestRemoteMessageAsset(accessToken, uploadContext, uploadContextId, selectedGif.url);
+          uploadedAttachmentUrl = uploaded.url;
+          uploadedAttachmentType = uploaded.attachmentType;
+        }
       } catch (err) {
         setChatError(err instanceof Error ? err.message : "Could not upload attachment.");
         return;
@@ -5918,9 +5961,9 @@ export default function ChatDashboard({
     viewedThemeRaw && typeof viewedThemeRaw === "object" && !Array.isArray(viewedThemeRaw)
       ? (viewedThemeRaw as Record<string, unknown>)
       : {};
-  const viewedAccent = typeof viewedTheme.accentColor === "string" ? viewedTheme.accentColor : "#2f9bff";
-  const viewedFrom = typeof viewedTheme.backgroundFrom === "string" ? viewedTheme.backgroundFrom : "#0c1629";
-  const viewedTo = typeof viewedTheme.backgroundTo === "string" ? viewedTheme.backgroundTo : "#193a58";
+  const viewedAccent = typeof viewedTheme.accentColor === "string" ? viewedTheme.accentColor : "#ff2ec2";
+  const viewedFrom = typeof viewedTheme.backgroundFrom === "string" ? viewedTheme.backgroundFrom : "#1a1130";
+  const viewedTo = typeof viewedTheme.backgroundTo === "string" ? viewedTheme.backgroundTo : "#0b0a16";
   const viewedCardStyle = viewedTheme.cardStyle === "solid" ? "solid" : "glass";
   const viewedDisplayName = viewedProfile?.username || viewedProfile?.display_name || "User";
   const viewedProfileUserId = viewedProfile?.user_id || null;
@@ -5948,7 +5991,7 @@ export default function ChatDashboard({
   );
   const previewShowcases = profileForm.showcases;
   const showcaseLimitReached = profileForm.showcases.length >= SHOWCASE_MAX_MODULES;
-  const voiceSpeakingRingColor = profileForm.speakingRingColor.trim() || "#46d28f";
+  const voiceSpeakingRingColor = profileForm.speakingRingColor.trim() || "#00ffff";
   const appThemePalette =
     APP_THEME_PALETTES[profileForm.appThemeMode]?.[profileForm.appTheme] || APP_THEME_PALETTES.dark.default;
   const pageStyle = useMemo(
@@ -6368,51 +6411,8 @@ export default function ChatDashboard({
                     )}
 
                     <section className="requestSection">
-                      <p className="sectionLabel">Your Glytches</p>
-                      {glytches.length === 0 && <p className="smallMuted">No Glytches yet</p>}
-                      {glytches.map((glytch) => (
-                        <div key={glytch.id} className="glytchRow">
-                          <button
-                            className={glytch.id === activeGlytchId ? "channelItem active" : "channelItem"}
-                            type="button"
-                            onClick={() => {
-                              setActiveGlytchId(glytch.id);
-                              setViewMode("glytch");
-                              setShowGlytchDirectory(false);
-                            }}
-                          >
-                            <span className="glytchItemLabel">
-                              <span className="glytchItemIcon" aria-hidden="true">
-                                {glytch.icon_url ? <img src={glytch.icon_url} alt="" /> : <span>{initialsFromName(glytch.name)}</span>}
-                              </span>
-                              <span className="glytchItemName">{glytch.name}</span>
-                            </span>
-                          </button>
-                          {(glytch.owner_id === currentUserId ||
-                            (glytch.id === activeGlytchId &&
-                              rolesLoadedForGlytchId === glytch.id &&
-                              canAccessGlytchSettingsInActiveGlytch)) && (
-                            <button
-                              className={
-                                glytch.id === activeGlytchId && viewMode === "glytch-settings"
-                                  ? "glytchSettingsButton active"
-                                  : "glytchSettingsButton"
-                              }
-                              type="button"
-                              aria-label={`Open settings for ${glytch.name}`}
-                              title={`Open settings for ${glytch.name}`}
-                              onClick={() => {
-                                setActiveGlytchId(glytch.id);
-                                setGlytchSettingsTab("profile");
-                                setViewMode("glytch-settings");
-                                setShowGlytchDirectory(false);
-                              }}
-                            >
-                              ⚙
-                            </button>
-                          )}
-                        </div>
-                      ))}
+                      <p className="sectionLabel">Browse Glytches</p>
+                      <p className="smallMuted">Pick a Glytch from the main panel.</p>
                     </section>
                   </>
                 ) : (
@@ -7356,6 +7356,7 @@ export default function ChatDashboard({
                     onChange={(e) => setProfileForm((prev) => ({ ...prev, appTheme: normalizeAppTheme(e.target.value) }))}
                   >
                     <option value="default">Default</option>
+                    <option value="simplistic">Simplistic</option>
                     <option value="ocean">Ocean</option>
                     <option value="sunset">Sunset</option>
                     <option value="mint">Mint</option>
@@ -8310,7 +8311,35 @@ export default function ChatDashboard({
           </section>
         ) : shouldHideGlytchMessageArea ? (
           <section className="glytchSelectionState" aria-label="Choose a Glytch">
-            <p className="chatInfo">Choose a Glytch from the left panel to open its channels.</p>
+            <div className="glytchSelectionPanel">
+              <p className="sectionLabel">Your Glytches</p>
+              {glytches.length === 0 ? (
+                <p className="chatInfo">No Glytches yet. Create one or join with an invite code from the left panel.</p>
+              ) : (
+                <div className="glytchSelectionList">
+                  {glytches.map((glytch) => (
+                    <button
+                      key={glytch.id}
+                      className="channelItem glytchSelectionItem"
+                      type="button"
+                      onClick={() => {
+                        setActiveGlytchId(glytch.id);
+                        setActiveChannelId(null);
+                        setViewMode("glytch");
+                        setShowGlytchDirectory(false);
+                      }}
+                    >
+                      <span className="glytchItemLabel">
+                        <span className="glytchItemIcon" aria-hidden="true">
+                          {glytch.icon_url ? <img src={glytch.icon_url} alt="" /> : <span>{initialsFromName(glytch.name)}</span>}
+                        </span>
+                        <span className="glytchItemName">{glytch.name}</span>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </section>
         ) : (
           <div
@@ -8731,7 +8760,7 @@ export default function ChatDashboard({
                   <p className="chatInfo">Add friends and accept requests to start a private DM.</p>
                 )}
                 {viewMode === "glytch" && !activeChannelId && (
-                  <p className="chatInfo">Choose a Glytch to see its channels and start chatting.</p>
+                  <p className="chatInfo">Choose a channel to start chatting.</p>
                 )}
                 {viewMode === "glytch" && activeChannel?.kind === "voice" && (
                   <p className="chatInfo">This is a voice channel. Join voice to talk.</p>

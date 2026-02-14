@@ -837,6 +837,34 @@ export async function uploadProfileAsset(
   const objectPath = `${userId}/${kind}-${Date.now()}-${safeName}`;
   const encodedObjectPath = encodePath(objectPath);
 
+  if (usingBackendRoutes) {
+    if (!apiBase) {
+      throw new Error("Supabase env vars missing. Set VITE_API_URL.");
+    }
+
+    const params = new URLSearchParams({ kind });
+    const res = await fetch(`${apiBase}/api/media/profile-upload/${encodedObjectPath}?${params.toString()}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": file.type || "application/octet-stream",
+      },
+      body: file,
+    });
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const message = messageFromUnknownJson(data);
+      throw new Error(message || "Could not upload image.");
+    }
+
+    if (typeof data.url === "string" && data.url.trim().length > 0) {
+      return data.url;
+    }
+
+    throw new Error("Profile upload succeeded but no URL was returned.");
+  }
+
   const res = await supabaseFetch(`/storage/v1/object/${profileBucket}/${encodedObjectPath}`, {
     method: "POST",
     headers: {
@@ -856,6 +884,34 @@ export async function uploadGlytchIcon(accessToken: string, userId: string, glyt
   const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
   const objectPath = `${userId}/${glytchId}/icon-${Date.now()}-${safeName}`;
   const encodedObjectPath = encodePath(objectPath);
+
+  if (usingBackendRoutes) {
+    if (!apiBase) {
+      throw new Error("Supabase env vars missing. Set VITE_API_URL.");
+    }
+
+    const params = new URLSearchParams({ glytchId: String(glytchId) });
+    const res = await fetch(`${apiBase}/api/media/glytch-icon-upload/${encodedObjectPath}?${params.toString()}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": file.type || "application/octet-stream",
+      },
+      body: file,
+    });
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const message = messageFromUnknownJson(data);
+      throw new Error(message || "Could not upload image.");
+    }
+
+    if (typeof data.url === "string" && data.url.trim().length > 0) {
+      return data.url;
+    }
+
+    throw new Error("Glytch icon upload succeeded but no URL was returned.");
+  }
 
   const res = await supabaseFetch(`/storage/v1/object/${glytchBucket}/${encodedObjectPath}`, {
     method: "POST",
@@ -886,6 +942,40 @@ export async function uploadMessageAsset(
   const contextPrefix = context === "dm" ? `dm/${contextId}` : `glytch/${contextId}`;
   const objectPath = `${contextPrefix}/${userId}/${Date.now()}-${safeName}`;
   const encodedObjectPath = encodePath(objectPath);
+  const fallbackAttachmentType: MessageAttachmentType = file.type === "image/gif" ? "gif" : "image";
+
+  if (usingBackendRoutes) {
+    if (!apiBase) {
+      throw new Error("Supabase env vars missing. Set VITE_API_URL.");
+    }
+
+    const params = new URLSearchParams({
+      context,
+      contextId: String(contextId),
+    });
+    const res = await fetch(`${apiBase}/api/media/message-upload/${encodedObjectPath}?${params.toString()}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": file.type || "application/octet-stream",
+      },
+      body: file,
+    });
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const message = messageFromUnknownJson(data);
+      throw new Error(message || "Could not upload attachment.");
+    }
+
+    const approvedPath = typeof data.objectPath === "string" && data.objectPath.trim().length > 0 ? data.objectPath : objectPath;
+    const approvedType = data.attachmentType === "gif" ? "gif" : data.attachmentType === "image" ? "image" : fallbackAttachmentType;
+
+    return {
+      url: approvedPath,
+      attachmentType: approvedType,
+    };
+  }
 
   const res = await supabaseFetch(`/storage/v1/object/${messageBucket}/${encodedObjectPath}`, {
     method: "POST",
@@ -900,7 +990,59 @@ export async function uploadMessageAsset(
   await readJsonOrThrow(res);
   return {
     url: objectPath,
-    attachmentType: file.type === "image/gif" ? "gif" : "image",
+    attachmentType: fallbackAttachmentType,
+  };
+}
+
+export async function ingestRemoteMessageAsset(
+  accessToken: string,
+  context: "dm" | "glytch",
+  contextId: number,
+  sourceUrl: string,
+): Promise<{ url: string; attachmentType: MessageAttachmentType }> {
+  if (!Number.isFinite(contextId) || contextId <= 0) {
+    throw new Error("Invalid message context.");
+  }
+  const normalizedUrl = sourceUrl.trim();
+  if (!normalizedUrl) {
+    throw new Error("Missing media URL.");
+  }
+  if (!usingBackendRoutes) {
+    throw new Error("Remote media moderation requires backend routes.");
+  }
+  if (!apiBase) {
+    throw new Error("Supabase env vars missing. Set VITE_API_URL.");
+  }
+
+  const params = new URLSearchParams({
+    context,
+    contextId: String(contextId),
+  });
+  const res = await fetch(`${apiBase}/api/media/message-ingest?${params.toString()}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      sourceUrl: normalizedUrl,
+    }),
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const message = messageFromUnknownJson(data);
+    throw new Error(message || "Could not process remote media.");
+  }
+
+  const approvedPath = typeof data.objectPath === "string" && data.objectPath.trim().length > 0 ? data.objectPath : "";
+  if (!approvedPath) {
+    throw new Error("Remote media upload did not return a storage path.");
+  }
+
+  return {
+    url: approvedPath,
+    attachmentType: data.attachmentType === "gif" ? "gif" : "image",
   };
 }
 

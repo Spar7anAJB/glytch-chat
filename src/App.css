@@ -2,28 +2,28 @@
 
 :root {
   color-scheme: light dark;
-  --bg: #050914;
-  --panel: #0c1629;
-  --panel-border: #1f3352;
-  --text: #e7f1ff;
-  --muted: #8da4c7;
-  --accent: #2f9bff;
-  --accent-strong: #63b7ff;
-  --card: #101d33;
-  --card-border: #284365;
-  --bubble-bot: #13223d;
-  --bubble-me: #193a58;
-  --hot: #ff6f91;
-  --orange: #ff8a5e;
-  --warn: #173158;
-  --violet: #151d3a;
-  --text-on-accent: #041423;
-  --status-active: #46d28f;
-  --status-away: #f4be5f;
-  --status-busy: #ff7596;
-  --status-offline: #7e93b5;
-  --font-ui: "Manrope", "Avenir Next", "Segoe UI", sans-serif;
-  --font-display: "Sora", "Manrope", "Avenir Next", sans-serif;
+  --bg: #0a0a0a;
+  --panel: #170f25;
+  --panel-border: #47246f;
+  --text: #e5e5e5;
+  --muted: #b79ed0;
+  --accent: #ff2ec2;
+  --accent-strong: #00ffff;
+  --card: #23113a;
+  --card-border: #6a00f4;
+  --bubble-bot: #2a1642;
+  --bubble-me: #45185e;
+  --hot: #ff2ec2;
+  --orange: #1e90ff;
+  --warn: #2b1846;
+  --violet: #6a00f4;
+  --text-on-accent: #0a0a0a;
+  --status-active: #00ffff;
+  --status-away: #fff700;
+  --status-busy: #ff2ec2;
+  --status-offline: #7a5f93;
+  --font-ui: "Orbitron", "Manrope", "Avenir Next", "Segoe UI", sans-serif;
+  --font-display: "Orbitron", "Sora", "Manrope", "Avenir Next", sans-serif;
   --focus-ring: 0 0 0 3px color-mix(in srgb, var(--accent-strong), transparent 70%);
   --surface-shadow-soft: 0 14px 30px color-mix(in srgb, var(--bg), transparent 70%);
   --surface-shadow-strong: 0 18px 40px color-mix(in srgb, var(--bg), transparent 56%);
@@ -90,6 +90,7 @@ body,
 #root {
   height: 100%;
   margin: 0;
+  font-size: 14px;
 }
 
 * {
@@ -686,7 +687,7 @@ textarea:focus-visible {
 .subModeSwitch {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 6px;
+  gap: 8px;
 }
 
 .glytchActions {
@@ -698,7 +699,10 @@ textarea:focus-visible {
 .subModeSwitch .channelItem,
 .glytchActions .channelItem {
   text-align: center;
-  padding: 9px 8px;
+  min-height: 40px;
+  padding: 8px 10px;
+  font-size: 0.78rem;
+  line-height: 1.2;
 }
 
 .addFriendForm,
@@ -713,17 +717,21 @@ textarea:focus-visible {
 }
 
 .addFriendForm {
-  display: flex;
-  gap: 6px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
 }
 
 .addFriendForm input {
-  flex: 1;
+  min-width: 0;
   border: 1px solid color-mix(in srgb, var(--card-border), transparent 18%);
   border-radius: 11px;
+  min-height: 36px;
   padding: 8px 10px;
   background: color-mix(in srgb, var(--panel), var(--bg) 10%);
   color: var(--text);
+  font-size: 0.82rem;
   outline: none;
   transition: border-color 0.16s ease, background-color 0.16s ease;
 }
@@ -733,12 +741,17 @@ textarea:focus-visible {
 }
 
 .addFriendForm button {
+  flex: 0 0 auto;
+  min-width: 88px;
+  min-height: 36px;
   border: 0;
   border-radius: 11px;
   padding: 0 12px;
   background: linear-gradient(130deg, color-mix(in srgb, var(--accent), #fff 12%), var(--accent-strong));
   color: var(--text-on-accent);
   font-weight: 700;
+  font-size: 0.78rem;
+  white-space: nowrap;
   cursor: pointer;
 }
 
@@ -1237,10 +1250,12 @@ textarea:focus-visible {
 .glytchInviteSearch {
   width: 100%;
   border: 1px solid var(--card-border);
-  border-radius: 8px;
+  border-radius: 10px;
+  min-height: 36px;
   padding: 8px 10px;
   background: var(--panel);
   color: var(--text);
+  font-size: 0.82rem;
   outline: none;
 }
 
@@ -1714,14 +1729,45 @@ textarea:focus-visible {
 .glytchSelectionState {
   flex: 1;
   min-height: 0;
-  display: grid;
-  place-items: center;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
   padding: 24px;
 }
 
+.glytchSelectionPanel {
+  width: min(680px, 100%);
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border: 1px solid color-mix(in srgb, var(--card-border), transparent 16%);
+  border-radius: 16px;
+  padding: 14px;
+  background:
+    radial-gradient(360px 180px at 10% -20%, color-mix(in srgb, var(--accent), transparent 86%), transparent 62%),
+    color-mix(in srgb, var(--card), var(--bg) 12%);
+  box-shadow: var(--surface-shadow-soft);
+}
+
+.glytchSelectionList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.glytchSelectionItem {
+  width: 100%;
+  min-height: 42px;
+}
+
 .glytchSelectionState .chatInfo {
-  max-width: 460px;
-  text-align: center;
+  margin: 0;
+  max-width: 100%;
+  text-align: left;
   border: 1px solid color-mix(in srgb, var(--card-border), transparent 16%);
   border-radius: 16px;
   padding: 16px 18px;

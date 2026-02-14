@@ -1,21 +1,21 @@
-@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Orbitron:wght@500;600;700&display=swap");
 
 :root {
-  --landing-bg-a: #f4f0e8;
-  --landing-bg-b: #d9e6f2;
-  --landing-ink: #132436;
-  --landing-accent: #e0612d;
-  --landing-accent-dark: #bb4b1f;
+  --landing-bg-a: #08050f;
+  --landing-bg-b: #160b25;
+  --landing-ink: #e5e5e5;
+  --landing-accent: #ff2ec2;
+  --landing-accent-dark: #00ffff;
 }
 
 .landingPage,
 .guardPage {
   min-height: 100vh;
-  font-family: "Space Grotesk", "Avenir Next", "Helvetica Neue", sans-serif;
+  font-family: "Orbitron", "Manrope", "Avenir Next", "Helvetica Neue", sans-serif;
   color: var(--landing-ink);
   background:
-    radial-gradient(circle at 90% 10%, rgba(224, 97, 45, 0.16), transparent 46%),
-    radial-gradient(circle at 10% 80%, rgba(13, 89, 141, 0.16), transparent 44%),
+    radial-gradient(circle at 90% 10%, rgba(255, 46, 194, 0.22), transparent 46%),
+    radial-gradient(circle at 10% 80%, rgba(0, 255, 255, 0.2), transparent 44%),
     linear-gradient(160deg, var(--landing-bg-a), var(--landing-bg-b));
 }
 
@@ -29,11 +29,11 @@
 .landingHero,
 .landingGrid article,
 .guardCard {
-  border: 1px solid rgba(19, 36, 54, 0.16);
+  border: 1px solid rgba(106, 0, 244, 0.44);
   border-radius: 1.2rem;
-  backdrop-filter: blur(4px);
-  background: rgba(255, 255, 255, 0.75);
-  box-shadow: 0 16px 30px rgba(19, 36, 54, 0.1);
+  backdrop-filter: blur(9px);
+  background: rgba(20, 10, 34, 0.74);
+  box-shadow: 0 14px 28px rgba(10, 3, 19, 0.55);
 }
 
 .landingHero {
@@ -50,7 +50,7 @@
 
 .landingKicker {
   margin: 0;
-  color: rgba(19, 36, 54, 0.72);
+  color: rgba(183, 158, 208, 0.94);
   text-transform: uppercase;
   font-size: 0.76rem;
   letter-spacing: 0.14em;
@@ -60,7 +60,7 @@
 .landingBody {
   max-width: 56ch;
   margin: 1rem 0 0;
-  color: rgba(19, 36, 54, 0.85);
+  color: rgba(229, 229, 229, 0.88);
 }
 
 .landingActions {
@@ -83,15 +83,15 @@
 .landingPrimary {
   border: none;
   padding: 0.8rem 1.3rem;
-  color: #fff;
+  color: #0a0a0a;
   background: linear-gradient(130deg, var(--landing-accent), var(--landing-accent-dark));
 }
 
 .landingSecondary {
-  border: 1px solid rgba(19, 36, 54, 0.28);
+  border: 1px solid rgba(106, 0, 244, 0.56);
   color: var(--landing-ink);
   padding: 0.78rem 1.2rem;
-  background: rgba(255, 255, 255, 0.75);
+  background: rgba(29, 14, 48, 0.78);
 }
 
 .landingGrid {
@@ -111,13 +111,13 @@
 
 .landingGrid p {
   margin: 0.6rem 0 0;
-  color: rgba(19, 36, 54, 0.84);
+  color: rgba(229, 229, 229, 0.82);
   line-height: 1.4;
 }
 
 .authBackButton {
-  border: 1px solid rgba(19, 36, 54, 0.24);
-  background: rgba(255, 255, 255, 0.75);
+  border: 1px solid rgba(106, 0, 244, 0.56);
+  background: rgba(29, 14, 48, 0.78);
   color: var(--landing-ink);
   padding: 0.35rem 0.85rem;
 }
@@ -140,12 +140,12 @@
 
 .guardCard p {
   margin: 0.7rem 0 1rem;
-  color: rgba(19, 36, 54, 0.86);
+  color: rgba(229, 229, 229, 0.86);
 }
 
 .guardCard button {
   border: none;
   padding: 0.7rem 1.1rem;
-  color: #fff;
+  color: #0a0a0a;
   background: linear-gradient(130deg, var(--landing-accent), var(--landing-accent-dark));
 }

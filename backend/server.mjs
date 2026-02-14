@@ -38,12 +38,31 @@ loadWorkspaceEnv();
 const API_PORT = Number.parseInt(process.env.API_PORT ?? "8787", 10);
 const SUPABASE_URL = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "").replace(/\/+$/, "");
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || "";
+const PROFILE_BUCKET = process.env.SUPABASE_PROFILE_BUCKET || process.env.VITE_SUPABASE_PROFILE_BUCKET || "profile-media";
+const GLYTCH_BUCKET = process.env.SUPABASE_GLYTCH_BUCKET || process.env.VITE_SUPABASE_GLYTCH_BUCKET || "glytch-media";
+const MESSAGE_BUCKET = process.env.SUPABASE_MESSAGE_BUCKET || process.env.VITE_SUPABASE_MESSAGE_BUCKET || "message-media";
 const GIPHY_API_BASE = (process.env.GIPHY_API_BASE || process.env.VITE_GIPHY_API_BASE || "https://api.giphy.com/v1/gifs").replace(
   /\/+$/,
   "",
 );
 const GIPHY_API_KEY = process.env.GIPHY_API_KEY || process.env.VITE_GIPHY_API_KEY || "";
 const GIPHY_RATING = process.env.GIPHY_RATING || process.env.VITE_GIPHY_RATING || "pg";
+const MAX_MEDIA_UPLOAD_BYTES = Number.parseInt(process.env.MAX_MEDIA_UPLOAD_BYTES ?? "8388608", 10);
+const MEDIA_MODERATION_ENABLED = parseBooleanEnv(
+  process.env.MEDIA_MODERATION_ENABLED,
+  Boolean(process.env.SIGHTENGINE_API_USER && process.env.SIGHTENGINE_API_SECRET),
+);
+const MEDIA_MODERATION_FAIL_OPEN = parseBooleanEnv(process.env.MEDIA_MODERATION_FAIL_OPEN, false);
+const MEDIA_MODERATION_PROVIDER = (process.env.MEDIA_MODERATION_PROVIDER || "sightengine").trim().toLowerCase();
+const MEDIA_MODERATION_NUDITY_THRESHOLD = clampNumber(
+  Number.parseFloat(process.env.MEDIA_MODERATION_NUDITY_THRESHOLD ?? "0.65"),
+  0,
+  1,
+  0.65,
+);
+const SIGHTENGINE_API_URL = (process.env.SIGHTENGINE_API_URL || "https://api.sightengine.com/1.0/check.json").replace(/\/+$/, "");
+const SIGHTENGINE_API_USER = process.env.SIGHTENGINE_API_USER || "";
+const SIGHTENGINE_API_SECRET = process.env.SIGHTENGINE_API_SECRET || "";
 
 const CORS_ALLOW_HEADERS = [
   "Authorization",
@@ -62,6 +81,294 @@ const RPC_PREFIX = "/api/rpc/";
 const REST_PREFIX = "/api/rest/";
 const STORAGE_OBJECT_PREFIX = "/api/storage/object/";
 const STORAGE_SIGN_PREFIX = "/api/storage/sign/";
+const MEDIA_PROFILE_UPLOAD_PREFIX = "/api/media/profile-upload/";
+const MEDIA_GLYTCH_ICON_UPLOAD_PREFIX = "/api/media/glytch-icon-upload/";
+const MEDIA_MESSAGE_UPLOAD_PREFIX = "/api/media/message-upload/";
+const MEDIA_MESSAGE_INGEST_PATH = "/api/media/message-ingest";
+
+function parseBooleanEnv(rawValue, defaultValue) {
+  if (typeof rawValue !== "string") return defaultValue;
+  const normalized = rawValue.trim().toLowerCase();
+  if (normalized === "true" || normalized === "1" || normalized === "yes" || normalized === "on") return true;
+  if (normalized === "false" || normalized === "0" || normalized === "no" || normalized === "off") return false;
+  return defaultValue;
+}
+
+function clampNumber(value, min, max, fallback) {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.min(max, value));
+}
+
+function contentTypeFromHeaders(req) {
+  const raw = req.headers["content-type"];
+  const first = Array.isArray(raw) ? raw[0] : raw;
+  if (!first || typeof first !== "string") return "";
+  return first.split(";")[0].trim().toLowerCase();
+}
+
+function encodePath(pathValue) {
+  return pathValue
+    .split("/")
+    .map((part) => encodeURIComponent(part))
+    .join("/");
+}
+
+function decodePath(pathValue) {
+  try {
+    return pathValue
+      .split("/")
+      .map((part) => decodeURIComponent(part))
+      .join("/");
+  } catch {
+    return "";
+  }
+}
+
+function isSafeStorageObjectPath(pathValue) {
+  if (!pathValue || pathValue.startsWith("/") || pathValue.includes("\\") || pathValue.includes("\0")) {
+    return false;
+  }
+  const parts = pathValue.split("/");
+  if (parts.length < 2) return false;
+  return parts.every((part) => part && part !== "." && part !== "..");
+}
+
+function extractBearerToken(req) {
+  const rawAuth = req.headers.authorization;
+  const value = Array.isArray(rawAuth) ? rawAuth[0] : rawAuth;
+  if (!value || typeof value !== "string") return null;
+  const [scheme, token] = value.trim().split(/\s+/, 2);
+  if (!scheme || scheme.toLowerCase() !== "bearer" || !token) return null;
+  return token;
+}
+
+function decodeBase64Url(rawValue) {
+  const normalized = rawValue.replace(/-/g, "+").replace(/_/g, "/");
+  const padding = normalized.length % 4;
+  const padded = padding === 0 ? normalized : `${normalized}${"=".repeat(4 - padding)}`;
+  return Buffer.from(padded, "base64").toString("utf8");
+}
+
+function getRequestUserId(req) {
+  const token = extractBearerToken(req);
+  if (!token) return null;
+  const tokenParts = token.split(".");
+  if (tokenParts.length < 2) return null;
+
+  try {
+    const payloadJson = decodeBase64Url(tokenParts[1]);
+    const payload = JSON.parse(payloadJson);
+    if (payload && typeof payload === "object" && typeof payload.sub === "string" && payload.sub) {
+      return payload.sub;
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+function normalizedImageContentType(rawContentType) {
+  if (!rawContentType || typeof rawContentType !== "string") return "";
+  const clean = rawContentType.split(";")[0].trim().toLowerCase();
+  if (!clean.startsWith("image/")) return "";
+  return clean;
+}
+
+function errorMessageForMaxUploadBytes(maxBytes) {
+  return `Uploads must be ${Math.floor(maxBytes / (1024 * 1024))}MB or smaller.`;
+}
+
+function sanitizeAssetName(rawName, fallbackBaseName = "upload-image") {
+  const base = rawName && typeof rawName === "string" ? rawName : fallbackBaseName;
+  const cleaned = base.replace(/[^a-zA-Z0-9._-]/g, "_").replace(/_+/g, "_");
+  return cleaned.length > 0 ? cleaned : fallbackBaseName;
+}
+
+function extensionForContentType(contentType) {
+  if (contentType === "image/gif") return "gif";
+  if (contentType === "image/png") return "png";
+  if (contentType === "image/webp") return "webp";
+  if (contentType === "image/bmp") return "bmp";
+  if (contentType === "image/tiff") return "tiff";
+  if (contentType === "image/avif") return "avif";
+  return "jpg";
+}
+
+function isDisallowedRemoteHost(hostname) {
+  const host = hostname.trim().toLowerCase();
+  if (!host) return true;
+  if (host === "localhost" || host === "127.0.0.1" || host === "::1") return true;
+  if (host.endsWith(".local")) return true;
+  if (host.startsWith("127.")) return true;
+  if (host.startsWith("10.")) return true;
+  if (host.startsWith("192.168.")) return true;
+  if (host.startsWith("169.254.")) return true;
+
+  const private172 = host.match(/^172\.(\d+)\./);
+  if (private172) {
+    const secondOctet = Number.parseInt(private172[1], 10);
+    if (Number.isFinite(secondOctet) && secondOctet >= 16 && secondOctet <= 31) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function parseRemoteMediaUrl(rawUrl) {
+  if (typeof rawUrl !== "string" || !rawUrl.trim()) return null;
+  let parsed;
+  try {
+    parsed = new URL(rawUrl.trim());
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return null;
+  if (isDisallowedRemoteHost(parsed.hostname)) return null;
+  return parsed;
+}
+
+function getUnknownMessage(data) {
+  if (!data || typeof data !== "object") return "";
+  const row = data;
+  if (typeof row.message === "string" && row.message) return row.message;
+  if (typeof row.error === "string" && row.error) return row.error;
+  if (typeof row.msg === "string" && row.msg) return row.msg;
+  if (typeof row.error_description === "string" && row.error_description) return row.error_description;
+  return "";
+}
+
+function toFiniteScore(value) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number.parseFloat(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return 0;
+}
+
+async function moderateImageWithSightengine(imageBuffer, contentType) {
+  if (!SIGHTENGINE_API_USER || !SIGHTENGINE_API_SECRET) {
+    return {
+      allowed: MEDIA_MODERATION_FAIL_OPEN,
+      statusCode: 503,
+      code: "MODERATION_NOT_CONFIGURED",
+      reason: "Image moderation is enabled but Sightengine credentials are missing.",
+      provider: "sightengine",
+    };
+  }
+
+  const formData = new FormData();
+  formData.set("media", new Blob([imageBuffer], { type: contentType || "application/octet-stream" }), "upload-image");
+  formData.set("models", "nudity-2.1");
+  formData.set("api_user", SIGHTENGINE_API_USER);
+  formData.set("api_secret", SIGHTENGINE_API_SECRET);
+
+  let upstream;
+  try {
+    upstream = await fetch(SIGHTENGINE_API_URL, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+      },
+      body: formData,
+    });
+  } catch (error) {
+    return {
+      allowed: MEDIA_MODERATION_FAIL_OPEN,
+      statusCode: 503,
+      code: "MODERATION_UPSTREAM_UNAVAILABLE",
+      reason: error instanceof Error ? error.message : "Moderation provider could not be reached.",
+      provider: "sightengine",
+    };
+  }
+
+  const data = await upstream.json().catch(() => ({}));
+  if (!upstream.ok) {
+    return {
+      allowed: MEDIA_MODERATION_FAIL_OPEN,
+      statusCode: 503,
+      code: "MODERATION_UPSTREAM_ERROR",
+      reason: getUnknownMessage(data) || "Moderation provider returned an error.",
+      provider: "sightengine",
+    };
+  }
+
+  const nudity = data?.nudity && typeof data.nudity === "object" ? data.nudity : {};
+  const score = Math.max(
+    toFiniteScore(nudity.raw),
+    toFiniteScore(nudity.partial),
+    toFiniteScore(nudity.suggestive),
+    toFiniteScore(nudity.sexual_activity),
+  );
+
+  return {
+    allowed: score < MEDIA_MODERATION_NUDITY_THRESHOLD,
+    statusCode: 422,
+    code: "NSFW_IMAGE_BLOCKED",
+    reason: "Image was blocked by moderation policy.",
+    provider: "sightengine",
+    score,
+    threshold: MEDIA_MODERATION_NUDITY_THRESHOLD,
+  };
+}
+
+async function moderateImageUpload(imageBuffer, contentType) {
+  if (!MEDIA_MODERATION_ENABLED) {
+    return {
+      allowed: true,
+      provider: "disabled",
+    };
+  }
+
+  if (MEDIA_MODERATION_PROVIDER === "sightengine") {
+    return moderateImageWithSightengine(imageBuffer, contentType);
+  }
+
+  if (MEDIA_MODERATION_PROVIDER === "none") {
+    return {
+      allowed: true,
+      provider: "none",
+    };
+  }
+
+  return {
+    allowed: false,
+    statusCode: 500,
+    code: "MODERATION_PROVIDER_UNSUPPORTED",
+    reason: `Unsupported moderation provider: ${MEDIA_MODERATION_PROVIDER}.`,
+    provider: MEDIA_MODERATION_PROVIDER,
+  };
+}
+
+function moderationErrorPayload(moderation) {
+  return {
+    error: moderation.reason || "Upload blocked by moderation policy.",
+    code: moderation.code || "UPLOAD_BLOCKED",
+    moderation: {
+      provider: moderation.provider,
+      score: moderation.score ?? null,
+      threshold: moderation.threshold ?? null,
+    },
+  };
+}
+
+async function uploadBufferToSupabaseStorage(req, bucket, objectPath, contentType, body) {
+  const headers = buildUpstreamHeaders(req, body.length);
+  headers.set("content-type", contentType || "application/octet-stream");
+  headers.set("x-upsert", "true");
+  return fetch(`${SUPABASE_URL}/storage/v1/object/${bucket}/${encodePath(objectPath)}`, {
+    method: "POST",
+    headers,
+    body,
+    redirect: "manual",
+  });
+}
+
+function publicStorageUrl(bucket, objectPath) {
+  return `${SUPABASE_URL}/storage/v1/object/public/${bucket}/${encodePath(objectPath)}`;
+}
 
 function sendJson(res, statusCode, payload) {
   res.writeHead(statusCode, {
@@ -136,6 +443,435 @@ async function relayFetchResponse(res, upstream) {
 
   const buffer = Buffer.from(await upstream.arrayBuffer());
   res.end(buffer);
+}
+
+async function uploadModeratedMessageMedia(req, res, parsedUrl, pathname) {
+  const method = req.method || "GET";
+  if (method !== "POST") {
+    sendJson(res, 405, { error: "Method not allowed." });
+    return;
+  }
+
+  if (!SUPABASE_URL) {
+    sendJson(res, 500, {
+      error: "Backend is missing SUPABASE_URL (or VITE_SUPABASE_URL).",
+    });
+    return;
+  }
+
+  const authUserId = getRequestUserId(req);
+  if (!authUserId) {
+    sendJson(res, 401, { error: "Missing or invalid bearer token." });
+    return;
+  }
+
+  const encodedObjectPath = pathname.slice(MEDIA_MESSAGE_UPLOAD_PREFIX.length);
+  if (!encodedObjectPath) {
+    sendJson(res, 400, { error: "Missing upload path." });
+    return;
+  }
+
+  const objectPath = decodePath(encodedObjectPath);
+  if (!isSafeStorageObjectPath(objectPath)) {
+    sendJson(res, 400, { error: "Invalid upload path." });
+    return;
+  }
+
+  const context = parsedUrl.searchParams.get("context");
+  if (context !== "dm" && context !== "glytch") {
+    sendJson(res, 400, { error: "Invalid upload context." });
+    return;
+  }
+
+  const contextId = Number.parseInt(parsedUrl.searchParams.get("contextId") || "", 10);
+  if (!Number.isFinite(contextId) || contextId <= 0) {
+    sendJson(res, 400, { error: "Invalid upload context id." });
+    return;
+  }
+
+  const pathParts = objectPath.split("/");
+  if (pathParts.length < 4 || pathParts[0] !== context || pathParts[1] !== String(contextId)) {
+    sendJson(res, 400, { error: "Upload path does not match the selected context." });
+    return;
+  }
+  if (pathParts[2] !== authUserId) {
+    sendJson(res, 403, { error: "Upload path user mismatch." });
+    return;
+  }
+
+  const contentType = normalizedImageContentType(contentTypeFromHeaders(req));
+  if (!contentType) {
+    sendJson(res, 415, { error: "Only image uploads are supported." });
+    return;
+  }
+
+  const body = await readRawBody(req);
+  if (!body.length) {
+    sendJson(res, 400, { error: "Upload body is empty." });
+    return;
+  }
+  if (body.length > MAX_MEDIA_UPLOAD_BYTES) {
+    sendJson(res, 413, { error: errorMessageForMaxUploadBytes(MAX_MEDIA_UPLOAD_BYTES) });
+    return;
+  }
+
+  const moderation = await moderateImageUpload(body, contentType);
+  if (!moderation.allowed) {
+    sendJson(res, moderation.statusCode || 422, moderationErrorPayload(moderation));
+    return;
+  }
+
+  let upstream;
+  try {
+    upstream = await uploadBufferToSupabaseStorage(req, MESSAGE_BUCKET, objectPath, contentType, body);
+  } catch (error) {
+    sendJson(res, 502, {
+      error: "Could not reach Supabase storage upstream.",
+      message: error instanceof Error ? error.message : "Unknown upstream error.",
+    });
+    return;
+  }
+
+  if (!upstream.ok) {
+    await relayFetchResponse(res, upstream);
+    return;
+  }
+
+  await upstream.arrayBuffer();
+  sendJson(res, 200, {
+    objectPath,
+    attachmentType: contentType === "image/gif" ? "gif" : "image",
+    moderation: {
+      provider: moderation.provider,
+      score: moderation.score ?? null,
+      threshold: moderation.threshold ?? null,
+    },
+  });
+}
+
+async function uploadModeratedProfileMedia(req, res, parsedUrl, pathname) {
+  const method = req.method || "GET";
+  if (method !== "POST") {
+    sendJson(res, 405, { error: "Method not allowed." });
+    return;
+  }
+
+  if (!SUPABASE_URL) {
+    sendJson(res, 500, {
+      error: "Backend is missing SUPABASE_URL (or VITE_SUPABASE_URL).",
+    });
+    return;
+  }
+
+  const authUserId = getRequestUserId(req);
+  if (!authUserId) {
+    sendJson(res, 401, { error: "Missing or invalid bearer token." });
+    return;
+  }
+
+  const kind = (parsedUrl.searchParams.get("kind") || "").trim().toLowerCase();
+  if (kind !== "avatar" && kind !== "banner" && kind !== "theme") {
+    sendJson(res, 400, { error: "Invalid profile upload kind." });
+    return;
+  }
+
+  const encodedObjectPath = pathname.slice(MEDIA_PROFILE_UPLOAD_PREFIX.length);
+  if (!encodedObjectPath) {
+    sendJson(res, 400, { error: "Missing upload path." });
+    return;
+  }
+
+  const objectPath = decodePath(encodedObjectPath);
+  if (!isSafeStorageObjectPath(objectPath)) {
+    sendJson(res, 400, { error: "Invalid upload path." });
+    return;
+  }
+
+  const parts = objectPath.split("/");
+  if (parts.length !== 2 || parts[0] !== authUserId || !parts[1].startsWith(`${kind}-`)) {
+    sendJson(res, 403, { error: "Upload path does not match authenticated user or kind." });
+    return;
+  }
+
+  const contentType = normalizedImageContentType(contentTypeFromHeaders(req));
+  if (!contentType) {
+    sendJson(res, 415, { error: "Only image uploads are supported." });
+    return;
+  }
+
+  const body = await readRawBody(req);
+  if (!body.length) {
+    sendJson(res, 400, { error: "Upload body is empty." });
+    return;
+  }
+  if (body.length > MAX_MEDIA_UPLOAD_BYTES) {
+    sendJson(res, 413, { error: errorMessageForMaxUploadBytes(MAX_MEDIA_UPLOAD_BYTES) });
+    return;
+  }
+
+  const moderation = await moderateImageUpload(body, contentType);
+  if (!moderation.allowed) {
+    sendJson(res, moderation.statusCode || 422, moderationErrorPayload(moderation));
+    return;
+  }
+
+  let upstream;
+  try {
+    upstream = await uploadBufferToSupabaseStorage(req, PROFILE_BUCKET, objectPath, contentType, body);
+  } catch (error) {
+    sendJson(res, 502, {
+      error: "Could not reach Supabase storage upstream.",
+      message: error instanceof Error ? error.message : "Unknown upstream error.",
+    });
+    return;
+  }
+
+  if (!upstream.ok) {
+    await relayFetchResponse(res, upstream);
+    return;
+  }
+
+  await upstream.arrayBuffer();
+  sendJson(res, 200, {
+    url: publicStorageUrl(PROFILE_BUCKET, objectPath),
+    moderation: {
+      provider: moderation.provider,
+      score: moderation.score ?? null,
+      threshold: moderation.threshold ?? null,
+    },
+  });
+}
+
+async function uploadModeratedGlytchIcon(req, res, parsedUrl, pathname) {
+  const method = req.method || "GET";
+  if (method !== "POST") {
+    sendJson(res, 405, { error: "Method not allowed." });
+    return;
+  }
+
+  if (!SUPABASE_URL) {
+    sendJson(res, 500, {
+      error: "Backend is missing SUPABASE_URL (or VITE_SUPABASE_URL).",
+    });
+    return;
+  }
+
+  const authUserId = getRequestUserId(req);
+  if (!authUserId) {
+    sendJson(res, 401, { error: "Missing or invalid bearer token." });
+    return;
+  }
+
+  const glytchId = Number.parseInt(parsedUrl.searchParams.get("glytchId") || "", 10);
+  if (!Number.isFinite(glytchId) || glytchId <= 0) {
+    sendJson(res, 400, { error: "Invalid glytch id." });
+    return;
+  }
+
+  const encodedObjectPath = pathname.slice(MEDIA_GLYTCH_ICON_UPLOAD_PREFIX.length);
+  if (!encodedObjectPath) {
+    sendJson(res, 400, { error: "Missing upload path." });
+    return;
+  }
+
+  const objectPath = decodePath(encodedObjectPath);
+  if (!isSafeStorageObjectPath(objectPath)) {
+    sendJson(res, 400, { error: "Invalid upload path." });
+    return;
+  }
+
+  const parts = objectPath.split("/");
+  if (parts.length !== 3 || parts[0] !== authUserId || parts[1] !== String(glytchId) || !parts[2].startsWith("icon-")) {
+    sendJson(res, 403, { error: "Upload path does not match authenticated user or glytch id." });
+    return;
+  }
+
+  const contentType = normalizedImageContentType(contentTypeFromHeaders(req));
+  if (!contentType) {
+    sendJson(res, 415, { error: "Only image uploads are supported." });
+    return;
+  }
+
+  const body = await readRawBody(req);
+  if (!body.length) {
+    sendJson(res, 400, { error: "Upload body is empty." });
+    return;
+  }
+  if (body.length > MAX_MEDIA_UPLOAD_BYTES) {
+    sendJson(res, 413, { error: errorMessageForMaxUploadBytes(MAX_MEDIA_UPLOAD_BYTES) });
+    return;
+  }
+
+  const moderation = await moderateImageUpload(body, contentType);
+  if (!moderation.allowed) {
+    sendJson(res, moderation.statusCode || 422, moderationErrorPayload(moderation));
+    return;
+  }
+
+  let upstream;
+  try {
+    upstream = await uploadBufferToSupabaseStorage(req, GLYTCH_BUCKET, objectPath, contentType, body);
+  } catch (error) {
+    sendJson(res, 502, {
+      error: "Could not reach Supabase storage upstream.",
+      message: error instanceof Error ? error.message : "Unknown upstream error.",
+    });
+    return;
+  }
+
+  if (!upstream.ok) {
+    await relayFetchResponse(res, upstream);
+    return;
+  }
+
+  await upstream.arrayBuffer();
+  sendJson(res, 200, {
+    url: publicStorageUrl(GLYTCH_BUCKET, objectPath),
+    moderation: {
+      provider: moderation.provider,
+      score: moderation.score ?? null,
+      threshold: moderation.threshold ?? null,
+    },
+  });
+}
+
+async function ingestRemoteMessageMedia(req, res, parsedUrl) {
+  const method = req.method || "GET";
+  if (method !== "POST") {
+    sendJson(res, 405, { error: "Method not allowed." });
+    return;
+  }
+
+  if (!SUPABASE_URL) {
+    sendJson(res, 500, {
+      error: "Backend is missing SUPABASE_URL (or VITE_SUPABASE_URL).",
+    });
+    return;
+  }
+
+  const authUserId = getRequestUserId(req);
+  if (!authUserId) {
+    sendJson(res, 401, { error: "Missing or invalid bearer token." });
+    return;
+  }
+
+  const context = parsedUrl.searchParams.get("context");
+  if (context !== "dm" && context !== "glytch") {
+    sendJson(res, 400, { error: "Invalid upload context." });
+    return;
+  }
+  const contextId = Number.parseInt(parsedUrl.searchParams.get("contextId") || "", 10);
+  if (!Number.isFinite(contextId) || contextId <= 0) {
+    sendJson(res, 400, { error: "Invalid upload context id." });
+    return;
+  }
+
+  const requestBody = await readRawBody(req);
+  if (!requestBody.length) {
+    sendJson(res, 400, { error: "Missing request body." });
+    return;
+  }
+
+  let payload;
+  try {
+    payload = JSON.parse(requestBody.toString("utf8"));
+  } catch {
+    sendJson(res, 400, { error: "Invalid JSON body." });
+    return;
+  }
+
+  const sourceUrl = parseRemoteMediaUrl(payload?.sourceUrl);
+  if (!sourceUrl) {
+    sendJson(res, 400, { error: "Invalid or disallowed source URL." });
+    return;
+  }
+
+  let remoteResponse;
+  try {
+    remoteResponse = await fetch(sourceUrl.toString(), {
+      headers: {
+        Accept: "image/*,*/*;q=0.8",
+      },
+      redirect: "follow",
+    });
+  } catch (error) {
+    sendJson(res, 502, {
+      error: "Could not download remote media.",
+      message: error instanceof Error ? error.message : "Unknown upstream error.",
+    });
+    return;
+  }
+
+  if (!remoteResponse.ok) {
+    sendJson(res, 422, {
+      error: "Remote media source returned an error.",
+      statusCode: remoteResponse.status,
+    });
+    return;
+  }
+
+  const remoteContentType = normalizedImageContentType(remoteResponse.headers.get("content-type") || "");
+  if (!remoteContentType) {
+    sendJson(res, 415, { error: "Remote media must be an image." });
+    return;
+  }
+
+  const contentLength = Number.parseInt(remoteResponse.headers.get("content-length") || "", 10);
+  if (Number.isFinite(contentLength) && contentLength > MAX_MEDIA_UPLOAD_BYTES) {
+    sendJson(res, 413, { error: errorMessageForMaxUploadBytes(MAX_MEDIA_UPLOAD_BYTES) });
+    return;
+  }
+
+  const remoteBuffer = Buffer.from(await remoteResponse.arrayBuffer());
+  if (!remoteBuffer.length) {
+    sendJson(res, 422, { error: "Remote media content was empty." });
+    return;
+  }
+  if (remoteBuffer.length > MAX_MEDIA_UPLOAD_BYTES) {
+    sendJson(res, 413, { error: errorMessageForMaxUploadBytes(MAX_MEDIA_UPLOAD_BYTES) });
+    return;
+  }
+
+  const moderation = await moderateImageUpload(remoteBuffer, remoteContentType);
+  if (!moderation.allowed) {
+    sendJson(res, moderation.statusCode || 422, moderationErrorPayload(moderation));
+    return;
+  }
+
+  const rawSourceName = path.posix.basename(sourceUrl.pathname || "") || "remote-image";
+  const safeSourceName = sanitizeAssetName(rawSourceName, "remote-image");
+  const sourceHasExtension = /\.[a-zA-Z0-9]+$/.test(safeSourceName);
+  const finalSourceName = sourceHasExtension
+    ? safeSourceName
+    : `${safeSourceName}.${extensionForContentType(remoteContentType)}`;
+  const objectPath = `${context}/${contextId}/${authUserId}/${Date.now()}-${finalSourceName}`;
+
+  let upstream;
+  try {
+    upstream = await uploadBufferToSupabaseStorage(req, MESSAGE_BUCKET, objectPath, remoteContentType, remoteBuffer);
+  } catch (error) {
+    sendJson(res, 502, {
+      error: "Could not reach Supabase storage upstream.",
+      message: error instanceof Error ? error.message : "Unknown upstream error.",
+    });
+    return;
+  }
+
+  if (!upstream.ok) {
+    await relayFetchResponse(res, upstream);
+    return;
+  }
+
+  await upstream.arrayBuffer();
+  sendJson(res, 200, {
+    objectPath,
+    attachmentType: remoteContentType === "image/gif" ? "gif" : "image",
+    moderation: {
+      provider: moderation.provider,
+      score: moderation.score ?? null,
+      threshold: moderation.threshold ?? null,
+    },
+  });
 }
 
 async function forwardSupabase(req, res, targetPath) {
@@ -236,6 +972,26 @@ const server = createServer(async (req, res) => {
 
   if (pathname === "/api/gifs/search") {
     await handleGifSearch(res, parsedUrl);
+    return;
+  }
+
+  if (pathname === MEDIA_MESSAGE_INGEST_PATH) {
+    await ingestRemoteMessageMedia(req, res, parsedUrl);
+    return;
+  }
+
+  if (pathname.startsWith(MEDIA_PROFILE_UPLOAD_PREFIX)) {
+    await uploadModeratedProfileMedia(req, res, parsedUrl, pathname);
+    return;
+  }
+
+  if (pathname.startsWith(MEDIA_GLYTCH_ICON_UPLOAD_PREFIX)) {
+    await uploadModeratedGlytchIcon(req, res, parsedUrl, pathname);
+    return;
+  }
+
+  if (pathname.startsWith(MEDIA_MESSAGE_UPLOAD_PREFIX)) {
+    await uploadModeratedMessageMedia(req, res, parsedUrl, pathname);
     return;
   }
 
