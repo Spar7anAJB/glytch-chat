@@ -10,109 +10,42 @@ import {
   signUp,
   upsertMyProfile,
 } from "./supabaseApi";
+import AuthPage, { type AuthFormState, type AuthMode } from "./pages/AuthPage";
+import LandingPage from "./pages/LandingPage";
+import RouteGuardPage from "./pages/RouteGuardPage";
+import { useHashRoute } from "./routing/useHashRoute";
+import { fallbackUsername, isValidUsername, normalizeUsername } from "./lib/auth";
+import { clearSessionStorage, loadSession, saveSession, withSessionExpiry } from "./lib/sessionStorage";
+import type { SessionUser } from "./types/session";
 import "./App.css";
+import "./routes.css";
 
-type AuthMode = "login" | "signup";
-
-type SessionUser = {
-  id: string;
-  username: string;
-  email: string;
-  accessToken: string;
-  refreshToken: string;
-  expiresAt: number | null;
-};
-
-const SESSION_KEY = "glytch_supabase_session";
 const ACCESS_TOKEN_REFRESH_BUFFER_MS = 2 * 60 * 1000;
 const ACCESS_TOKEN_MIN_REFRESH_DELAY_MS = 15_000;
 const ACCESS_TOKEN_FALLBACK_REFRESH_DELAY_MS = 25 * 60 * 1000;
 const RESUME_REFRESH_THROTTLE_MS = 15_000;
 
-type SessionUserPersisted = Omit<SessionUser, "expiresAt"> & { expiresAt?: number | null };
-
-function parseJwtExpiry(accessToken: string): number | null {
-  try {
-    const [, payload] = accessToken.split(".");
-    if (!payload) return null;
-    const normalized = payload.replace(/-/g, "+").replace(/_/g, "/");
-    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
-    const decoded = atob(padded);
-    const parsed = JSON.parse(decoded) as { exp?: unknown };
-    if (typeof parsed.exp !== "number") return null;
-    return parsed.exp * 1000;
-  } catch {
-    return null;
-  }
-}
-
-function withSessionExpiry(session: SessionUserPersisted): SessionUser {
-  return {
-    ...session,
-    expiresAt: typeof session.expiresAt === "number" ? session.expiresAt : parseJwtExpiry(session.accessToken),
-  };
-}
-
-function hasSessionShape(value: unknown): value is SessionUserPersisted {
-  if (!value || typeof value !== "object") return false;
-  const row = value as Record<string, unknown>;
-  return (
-    typeof row.id === "string" &&
-    typeof row.username === "string" &&
-    typeof row.email === "string" &&
-    typeof row.accessToken === "string" &&
-    typeof row.refreshToken === "string"
-  );
-}
-
-function saveSession(session: SessionUser) {
-  sessionStorage.setItem(SESSION_KEY, JSON.stringify(session));
-  localStorage.removeItem(SESSION_KEY);
-}
-
-function loadSession(): SessionUser | null {
-  const raw = sessionStorage.getItem(SESSION_KEY) || localStorage.getItem(SESSION_KEY);
-  if (!raw) return null;
-
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!hasSessionShape(parsed)) return null;
-    return withSessionExpiry(parsed);
-  } catch {
-    return null;
-  }
-}
-
-function normalizeUsername(value: string) {
-  return value.trim().toLowerCase();
-}
-
-function isValidUsername(username: string) {
-  return /^[a-z0-9_.-]{3,24}$/.test(username);
-}
-
-function fallbackUsername(email: string, userId: string) {
-  const base = email.split("@")[0].replace(/\s+/g, "").toLowerCase() || "user";
-  const safeBase = base.replace(/[^a-z0-9_.-]/g, "") || "user";
-  return `${safeBase}_${userId.replace(/-/g, "").slice(0, 6)}`;
-}
+const EMPTY_AUTH_FORM: AuthFormState = {
+  username: "",
+  email: "",
+  password: "",
+  confirmPassword: "",
+};
 
 function App() {
   const [mode, setMode] = useState<AuthMode>("login");
-  const [username, setUsername] = useState("");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
+  const [form, setForm] = useState<AuthFormState>(EMPTY_AUTH_FORM);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [currentUser, setCurrentUser] = useState<SessionUser | null>(null);
+  const { route, navigate } = useHashRoute();
+
   const currentUserRef = useRef<SessionUser | null>(null);
   const refreshInFlightRef = useRef<Promise<SessionUser | null> | null>(null);
   const lastResumeRefreshAtRef = useRef(0);
 
   const clearSession = useCallback(() => {
-    sessionStorage.removeItem(SESSION_KEY);
-    localStorage.removeItem(SESSION_KEY);
+    clearSessionStorage();
     setCurrentUser(null);
   }, []);
 
@@ -216,6 +149,7 @@ function App() {
           email: user.email,
           username: resolvedUsername,
         });
+
         saveSession(next);
         if (!cancelled) {
           setCurrentUser(next);
@@ -237,6 +171,7 @@ function App() {
             return;
           }
         }
+
         if (!cancelled) {
           clearSession();
         }
@@ -292,17 +227,30 @@ function App() {
     };
   }, [refreshCurrentSession]);
 
-  const handleAuthSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    const normalizedEmail = email.trim().toLowerCase();
+  useEffect(() => {
+    if (!currentUser) return;
+    if (route !== "/auth") return;
+    navigate("/app", true);
+  }, [currentUser, route, navigate]);
 
-    if (!normalizedEmail || !password.trim()) {
+  const updateAuthField = useCallback((field: keyof AuthFormState, value: string) => {
+    setForm((existing) => ({
+      ...existing,
+      [field]: value,
+    }));
+  }, []);
+
+  const handleAuthSubmit = async (event: FormEvent) => {
+    event.preventDefault();
+
+    const normalizedEmail = form.email.trim().toLowerCase();
+    if (!normalizedEmail || !form.password.trim()) {
       setError("Email and password are required.");
       return;
     }
 
     if (mode === "signup") {
-      const normalizedUsername = normalizeUsername(username);
+      const normalizedUsername = normalizeUsername(form.username);
 
       if (!normalizedUsername) {
         setError("Username is required.");
@@ -314,12 +262,12 @@ function App() {
         return;
       }
 
-      if (password.length < 6) {
+      if (form.password.length < 6) {
         setError("Password must be at least 6 characters.");
         return;
       }
 
-      if (password !== confirmPassword) {
+      if (form.password !== form.confirmPassword) {
         setError("Passwords do not match.");
         return;
       }
@@ -334,7 +282,7 @@ function App() {
           return;
         }
 
-        const result = await signUp(normalizedEmail, password, normalizedUsername);
+        const result = await signUp(normalizedEmail, form.password, normalizedUsername);
         if (!result.session) {
           setError("Check your email to confirm signup, then log in.");
           setMode("login");
@@ -359,6 +307,7 @@ function App() {
 
         saveSession(sessionUser);
         setCurrentUser(sessionUser);
+        navigate("/app");
       } catch (err) {
         setError(err instanceof Error ? err.message : "Authentication failed.");
       } finally {
@@ -371,14 +320,11 @@ function App() {
     setError("");
 
     try {
-      const session = await signIn(normalizedEmail, password);
+      const session = await signIn(normalizedEmail, form.password);
       const existingProfile = await getMyProfile(session.access_token, session.user.id);
       const resolvedUsername =
         existingProfile?.username ||
-        normalizeUsername(
-          session.user.user_metadata?.username ||
-            fallbackUsername(session.user.email, session.user.id),
-        );
+        normalizeUsername(session.user.user_metadata?.username || fallbackUsername(session.user.email, session.user.id));
 
       await upsertMyProfile(
         session.access_token,
@@ -398,6 +344,7 @@ function App() {
 
       saveSession(sessionUser);
       setCurrentUser(sessionUser);
+      navigate("/app");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Authentication failed.");
     } finally {
@@ -407,108 +354,60 @@ function App() {
 
   const logout = () => {
     clearSession();
-    setPassword("");
-    setConfirmPassword("");
+    setForm((existing) => ({
+      ...existing,
+      password: "",
+      confirmPassword: "",
+    }));
     setError("");
+    navigate("/");
   };
 
-  if (currentUser) {
+  if (route === "/") {
     return (
-      <ChatDashboard
-        currentUserId={currentUser.id}
-        currentUserName={currentUser.username}
-        accessToken={currentUser.accessToken}
-        onLogout={logout}
+      <LandingPage
+        isAuthenticated={Boolean(currentUser)}
+        onGoToAuth={() => {
+          setError("");
+          navigate("/auth");
+        }}
+        onOpenApp={() => navigate("/app")}
       />
     );
   }
 
+  if (route === "/auth") {
+    return (
+      <AuthPage
+        mode={mode}
+        form={form}
+        loading={loading}
+        error={error}
+        onModeChange={(nextMode) => {
+          setMode(nextMode);
+          setError("");
+        }}
+        onFieldChange={updateAuthField}
+        onSubmit={handleAuthSubmit}
+        onBack={() => {
+          setError("");
+          navigate("/");
+        }}
+      />
+    );
+  }
+
+  if (!currentUser) {
+    return <RouteGuardPage onGoToAuth={() => navigate("/auth")} />;
+  }
+
   return (
-    <main className="authPage">
-      <section className="authCard" aria-label="Authentication">
-        <h1>Glytch Chat</h1>
-        <p className="authSubtitle">Login or create an account to continue.</p>
-
-        <div className="authTabs">
-          <button
-            className={mode === "login" ? "tab active" : "tab"}
-            type="button"
-            onClick={() => {
-              setMode("login");
-              setError("");
-            }}
-          >
-            Login
-          </button>
-          <button
-            className={mode === "signup" ? "tab active" : "tab"}
-            type="button"
-            onClick={() => {
-              setMode("signup");
-              setError("");
-            }}
-          >
-            Sign up
-          </button>
-        </div>
-
-        <form className="authForm" onSubmit={handleAuthSubmit}>
-          {mode === "signup" && (
-            <label>
-              Username
-              <input
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                type="text"
-                placeholder="username"
-                autoComplete="username"
-              />
-            </label>
-          )}
-
-          <label>
-            Email
-            <input
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              type="email"
-              placeholder="you@example.com"
-              autoComplete="email"
-            />
-          </label>
-
-          <label>
-            Password
-            <input
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              type="password"
-              placeholder="Password"
-              autoComplete={mode === "login" ? "current-password" : "new-password"}
-            />
-          </label>
-
-          {mode === "signup" && (
-            <label>
-              Confirm password
-              <input
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
-                type="password"
-                placeholder="Re-enter password"
-                autoComplete="new-password"
-              />
-            </label>
-          )}
-
-          {error && <p className="authError">{error}</p>}
-
-          <button className="authSubmit" type="submit" disabled={loading}>
-            {loading ? "Please wait..." : mode === "login" ? "Login" : "Create account"}
-          </button>
-        </form>
-      </section>
-    </main>
+    <ChatDashboard
+      currentUserId={currentUser.id}
+      currentUserName={currentUser.username}
+      accessToken={currentUser.accessToken}
+      onLogout={logout}
+    />
   );
 }
 

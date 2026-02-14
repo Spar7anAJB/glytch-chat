@@ -1,104 +1,82 @@
-# React + TypeScript + Vite
+# Glytch Chat
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Glytch Chat now uses a dedicated frontend and backend instead of a single-page-only flow.
 
-## Electron Support
+## Architecture
 
-This project now includes an Electron entrypoint so the same UI can run as a desktop app.
+- `src/`: Frontend (React + Vite)
+- `backend/server.mjs`: Backend API service (explicit route handlers)
+- `electron/`: Desktop shell for the frontend
 
-### Run in Electron (dev)
+The frontend routes are:
+
+- `#/` landing page
+- `#/auth` authentication page
+- `#/app` chat workspace
+
+Backend API routes:
+
+- `/api/auth/*` (authentication/session)
+- `/api/rest/*` (table reads/writes)
+- `/api/rpc/*` (RPC calls)
+- `/api/storage/object/*` and `/api/storage/sign/*` (uploads and signed URLs)
+- `/api/gifs/search` (GIF search/trending)
+
+## Environment
+
+Frontend:
+
+- `VITE_API_URL=http://127.0.0.1:8787`
+- `VITE_SUPABASE_URL=...`
+- `VITE_SUPABASE_ANON_KEY=...`
+
+Backend:
+
+- `API_PORT` (optional, defaults to `8787`)
+- `SUPABASE_URL` (optional; falls back to `VITE_SUPABASE_URL`)
+- `SUPABASE_ANON_KEY` (optional; falls back to `VITE_SUPABASE_ANON_KEY`)
+
+## Run
+
+### Full stack (frontend + backend)
+
+```bash
+npm run dev:full
+```
+
+### Frontend only
+
+```bash
+npm run dev
+```
+
+### Backend only
+
+```bash
+npm run backend:dev
+```
+
+### Build frontend
+
+```bash
+npm run build
+```
+
+## Electron
+
+### Dev
 
 ```bash
 npm run electron:dev
 ```
 
-This starts Vite and Electron together.
+This starts backend + frontend dev server + Electron.
+DevTools are disabled by default for performance. To open them, run with `ELECTRON_OPEN_DEVTOOLS=1`.
 
-If `electron` is not yet installed locally, the launcher falls back to `npx electron@35`.
-
-### Run in Electron (production build)
+### Start built renderer
 
 ```bash
 npm run electron:start
 ```
 
-This builds the renderer to `dist/` and launches Electron loading `dist/index.html`.
-
-### Files added for Electron
-
-- `electron/main.js`
-- `electron/preload.js`
-- `electron/dev-runner.mjs`
-- `electron/run-electron.mjs`
-- `package.json` (`main`, `electron:dev`, `electron:start`)
-- `vite.config.ts` (`base: "./"` for `file://` compatibility)
-
-Currently, two official plugins are available:
-
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
-
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
-
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+This starts backend, then launches Electron loading `dist/index.html`.

@@ -3,8 +3,9 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
 
+const isElectronRuntime = Boolean(window.electronAPI?.isElectron)
+const app = <App />
+
 createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
+  isElectronRuntime ? app : <StrictMode>{app}</StrictMode>,
 )

@@ -191,7 +191,9 @@ export type VoiceSignal = {
   created_at: string;
 };
 
-const url = import.meta.env.VITE_SUPABASE_URL as string | undefined;
+const apiBase = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/+$/, "");
+const usingBackendRoutes = Boolean(apiBase);
+const supabaseBaseUrl = (import.meta.env.VITE_SUPABASE_URL as string | undefined)?.replace(/\/+$/, "");
 const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
 const profileBucket = (import.meta.env.VITE_SUPABASE_PROFILE_BUCKET as string | undefined) || "profile-media";
 const glytchBucket = (import.meta.env.VITE_SUPABASE_GLYTCH_BUCKET as string | undefined) || "glytch-media";
@@ -205,17 +207,71 @@ const MESSAGE_SIGN_URL_FAILURE_TTL_MS = 2 * 60 * 1000;
 const messageSignedUrlCache = new Map<string, { signedUrl: string | null; expiresAt: number }>();
 
 function assertConfig() {
-  if (!url || !anonKey) {
-    throw new Error("Supabase env vars missing. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.");
+  if (!usingBackendRoutes && !supabaseBaseUrl) {
+    throw new Error("Supabase env vars missing. Set VITE_SUPABASE_URL.");
   }
+  if (!usingBackendRoutes && !anonKey) {
+    throw new Error("Supabase env vars missing. Set VITE_SUPABASE_ANON_KEY.");
+  }
+}
+
+function getSupabasePublicBaseUrl() {
+  if (!supabaseBaseUrl) {
+    throw new Error("VITE_SUPABASE_URL is required to resolve media URLs.");
+  }
+  return supabaseBaseUrl;
+}
+
+function buildBackendSupabasePath(path: string): string {
+  const parsed = new URL(path, "http://localhost");
+  const { pathname, search } = parsed;
+
+  if (pathname.startsWith("/auth/v1/")) {
+    return `/api/auth/${pathname.slice("/auth/v1/".length)}${search}`;
+  }
+  if (pathname.startsWith("/rest/v1/rpc/")) {
+    return `/api/rpc/${pathname.slice("/rest/v1/rpc/".length)}${search}`;
+  }
+  if (pathname.startsWith("/rest/v1/")) {
+    return `/api/rest/${pathname.slice("/rest/v1/".length)}${search}`;
+  }
+  if (pathname.startsWith("/storage/v1/object/sign/")) {
+    return `/api/storage/sign/${pathname.slice("/storage/v1/object/sign/".length)}${search}`;
+  }
+  if (pathname.startsWith("/storage/v1/object/")) {
+    return `/api/storage/object/${pathname.slice("/storage/v1/object/".length)}${search}`;
+  }
+
+  throw new Error(`Unsupported Supabase route: ${pathname}`);
+}
+
+function resolveSupabaseEndpoint(path: string) {
+  if (usingBackendRoutes) {
+    if (!apiBase) {
+      throw new Error("Supabase env vars missing. Set VITE_API_URL.");
+    }
+    return `${apiBase}${buildBackendSupabasePath(path)}`;
+  }
+
+  if (!supabaseBaseUrl) {
+    throw new Error("Supabase env vars missing. Set VITE_SUPABASE_URL.");
+  }
+
+  return `${supabaseBaseUrl}${path}`;
+}
+
+async function supabaseFetch(path: string, init?: RequestInit) {
+  return fetch(resolveSupabaseEndpoint(path), init);
 }
 
 function supabaseHeaders(accessToken?: string): HeadersInit {
   assertConfig();
   const base: HeadersInit = {
-    apikey: anonKey as string,
     "Content-Type": "application/json",
   };
+  if (anonKey && !usingBackendRoutes) {
+    base.apikey = anonKey;
+  }
 
   if (!accessToken) return base;
 
@@ -419,6 +475,27 @@ function normalizeGiphyResponse(data: unknown): { results: GifResult[]; next: st
 }
 
 async function fetchGiphyGifs(query: string, limit: number): Promise<{ results: GifResult[]; next: string | null }> {
+  if (usingBackendRoutes) {
+    const params = new URLSearchParams({
+      limit: String(limit),
+    });
+    if (query.trim()) {
+      params.set("q", query.trim());
+    }
+
+    const res = await fetch(`${apiBase}/api/gifs/search?${params.toString()}`, {
+      headers: {
+        Accept: "application/json",
+      },
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const message = messageFromUnknownJson(data);
+      throw new Error(message || "Could not load GIFs.");
+    }
+    return normalizeGiphyResponse(data);
+  }
+
   if (!giphyApiKey) {
     throw new Error("GIF service unavailable. Set VITE_GIPHY_API_KEY in your frontend environment.");
   }
@@ -450,7 +527,7 @@ async function fetchGiphyGifs(query: string, limit: number): Promise<{ results: 
 
 export async function isUsernameAvailable(username: string): Promise<boolean> {
   assertConfig();
-  const res = await fetch(`${url}/rest/v1/rpc/is_username_available`, {
+  const res = await supabaseFetch(`/rest/v1/rpc/is_username_available`, {
     method: "POST",
     headers: supabaseHeaders(),
     body: JSON.stringify({ p_username: username.toLowerCase() }),
@@ -462,7 +539,7 @@ export async function isUsernameAvailable(username: string): Promise<boolean> {
 export async function signUp(email: string, password: string, username: string) {
   assertConfig();
   const normalizedUsername = username.toLowerCase();
-  const res = await fetch(`${url}/auth/v1/signup`, {
+  const res = await supabaseFetch(`/auth/v1/signup`, {
     method: "POST",
     headers: supabaseHeaders(),
     body: JSON.stringify({
@@ -477,7 +554,7 @@ export async function signUp(email: string, password: string, username: string) 
 
 export async function signIn(email: string, password: string) {
   assertConfig();
-  const res = await fetch(`${url}/auth/v1/token?grant_type=password`, {
+  const res = await supabaseFetch(`/auth/v1/token?grant_type=password`, {
     method: "POST",
     headers: supabaseHeaders(),
     body: JSON.stringify({ email, password }),
@@ -488,7 +565,7 @@ export async function signIn(email: string, password: string) {
 
 export async function refreshSession(refreshToken: string) {
   assertConfig();
-  const res = await fetch(`${url}/auth/v1/token?grant_type=refresh_token`, {
+  const res = await supabaseFetch(`/auth/v1/token?grant_type=refresh_token`, {
     method: "POST",
     headers: supabaseHeaders(),
     body: JSON.stringify({ refresh_token: refreshToken }),
@@ -499,7 +576,7 @@ export async function refreshSession(refreshToken: string) {
 
 export async function getCurrentUser(accessToken: string) {
   assertConfig();
-  const res = await fetch(`${url}/auth/v1/user`, {
+  const res = await supabaseFetch(`/auth/v1/user`, {
     method: "GET",
     headers: supabaseHeaders(accessToken),
   });
@@ -515,7 +592,7 @@ export async function getMyProfile(accessToken: string, userId: string): Promise
     limit: "1",
   });
 
-  const res = await fetch(`${url}/rest/v1/profiles?${query.toString()}`, {
+  const res = await supabaseFetch(`/rest/v1/profiles?${query.toString()}`, {
     method: "GET",
     headers: supabaseHeaders(accessToken),
   });
@@ -533,7 +610,7 @@ export async function upsertMyProfile(
 ) {
   assertConfig();
   const normalizedUsername = username.toLowerCase();
-  const res = await fetch(`${url}/rest/v1/profiles`, {
+  const res = await supabaseFetch(`/rest/v1/profiles`, {
     method: "POST",
     headers: {
       ...supabaseHeaders(accessToken),
@@ -554,7 +631,7 @@ export async function upsertMyProfile(
 
 export async function findProfileByUsername(accessToken: string, username: string) {
   assertConfig();
-  const res = await fetch(`${url}/rest/v1/rpc/find_public_profile_by_username`, {
+  const res = await supabaseFetch(`/rest/v1/rpc/find_public_profile_by_username`, {
     method: "POST",
     headers: supabaseHeaders(accessToken),
     body: JSON.stringify({ p_username: username.toLowerCase() }),
@@ -565,7 +642,7 @@ export async function findProfileByUsername(accessToken: string, username: strin
 
 export async function sendFriendRequest(accessToken: string, senderId: string, receiverId: string) {
   assertConfig();
-  const res = await fetch(`${url}/rest/v1/friend_requests`, {
+  const res = await supabaseFetch(`/rest/v1/friend_requests`, {
     method: "POST",
     headers: {
       ...supabaseHeaders(accessToken),
@@ -584,7 +661,7 @@ export async function listFriendRequests(accessToken: string): Promise<FriendReq
     order: "created_at.desc",
   });
 
-  const res = await fetch(`${url}/rest/v1/friend_requests?${query.toString()}`, {
+  const res = await supabaseFetch(`/rest/v1/friend_requests?${query.toString()}`, {
     method: "GET",
     headers: supabaseHeaders(accessToken),
   });
@@ -594,7 +671,7 @@ export async function listFriendRequests(accessToken: string): Promise<FriendReq
 
 export async function respondToFriendRequest(accessToken: string, requestId: number, status: "accepted" | "rejected") {
   assertConfig();
-  const res = await fetch(`${url}/rest/v1/friend_requests?id=eq.${requestId}`, {
+  const res = await supabaseFetch(`/rest/v1/friend_requests?id=eq.${requestId}`, {
     method: "PATCH",
     headers: {
       ...supabaseHeaders(accessToken),
@@ -608,7 +685,7 @@ export async function respondToFriendRequest(accessToken: string, requestId: num
 
 export async function acceptFriendRequest(accessToken: string, requestId: number) {
   assertConfig();
-  const res = await fetch(`${url}/rest/v1/rpc/accept_friend_request`, {
+  const res = await supabaseFetch(`/rest/v1/rpc/accept_friend_request`, {
     method: "POST",
     headers: supabaseHeaders(accessToken),
     body: JSON.stringify({ p_request_id: requestId }),
@@ -619,7 +696,7 @@ export async function acceptFriendRequest(accessToken: string, requestId: number
 
 export async function unfriendUser(accessToken: string, userId: string) {
   assertConfig();
-  const res = await fetch(`${url}/rest/v1/rpc/unfriend_user`, {
+  const res = await supabaseFetch(`/rest/v1/rpc/unfriend_user`, {
     method: "POST",
     headers: supabaseHeaders(accessToken),
     body: JSON.stringify({ p_user_id: userId }),
@@ -636,7 +713,7 @@ export async function listDmConversations(accessToken: string): Promise<DmConver
       order: "created_at.asc",
     });
 
-    const res = await fetch(`${url}/rest/v1/dm_conversations?${query.toString()}`, {
+    const res = await supabaseFetch(`/rest/v1/dm_conversations?${query.toString()}`, {
       method: "GET",
       headers: supabaseHeaders(accessToken),
     });
@@ -652,7 +729,7 @@ export async function listDmConversations(accessToken: string): Promise<DmConver
       order: "created_at.asc",
     });
 
-    const fallbackRes = await fetch(`${url}/rest/v1/dm_conversations?${fallbackQuery.toString()}`, {
+    const fallbackRes = await supabaseFetch(`/rest/v1/dm_conversations?${fallbackQuery.toString()}`, {
       method: "GET",
       headers: supabaseHeaders(accessToken),
     });
@@ -668,7 +745,7 @@ export async function setDmConversationTheme(
 ): Promise<DmConversation> {
   assertConfig();
   try {
-    const res = await fetch(`${url}/rest/v1/rpc/set_dm_conversation_theme`, {
+    const res = await supabaseFetch(`/rest/v1/rpc/set_dm_conversation_theme`, {
       method: "POST",
       headers: supabaseHeaders(accessToken),
       body: JSON.stringify({
@@ -689,7 +766,7 @@ export async function setDmConversationTheme(
 export async function fetchProfilesByIds(accessToken: string, ids: string[]): Promise<Profile[]> {
   if (ids.length === 0) return [];
   assertConfig();
-  const res = await fetch(`${url}/rest/v1/rpc/list_public_profiles_by_ids`, {
+  const res = await supabaseFetch(`/rest/v1/rpc/list_public_profiles_by_ids`, {
     method: "POST",
     headers: supabaseHeaders(accessToken),
     body: JSON.stringify({ p_user_ids: ids }),
@@ -711,7 +788,7 @@ export async function updateMyProfileCustomization(
   },
 ) {
   assertConfig();
-  const res = await fetch(`${url}/rest/v1/profiles?user_id=eq.${userId}`, {
+  const res = await supabaseFetch(`/rest/v1/profiles?user_id=eq.${userId}`, {
     method: "PATCH",
     headers: {
       ...supabaseHeaders(accessToken),
@@ -737,7 +814,7 @@ export async function updateMyPresence(
     body.presence_status = normalizedStatus;
   }
 
-  const res = await fetch(`${url}/rest/v1/profiles?user_id=eq.${userId}`, {
+  const res = await supabaseFetch(`/rest/v1/profiles?user_id=eq.${userId}`, {
     method: "PATCH",
     headers: {
       ...supabaseHeaders(accessToken),
@@ -760,7 +837,7 @@ export async function uploadProfileAsset(
   const objectPath = `${userId}/${kind}-${Date.now()}-${safeName}`;
   const encodedObjectPath = encodePath(objectPath);
 
-  const res = await fetch(`${url}/storage/v1/object/${profileBucket}/${encodedObjectPath}`, {
+  const res = await supabaseFetch(`/storage/v1/object/${profileBucket}/${encodedObjectPath}`, {
     method: "POST",
     headers: {
       ...supabaseHeaders(accessToken),
@@ -771,7 +848,7 @@ export async function uploadProfileAsset(
   });
 
   await readJsonOrThrow(res);
-  return `${url}/storage/v1/object/public/${profileBucket}/${encodedObjectPath}`;
+  return `${getSupabasePublicBaseUrl()}/storage/v1/object/public/${profileBucket}/${encodedObjectPath}`;
 }
 
 export async function uploadGlytchIcon(accessToken: string, userId: string, glytchId: number, file: File) {
@@ -780,7 +857,7 @@ export async function uploadGlytchIcon(accessToken: string, userId: string, glyt
   const objectPath = `${userId}/${glytchId}/icon-${Date.now()}-${safeName}`;
   const encodedObjectPath = encodePath(objectPath);
 
-  const res = await fetch(`${url}/storage/v1/object/${glytchBucket}/${encodedObjectPath}`, {
+  const res = await supabaseFetch(`/storage/v1/object/${glytchBucket}/${encodedObjectPath}`, {
     method: "POST",
     headers: {
       ...supabaseHeaders(accessToken),
@@ -791,7 +868,7 @@ export async function uploadGlytchIcon(accessToken: string, userId: string, glyt
   });
 
   await readJsonOrThrow(res);
-  return `${url}/storage/v1/object/public/${glytchBucket}/${encodedObjectPath}`;
+  return `${getSupabasePublicBaseUrl()}/storage/v1/object/public/${glytchBucket}/${encodedObjectPath}`;
 }
 
 export async function uploadMessageAsset(
@@ -810,7 +887,7 @@ export async function uploadMessageAsset(
   const objectPath = `${contextPrefix}/${userId}/${Date.now()}-${safeName}`;
   const encodedObjectPath = encodePath(objectPath);
 
-  const res = await fetch(`${url}/storage/v1/object/${messageBucket}/${encodedObjectPath}`, {
+  const res = await supabaseFetch(`/storage/v1/object/${messageBucket}/${encodedObjectPath}`, {
     method: "POST",
     headers: {
       ...supabaseHeaders(accessToken),
@@ -843,7 +920,7 @@ export async function resolveMessageAttachmentUrl(
 
   try {
     const encodedObjectPath = encodePath(objectPath);
-    const res = await fetch(`${url}/storage/v1/object/sign/${messageBucket}/${encodedObjectPath}`, {
+    const res = await supabaseFetch(`/storage/v1/object/sign/${messageBucket}/${encodedObjectPath}`, {
       method: "POST",
       headers: supabaseHeaders(accessToken),
       body: JSON.stringify({ expiresIn: MESSAGE_SIGN_URL_TTL_SECONDS }),
@@ -859,7 +936,7 @@ export async function resolveMessageAttachmentUrl(
     const signedUrl =
       data.signedURL.startsWith("http://") || data.signedURL.startsWith("https://")
         ? data.signedURL
-        : `${url}${data.signedURL}`;
+        : `${getSupabasePublicBaseUrl()}${data.signedURL}`;
     messageSignedUrlCache.set(objectPath, {
       signedUrl,
       expiresAt: Date.now() + MESSAGE_SIGN_URL_TTL_SECONDS * 1000,
@@ -905,7 +982,7 @@ export async function fetchDmMessages(accessToken: string, conversationId: numbe
     order: "created_at.asc",
   });
 
-  const res = await fetch(`${url}/rest/v1/dm_messages?${query.toString()}`, {
+  const res = await supabaseFetch(`/rest/v1/dm_messages?${query.toString()}`, {
     method: "GET",
     headers: supabaseHeaders(accessToken),
   });
@@ -925,7 +1002,7 @@ export async function listDmMessageReactions(accessToken: string, messageIds: nu
     limit: "2000",
   });
 
-  const res = await fetch(`${url}/rest/v1/dm_message_reactions?${query.toString()}`, {
+  const res = await supabaseFetch(`/rest/v1/dm_message_reactions?${query.toString()}`, {
     method: "GET",
     headers: supabaseHeaders(accessToken),
   });
@@ -936,7 +1013,7 @@ export async function listDmMessageReactions(accessToken: string, messageIds: nu
 export async function addDmMessageReaction(accessToken: string, messageId: number, userId: string, emoji: string) {
   assertConfig();
   const normalizedEmoji = emoji.trim();
-  const res = await fetch(`${url}/rest/v1/dm_message_reactions`, {
+  const res = await supabaseFetch(`/rest/v1/dm_message_reactions`, {
     method: "POST",
     headers: {
       ...supabaseHeaders(accessToken),
@@ -957,7 +1034,7 @@ export async function deleteDmMessageReaction(accessToken: string, messageId: nu
     emoji: `eq.${normalizedEmoji}`,
   });
 
-  const res = await fetch(`${url}/rest/v1/dm_message_reactions?${query.toString()}`, {
+  const res = await supabaseFetch(`/rest/v1/dm_message_reactions?${query.toString()}`, {
     method: "DELETE",
     headers: supabaseHeaders(accessToken),
   });
@@ -967,7 +1044,7 @@ export async function deleteDmMessageReaction(accessToken: string, messageId: nu
 
 export async function deleteDmMessage(accessToken: string, messageId: number) {
   assertConfig();
-  const res = await fetch(`${url}/rest/v1/dm_messages?id=eq.${messageId}`, {
+  const res = await supabaseFetch(`/rest/v1/dm_messages?id=eq.${messageId}`, {
     method: "DELETE",
     headers: supabaseHeaders(accessToken),
   });
@@ -992,7 +1069,7 @@ export async function listUnreadDmMessages(
     limit: "500",
   });
 
-  const res = await fetch(`${url}/rest/v1/dm_messages?${query.toString()}`, {
+  const res = await supabaseFetch(`/rest/v1/dm_messages?${query.toString()}`, {
     method: "GET",
     headers: supabaseHeaders(accessToken),
   });
@@ -1002,7 +1079,7 @@ export async function listUnreadDmMessages(
 
 export async function markDmConversationRead(accessToken: string, conversationId: number) {
   assertConfig();
-  const res = await fetch(`${url}/rest/v1/rpc/mark_dm_conversation_read`, {
+  const res = await supabaseFetch(`/rest/v1/rpc/mark_dm_conversation_read`, {
     method: "POST",
     headers: supabaseHeaders(accessToken),
     body: JSON.stringify({ p_conversation_id: conversationId }),
@@ -1024,7 +1101,7 @@ export async function fetchLatestDmMessages(accessToken: string, conversationIds
     limit: String(limit),
   });
 
-  const res = await fetch(`${url}/rest/v1/dm_messages?${query.toString()}`, {
+  const res = await supabaseFetch(`/rest/v1/dm_messages?${query.toString()}`, {
     method: "GET",
     headers: supabaseHeaders(accessToken),
   });
@@ -1041,7 +1118,7 @@ export async function createDmMessage(
   attachmentType: MessageAttachmentType | null = null,
 ) {
   assertConfig();
-  const res = await fetch(`${url}/rest/v1/dm_messages`, {
+  const res = await supabaseFetch(`/rest/v1/dm_messages`, {
     method: "POST",
     headers: {
       ...supabaseHeaders(accessToken),
@@ -1063,7 +1140,7 @@ export async function createDmMessage(
 
 export async function createGlytch(accessToken: string, name: string) {
   assertConfig();
-  const res = await fetch(`${url}/rest/v1/rpc/create_glytch`, {
+  const res = await supabaseFetch(`/rest/v1/rpc/create_glytch`, {
     method: "POST",
     headers: supabaseHeaders(accessToken),
     body: JSON.stringify({ p_name: name }),
@@ -1074,7 +1151,7 @@ export async function createGlytch(accessToken: string, name: string) {
 
 export async function joinGlytchByCode(accessToken: string, inviteCode: string) {
   assertConfig();
-  const res = await fetch(`${url}/rest/v1/rpc/join_glytch_by_code`, {
+  const res = await supabaseFetch(`/rest/v1/rpc/join_glytch_by_code`, {
     method: "POST",
     headers: supabaseHeaders(accessToken),
     body: JSON.stringify({ p_invite_code: inviteCode.trim().toLowerCase() }),
@@ -1090,7 +1167,7 @@ export async function listGlytches(accessToken: string): Promise<Glytch[]> {
     order: "created_at.asc",
   });
 
-  const res = await fetch(`${url}/rest/v1/glytches?${query.toString()}`, {
+  const res = await supabaseFetch(`/rest/v1/glytches?${query.toString()}`, {
     method: "GET",
     headers: supabaseHeaders(accessToken),
   });
@@ -1100,7 +1177,7 @@ export async function listGlytches(accessToken: string): Promise<Glytch[]> {
 
 export async function setGlytchProfile(accessToken: string, glytchId: number, name: string, bio: string | null) {
   assertConfig();
-  const res = await fetch(`${url}/rest/v1/rpc/set_glytch_profile`, {
+  const res = await supabaseFetch(`/rest/v1/rpc/set_glytch_profile`, {
     method: "POST",
     headers: supabaseHeaders(accessToken),
     body: JSON.stringify({
@@ -1115,7 +1192,7 @@ export async function setGlytchProfile(accessToken: string, glytchId: number, na
 
 export async function deleteGlytch(accessToken: string, glytchId: number, confirmationName: string) {
   assertConfig();
-  const res = await fetch(`${url}/rest/v1/rpc/delete_glytch`, {
+  const res = await supabaseFetch(`/rest/v1/rpc/delete_glytch`, {
     method: "POST",
     headers: supabaseHeaders(accessToken),
     body: JSON.stringify({
@@ -1129,7 +1206,7 @@ export async function deleteGlytch(accessToken: string, glytchId: number, confir
 
 export async function setGlytchIcon(accessToken: string, glytchId: number, iconUrl: string | null) {
   assertConfig();
-  const res = await fetch(`${url}/rest/v1/rpc/set_glytch_icon`, {
+  const res = await supabaseFetch(`/rest/v1/rpc/set_glytch_icon`, {
     method: "POST",
     headers: supabaseHeaders(accessToken),
     body: JSON.stringify({
@@ -1150,7 +1227,7 @@ export async function listGlytchChannels(accessToken: string, glytchId: number):
       order: "created_at.asc",
     });
 
-    const res = await fetch(`${url}/rest/v1/glytch_channels?${query.toString()}`, {
+    const res = await supabaseFetch(`/rest/v1/glytch_channels?${query.toString()}`, {
       method: "GET",
       headers: supabaseHeaders(accessToken),
     });
@@ -1168,7 +1245,7 @@ export async function listGlytchChannels(accessToken: string, glytchId: number):
       glytch_id: `eq.${glytchId}`,
       order: "created_at.asc",
     });
-    const legacyRes = await fetch(`${url}/rest/v1/glytch_channels?${legacyQuery.toString()}`, {
+    const legacyRes = await supabaseFetch(`/rest/v1/glytch_channels?${legacyQuery.toString()}`, {
       method: "GET",
       headers: supabaseHeaders(accessToken),
     });
@@ -1190,7 +1267,7 @@ export async function createGlytchChannel(
   const textPostMode = settings?.text_post_mode || "all";
   const voiceUserLimit = kind === "voice" ? settings?.voice_user_limit ?? null : null;
   try {
-    const res = await fetch(`${url}/rest/v1/glytch_channels`, {
+    const res = await supabaseFetch(`/rest/v1/glytch_channels`, {
       method: "POST",
       headers: {
         ...supabaseHeaders(accessToken),
@@ -1216,7 +1293,7 @@ export async function createGlytchChannel(
       throw err;
     }
 
-    const legacyRes = await fetch(`${url}/rest/v1/glytch_channels`, {
+    const legacyRes = await supabaseFetch(`/rest/v1/glytch_channels`, {
       method: "POST",
       headers: {
         ...supabaseHeaders(accessToken),
@@ -1245,7 +1322,7 @@ export async function setGlytchChannelSettings(
 ) {
   assertConfig();
   try {
-    const res = await fetch(`${url}/rest/v1/rpc/set_glytch_channel_settings`, {
+    const res = await supabaseFetch(`/rest/v1/rpc/set_glytch_channel_settings`, {
       method: "POST",
       headers: supabaseHeaders(accessToken),
       body: JSON.stringify({
@@ -1274,7 +1351,7 @@ export async function setGlytchChannelTheme(
 ) {
   assertConfig();
   try {
-    const res = await fetch(`${url}/rest/v1/rpc/set_glytch_channel_theme`, {
+    const res = await supabaseFetch(`/rest/v1/rpc/set_glytch_channel_theme`, {
       method: "POST",
       headers: supabaseHeaders(accessToken),
       body: JSON.stringify({
@@ -1306,7 +1383,7 @@ export async function listGlytchChannelCategories(
     order: "created_at.asc",
   });
 
-  const res = await fetch(`${url}/rest/v1/glytch_channel_categories?${query.toString()}`, {
+  const res = await supabaseFetch(`/rest/v1/glytch_channel_categories?${query.toString()}`, {
     method: "GET",
     headers: supabaseHeaders(accessToken),
   });
@@ -1321,7 +1398,7 @@ export async function createGlytchChannelCategory(
   name: string,
 ) {
   assertConfig();
-  const res = await fetch(`${url}/rest/v1/glytch_channel_categories`, {
+  const res = await supabaseFetch(`/rest/v1/glytch_channel_categories`, {
     method: "POST",
     headers: {
       ...supabaseHeaders(accessToken),
@@ -1347,7 +1424,7 @@ export async function listGlytchRoles(accessToken: string, glytchId: number): Pr
     order: "priority.desc,id.asc",
   });
 
-  const res = await fetch(`${url}/rest/v1/glytch_roles?${query.toString()}`, {
+  const res = await supabaseFetch(`/rest/v1/glytch_roles?${query.toString()}`, {
     method: "GET",
     headers: supabaseHeaders(accessToken),
   });
@@ -1362,7 +1439,7 @@ export async function createGlytchRole(
   color = "#8eaefb",
 ) {
   assertConfig();
-  const res = await fetch(`${url}/rest/v1/rpc/create_glytch_role`, {
+  const res = await supabaseFetch(`/rest/v1/rpc/create_glytch_role`, {
     method: "POST",
     headers: supabaseHeaders(accessToken),
     body: JSON.stringify({
@@ -1396,7 +1473,7 @@ export async function updateGlytchRolePermissions(
   permissions: Record<string, boolean>,
 ) {
   assertConfig();
-  const res = await fetch(`${url}/rest/v1/glytch_roles?id=eq.${roleId}`, {
+  const res = await supabaseFetch(`/rest/v1/glytch_roles?id=eq.${roleId}`, {
     method: "PATCH",
     headers: {
       ...supabaseHeaders(accessToken),
@@ -1414,7 +1491,7 @@ export async function updateGlytchRolePriority(
   priority: number,
 ) {
   assertConfig();
-  const res = await fetch(`${url}/rest/v1/glytch_roles?id=eq.${roleId}`, {
+  const res = await supabaseFetch(`/rest/v1/glytch_roles?id=eq.${roleId}`, {
     method: "PATCH",
     headers: {
       ...supabaseHeaders(accessToken),
@@ -1433,7 +1510,7 @@ export async function deleteGlytchRole(accessToken: string, roleId: number) {
     is_system: "eq.false",
   });
 
-  const res = await fetch(`${url}/rest/v1/glytch_roles?${query.toString()}`, {
+  const res = await supabaseFetch(`/rest/v1/glytch_roles?${query.toString()}`, {
     method: "DELETE",
     headers: {
       ...supabaseHeaders(accessToken),
@@ -1452,7 +1529,7 @@ export async function listGlytchMembers(accessToken: string, glytchId: number): 
     order: "joined_at.asc",
   });
 
-  const res = await fetch(`${url}/rest/v1/glytch_members?${query.toString()}`, {
+  const res = await supabaseFetch(`/rest/v1/glytch_members?${query.toString()}`, {
     method: "GET",
     headers: supabaseHeaders(accessToken),
   });
@@ -1467,7 +1544,7 @@ export async function listGlytchMemberRoles(accessToken: string, glytchId: numbe
     glytch_id: `eq.${glytchId}`,
   });
 
-  const res = await fetch(`${url}/rest/v1/glytch_member_roles?${query.toString()}`, {
+  const res = await supabaseFetch(`/rest/v1/glytch_member_roles?${query.toString()}`, {
     method: "GET",
     headers: supabaseHeaders(accessToken),
   });
@@ -1484,7 +1561,7 @@ export async function listGlytchBans(accessToken: string, glytchId: number): Pro
       order: "banned_at.desc",
     });
 
-    const res = await fetch(`${url}/rest/v1/glytch_bans?${query.toString()}`, {
+    const res = await supabaseFetch(`/rest/v1/glytch_bans?${query.toString()}`, {
       method: "GET",
       headers: supabaseHeaders(accessToken),
     });
@@ -1506,7 +1583,7 @@ export async function banGlytchUser(
 ) {
   assertConfig();
   try {
-    const res = await fetch(`${url}/rest/v1/rpc/ban_user_from_glytch`, {
+    const res = await supabaseFetch(`/rest/v1/rpc/ban_user_from_glytch`, {
       method: "POST",
       headers: supabaseHeaders(accessToken),
       body: JSON.stringify({
@@ -1528,7 +1605,7 @@ export async function banGlytchUser(
 export async function unbanGlytchUser(accessToken: string, glytchId: number, userId: string) {
   assertConfig();
   try {
-    const res = await fetch(`${url}/rest/v1/rpc/unban_user_from_glytch`, {
+    const res = await supabaseFetch(`/rest/v1/rpc/unban_user_from_glytch`, {
       method: "POST",
       headers: supabaseHeaders(accessToken),
       body: JSON.stringify({
@@ -1549,7 +1626,7 @@ export async function unbanGlytchUser(accessToken: string, glytchId: number, use
 export async function kickGlytchMember(accessToken: string, glytchId: number, userId: string) {
   assertConfig();
   try {
-    const res = await fetch(`${url}/rest/v1/rpc/kick_member_from_glytch`, {
+    const res = await supabaseFetch(`/rest/v1/rpc/kick_member_from_glytch`, {
       method: "POST",
       headers: supabaseHeaders(accessToken),
       body: JSON.stringify({
@@ -1574,7 +1651,7 @@ export async function assignGlytchRole(
   roleId: number,
 ) {
   assertConfig();
-  const res = await fetch(`${url}/rest/v1/rpc/assign_glytch_role`, {
+  const res = await supabaseFetch(`/rest/v1/rpc/assign_glytch_role`, {
     method: "POST",
     headers: supabaseHeaders(accessToken),
     body: JSON.stringify({
@@ -1597,7 +1674,7 @@ export async function listGlytchChannelRolePermissions(
     glytch_id: `eq.${glytchId}`,
   });
 
-  const res = await fetch(`${url}/rest/v1/glytch_channel_role_permissions?${query.toString()}`, {
+  const res = await supabaseFetch(`/rest/v1/glytch_channel_role_permissions?${query.toString()}`, {
     method: "GET",
     headers: supabaseHeaders(accessToken),
   });
@@ -1614,7 +1691,7 @@ export async function setRoleChannelPermissions(
   canJoinVoice: boolean,
 ) {
   assertConfig();
-  const res = await fetch(`${url}/rest/v1/rpc/set_role_channel_permissions`, {
+  const res = await supabaseFetch(`/rest/v1/rpc/set_role_channel_permissions`, {
     method: "POST",
     headers: supabaseHeaders(accessToken),
     body: JSON.stringify({
@@ -1637,7 +1714,7 @@ export async function fetchGlytchMessages(accessToken: string, glytchChannelId: 
     order: "created_at.asc",
   });
 
-  const res = await fetch(`${url}/rest/v1/glytch_messages?${query.toString()}`, {
+  const res = await supabaseFetch(`/rest/v1/glytch_messages?${query.toString()}`, {
     method: "GET",
     headers: supabaseHeaders(accessToken),
   });
@@ -1660,7 +1737,7 @@ export async function listGlytchMessageReactions(
     limit: "5000",
   });
 
-  const res = await fetch(`${url}/rest/v1/glytch_message_reactions?${query.toString()}`, {
+  const res = await supabaseFetch(`/rest/v1/glytch_message_reactions?${query.toString()}`, {
     method: "GET",
     headers: supabaseHeaders(accessToken),
   });
@@ -1671,7 +1748,7 @@ export async function listGlytchMessageReactions(
 export async function addGlytchMessageReaction(accessToken: string, messageId: number, userId: string, emoji: string) {
   assertConfig();
   const normalizedEmoji = emoji.trim();
-  const res = await fetch(`${url}/rest/v1/glytch_message_reactions`, {
+  const res = await supabaseFetch(`/rest/v1/glytch_message_reactions`, {
     method: "POST",
     headers: {
       ...supabaseHeaders(accessToken),
@@ -1692,7 +1769,7 @@ export async function deleteGlytchMessageReaction(accessToken: string, messageId
     emoji: `eq.${normalizedEmoji}`,
   });
 
-  const res = await fetch(`${url}/rest/v1/glytch_message_reactions?${query.toString()}`, {
+  const res = await supabaseFetch(`/rest/v1/glytch_message_reactions?${query.toString()}`, {
     method: "DELETE",
     headers: supabaseHeaders(accessToken),
   });
@@ -1709,7 +1786,7 @@ export async function createGlytchMessage(
   attachmentType: MessageAttachmentType | null = null,
 ) {
   assertConfig();
-  const res = await fetch(`${url}/rest/v1/glytch_messages`, {
+  const res = await supabaseFetch(`/rest/v1/glytch_messages`, {
     method: "POST",
     headers: {
       ...supabaseHeaders(accessToken),
@@ -1737,7 +1814,7 @@ export async function joinVoiceRoom(
   deafened = false,
 ) {
   assertConfig();
-  const res = await fetch(`${url}/rest/v1/voice_participants`, {
+  const res = await supabaseFetch(`/rest/v1/voice_participants`, {
     method: "POST",
     headers: {
       ...supabaseHeaders(accessToken),
@@ -1752,30 +1829,24 @@ export async function joinVoiceRoom(
 
 export async function leaveVoiceRoom(accessToken: string, roomKey: string, userId: string) {
   assertConfig();
-  const res = await fetch(
-    `${url}/rest/v1/voice_participants?room_key=eq.${encodeURIComponent(roomKey)}&user_id=eq.${userId}`,
-    {
-      method: "DELETE",
-      headers: supabaseHeaders(accessToken),
-    },
-  );
+  const res = await supabaseFetch(`/rest/v1/voice_participants?room_key=eq.${encodeURIComponent(roomKey)}&user_id=eq.${userId}`, {
+    method: "DELETE",
+    headers: supabaseHeaders(accessToken),
+  });
 
   await readJsonOrThrow(res);
 }
 
 export async function setVoiceMute(accessToken: string, roomKey: string, userId: string, muted: boolean) {
   assertConfig();
-  const res = await fetch(
-    `${url}/rest/v1/voice_participants?room_key=eq.${encodeURIComponent(roomKey)}&user_id=eq.${userId}`,
-    {
-      method: "PATCH",
-      headers: {
-        ...supabaseHeaders(accessToken),
-        Prefer: "return=representation",
-      },
-      body: JSON.stringify({ muted }),
+  const res = await supabaseFetch(`/rest/v1/voice_participants?room_key=eq.${encodeURIComponent(roomKey)}&user_id=eq.${userId}`, {
+    method: "PATCH",
+    headers: {
+      ...supabaseHeaders(accessToken),
+      Prefer: "return=representation",
     },
-  );
+    body: JSON.stringify({ muted }),
+  });
 
   const rows = (await readJsonOrThrow(res)) as Array<Partial<VoiceParticipant>>;
   return rows.map(normalizeVoiceParticipant);
@@ -1789,17 +1860,14 @@ export async function setVoiceState(
   deafened: boolean,
 ) {
   assertConfig();
-  const res = await fetch(
-    `${url}/rest/v1/voice_participants?room_key=eq.${encodeURIComponent(roomKey)}&user_id=eq.${userId}`,
-    {
-      method: "PATCH",
-      headers: {
-        ...supabaseHeaders(accessToken),
-        Prefer: "return=representation",
-      },
-      body: JSON.stringify({ muted, deafened }),
+  const res = await supabaseFetch(`/rest/v1/voice_participants?room_key=eq.${encodeURIComponent(roomKey)}&user_id=eq.${userId}`, {
+    method: "PATCH",
+    headers: {
+      ...supabaseHeaders(accessToken),
+      Prefer: "return=representation",
     },
-  );
+    body: JSON.stringify({ muted, deafened }),
+  });
 
   const rows = (await readJsonOrThrow(res)) as Array<Partial<VoiceParticipant>>;
   return rows.map(normalizeVoiceParticipant);
@@ -1814,7 +1882,7 @@ export async function listVoiceParticipants(accessToken: string, roomKey: string
       order: "joined_at.asc",
     });
 
-    const res = await fetch(`${url}/rest/v1/voice_participants?${query.toString()}`, {
+    const res = await supabaseFetch(`/rest/v1/voice_participants?${query.toString()}`, {
       method: "GET",
       headers: supabaseHeaders(accessToken),
     });
@@ -1832,7 +1900,7 @@ export async function listVoiceParticipants(accessToken: string, roomKey: string
       room_key: `eq.${roomKey}`,
       order: "joined_at.asc",
     });
-    const legacyRes = await fetch(`${url}/rest/v1/voice_participants?${legacyQuery.toString()}`, {
+    const legacyRes = await supabaseFetch(`/rest/v1/voice_participants?${legacyQuery.toString()}`, {
       method: "GET",
       headers: supabaseHeaders(accessToken),
     });
@@ -1850,7 +1918,7 @@ export async function forceVoiceParticipantState(
 ) {
   assertConfig();
   try {
-    const res = await fetch(`${url}/rest/v1/rpc/force_voice_participant_state`, {
+    const res = await supabaseFetch(`/rest/v1/rpc/force_voice_participant_state`, {
       method: "POST",
       headers: supabaseHeaders(accessToken),
       body: JSON.stringify({
@@ -1869,7 +1937,7 @@ export async function forceVoiceParticipantState(
     }
 
     // Backward compatibility with older RPC signature.
-    const legacyRes = await fetch(`${url}/rest/v1/rpc/force_voice_participant_state`, {
+    const legacyRes = await supabaseFetch(`/rest/v1/rpc/force_voice_participant_state`, {
       method: "POST",
       headers: supabaseHeaders(accessToken),
       body: JSON.stringify({
@@ -1886,7 +1954,7 @@ export async function forceVoiceParticipantState(
 
 export async function kickVoiceParticipant(accessToken: string, roomKey: string, targetUserId: string) {
   assertConfig();
-  const res = await fetch(`${url}/rest/v1/rpc/kick_voice_participant`, {
+  const res = await supabaseFetch(`/rest/v1/rpc/kick_voice_participant`, {
     method: "POST",
     headers: supabaseHeaders(accessToken),
     body: JSON.stringify({
@@ -1907,7 +1975,7 @@ export async function sendVoiceSignal(
   payload: Record<string, unknown>,
 ) {
   assertConfig();
-  const res = await fetch(`${url}/rest/v1/voice_signals`, {
+  const res = await supabaseFetch(`/rest/v1/voice_signals`, {
     method: "POST",
     headers: {
       ...supabaseHeaders(accessToken),
@@ -1942,7 +2010,7 @@ export async function listVoiceSignals(
     order: "id.asc",
   });
 
-  const res = await fetch(`${url}/rest/v1/voice_signals?${query.toString()}`, {
+  const res = await supabaseFetch(`/rest/v1/voice_signals?${query.toString()}`, {
     method: "GET",
     headers: supabaseHeaders(accessToken),
   });

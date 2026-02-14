@@ -7,6 +7,7 @@ const __dirname = path.dirname(__filename);
 
 const devServerUrl = process.env.ELECTRON_DEV_SERVER_URL;
 const isDev = Boolean(devServerUrl);
+const shouldOpenDevTools = isDev && process.env.ELECTRON_OPEN_DEVTOOLS === "1";
 
 if (isDev) {
   app.commandLine.appendSwitch("allow-http-screen-capture");
@@ -43,6 +44,7 @@ ipcMain.handle("electron:get-desktop-source-id", async (_event, preferredSourceI
 
 function createWindow() {
   const win = new BrowserWindow({
+    show: false,
     width: 1360,
     height: 840,
     minWidth: 980,
@@ -52,7 +54,13 @@ function createWindow() {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
+      spellcheck: false,
+      devTools: isDev,
     },
+  });
+
+  win.once("ready-to-show", () => {
+    win.show();
   });
 
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -69,7 +77,9 @@ function createWindow() {
 
   if (isDev) {
     void win.loadURL(devServerUrl);
-    win.webContents.openDevTools({ mode: "detach" });
+    if (shouldOpenDevTools) {
+      win.webContents.openDevTools({ mode: "detach" });
+    }
     return;
   }
 

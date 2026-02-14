@@ -5,11 +5,13 @@ import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 
 const DEV_SERVER_URL = "http://localhost:5173";
+const BACKEND_URL = "http://127.0.0.1:8787/api/health";
 const IS_WINDOWS = process.platform === "win32";
 const NPM_CMD = IS_WINDOWS ? "npm.cmd" : "npm";
 const NPX_CMD = IS_WINDOWS ? "npx.cmd" : "npx";
 
 let viteProcess;
+let backendProcess;
 let electronProcess;
 
 function spawnCommand(command, args, options = {}) {
@@ -65,6 +67,7 @@ function registerSignals() {
   const onSignal = () => {
     terminate(electronProcess);
     terminate(viteProcess);
+    terminate(backendProcess);
     process.exit(0);
   };
 
@@ -72,8 +75,39 @@ function registerSignals() {
   process.on("SIGTERM", onSignal);
 }
 
+async function waitForBackend(maxAttempts = 120, intervalMs = 500) {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    if (backendProcess?.exitCode !== null) {
+      throw new Error("Backend exited before it was ready.");
+    }
+
+    try {
+      const response = await fetch(BACKEND_URL, { method: "GET" });
+      if (response.ok) {
+        return;
+      }
+    } catch {
+      // Backend not up yet.
+    }
+
+    await delay(intervalMs);
+  }
+
+  throw new Error(`Timed out waiting for backend at ${BACKEND_URL}`);
+}
+
 async function main() {
   registerSignals();
+
+  backendProcess = spawnCommand("node", ["backend/server.mjs"]);
+  backendProcess.on("exit", (code) => {
+    if (viteProcess?.exitCode === null || electronProcess?.exitCode === null) {
+      console.error("[electron:dev] Backend exited unexpectedly; closing app processes.");
+      terminate(electronProcess);
+      terminate(viteProcess);
+    }
+    process.exit(code ?? 1);
+  });
 
   viteProcess = spawnCommand(NPM_CMD, [
     "run",
@@ -98,6 +132,7 @@ async function main() {
     }
   });
 
+  await waitForBackend();
   await waitForVite();
 
   const { command, args } = resolveElectronCommand();
@@ -110,6 +145,7 @@ async function main() {
 
   electronProcess.on("exit", (code) => {
     terminate(viteProcess);
+    terminate(backendProcess);
     process.exit(code ?? 0);
   });
 }
@@ -118,5 +154,6 @@ main().catch((error) => {
   console.error(`[electron:dev] ${error.message}`);
   terminate(electronProcess);
   terminate(viteProcess);
+  terminate(backendProcess);
   process.exit(1);
 });

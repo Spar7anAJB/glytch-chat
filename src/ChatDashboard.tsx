@@ -1132,7 +1132,7 @@ export default function ChatDashboard({
   const [bannerUploadBusy, setBannerUploadBusy] = useState(false);
 
   const [messages, setMessages] = useState<UiMessage[]>([]);
-  const [draft, setDraft] = useState("");
+  const [hasDraftText, setHasDraftText] = useState(false);
   const [composerAttachment, setComposerAttachment] = useState<ComposerAttachment | null>(null);
   const [selectedGif, setSelectedGif] = useState<ComposerGif | null>(null);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
@@ -1465,13 +1465,16 @@ export default function ChatDashboard({
     [clampMembersPanelWidth, membersPanelWidth, viewMode],
   );
 
-  const isAppVisibleAndFocused = () =>
-    typeof document !== "undefined" &&
-    document.visibilityState === "visible" &&
-    typeof document.hasFocus === "function" &&
-    document.hasFocus();
+  const isAppVisibleAndFocused = useCallback(
+    () =>
+      typeof document !== "undefined" &&
+      document.visibilityState === "visible" &&
+      typeof document.hasFocus === "function" &&
+      document.hasFocus(),
+    [],
+  );
 
-  const ensureNotificationPermission = async (): Promise<NotificationPermission | "unsupported"> => {
+  const ensureNotificationPermission = useCallback(async (): Promise<NotificationPermission | "unsupported"> => {
     if (typeof window === "undefined" || !("Notification" in window)) {
       return "unsupported";
     }
@@ -1487,42 +1490,45 @@ export default function ChatDashboard({
     } catch {
       return window.Notification.permission;
     }
-  };
+  }, []);
 
-  const triggerDesktopNotification = async ({
-    title,
-    body,
-    tag,
-    icon,
-    onClick,
-  }: {
-    title: string;
-    body: string;
-    tag: string;
-    icon?: string;
-    onClick?: () => void;
-  }) => {
-    const permission =
-      typeof window !== "undefined" && "Notification" in window && window.Notification.permission === "granted"
-        ? "granted"
-        : await ensureNotificationPermission();
-    if (permission !== "granted" || typeof window === "undefined" || !("Notification" in window)) return;
+  const triggerDesktopNotification = useCallback(
+    async ({
+      title,
+      body,
+      tag,
+      icon,
+      onClick,
+    }: {
+      title: string;
+      body: string;
+      tag: string;
+      icon?: string;
+      onClick?: () => void;
+    }) => {
+      const permission =
+        typeof window !== "undefined" && "Notification" in window && window.Notification.permission === "granted"
+          ? "granted"
+          : await ensureNotificationPermission();
+      if (permission !== "granted" || typeof window === "undefined" || !("Notification" in window)) return;
 
-    try {
-      const notification = new window.Notification(title, {
-        body,
-        tag,
-        icon,
-      });
-      notification.onclick = () => {
-        window.focus();
-        onClick?.();
-        notification.close();
-      };
-    } catch {
-      // Ignore notification failures (blocked APIs, invalid icon URLs, etc.)
-    }
-  };
+      try {
+        const notification = new window.Notification(title, {
+          body,
+          tag,
+          icon,
+        });
+        notification.onclick = () => {
+          window.focus();
+          onClick?.();
+          notification.close();
+        };
+      } catch {
+        // Ignore notification failures (blocked APIs, invalid icon URLs, etc.)
+      }
+    },
+    [ensureNotificationPermission],
+  );
 
   const ensureSoundContext = async () => {
     if (!soundContextRef.current) {
@@ -2061,16 +2067,16 @@ export default function ChatDashboard({
     };
   }, [clampMembersPanelWidth, isMembersPanelResizing]);
 
-  const loadMyProfile = async () => {
+  const loadMyProfile = useCallback(async () => {
     const profile = await getMyProfile(accessToken, currentUserId);
     setCurrentProfile(profile);
     setProfileForm(buildProfileForm(profile));
     if (profile) {
       setKnownProfiles((prev) => ({ ...prev, [profile.user_id]: profile }));
     }
-  };
+  }, [accessToken, currentUserId]);
 
-  const loadDmSidebarData = async () => {
+  const loadDmSidebarData = useCallback(async () => {
     const [requestRows, conversations] = await Promise.all([
       listFriendRequests(accessToken),
       listDmConversations(accessToken),
@@ -2126,9 +2132,9 @@ export default function ChatDashboard({
       setActiveConversationId(null);
       setUnreadDmCounts({});
     }
-  };
+  }, [accessToken, currentUserId]);
 
-  const loadGlytchSidebarData = async () => {
+  const loadGlytchSidebarData = useCallback(async () => {
     const rows = await listGlytches(accessToken);
     setGlytches(rows);
 
@@ -2162,9 +2168,9 @@ export default function ChatDashboard({
     if (!channelRows.some((channel) => channel.id === currentChannelId)) {
       setActiveChannelId(channelRows[0].id);
     }
-  };
+  }, [accessToken]);
 
-  const loadGlytchRoleData = async (glytchId: number) => {
+  const loadGlytchRoleData = useCallback(async (glytchId: number) => {
     const [roles, members, memberRoles, perChannelPermissions, bans] = await Promise.all([
       listGlytchRoles(accessToken, glytchId),
       listGlytchMembers(accessToken, glytchId),
@@ -2257,7 +2263,7 @@ export default function ChatDashboard({
     } else if (channels.length === 0) {
       setSelectedPermissionChannelId(null);
     }
-  };
+  }, [accessToken, channels, selectedMemberId, selectedPermissionChannelId, selectedPermissionRoleId, selectedRoleId]);
 
   useEffect(() => {
     if (!selectedPermissionRoleId || !selectedPermissionChannelId) return;
@@ -2327,7 +2333,17 @@ export default function ChatDashboard({
     setQuickThemeToDraft(background.to);
     setQuickThemeImageDraft(background.imageUrl || "");
     setQuickThemeError("");
-  }, [showQuickThemeEditor, quickThemeTarget?.kind, quickThemeTarget?.key]);
+  }, [
+    activeChannelSharedBackground,
+    activeDm?.sharedBackground,
+    profileForm.dmBackgroundByConversation,
+    profileForm.dmBackgroundFrom,
+    profileForm.dmBackgroundTo,
+    profileForm.glytchBackgroundFrom,
+    profileForm.glytchBackgroundTo,
+    quickThemeTarget,
+    showQuickThemeEditor,
+  ]);
 
   useEffect(() => {
     setShowQuickThemeEditor(false);
@@ -2384,7 +2400,7 @@ export default function ChatDashboard({
 
   useEffect(() => {
     void loadMyProfile();
-  }, [accessToken, currentUserId]);
+  }, [loadMyProfile]);
 
   useEffect(() => {
     if (typeof window === "undefined" || typeof document === "undefined") return;
@@ -2533,7 +2549,7 @@ export default function ChatDashboard({
       mounted = false;
       window.clearInterval(interval);
     };
-  }, [accessToken, activeGlytchId]);
+  }, [activeGlytchId, loadGlytchRoleData]);
 
   useEffect(() => {
     if (viewMode !== "glytch-settings") return;
@@ -2565,7 +2581,7 @@ export default function ChatDashboard({
     setGlytchProfileBioDraft(activeGlytch.bio || "");
     setGlytchDeleteConfirmName("");
     setGlytchDeleteError("");
-  }, [activeGlytchId]);
+  }, [activeGlytch]);
 
   useEffect(() => {
     let mounted = true;
@@ -2588,7 +2604,7 @@ export default function ChatDashboard({
       mounted = false;
       window.clearInterval(interval);
     };
-  }, [accessToken, currentUserId]);
+  }, [loadDmSidebarData]);
 
   useEffect(() => {
     if (dms.length === 0) {
@@ -2667,7 +2683,16 @@ export default function ChatDashboard({
       mounted = false;
       window.clearInterval(interval);
     };
-  }, [accessToken, dms, currentUserId, viewMode, activeConversationId, dmMessageNotificationsEnabled]);
+  }, [
+    accessToken,
+    activeConversationId,
+    currentUserId,
+    dmMessageNotificationsEnabled,
+    dms,
+    isAppVisibleAndFocused,
+    triggerDesktopNotification,
+    viewMode,
+  ]);
 
   useEffect(() => {
     if (dms.length === 0) {
@@ -2735,7 +2760,7 @@ export default function ChatDashboard({
       mounted = false;
       window.clearInterval(interval);
     };
-  }, [accessToken, dms, currentUserId, voiceRoomKey, dmCallNotificationsEnabled]);
+  }, [accessToken, currentUserId, dmCallNotificationsEnabled, dms, triggerDesktopNotification, voiceRoomKey]);
 
   useEffect(() => {
     let mounted = true;
@@ -2758,7 +2783,7 @@ export default function ChatDashboard({
       mounted = false;
       window.clearInterval(interval);
     };
-  }, [accessToken]);
+  }, [loadGlytchSidebarData]);
 
   useEffect(() => {
     if (viewMode !== "dm") {
@@ -3000,6 +3025,7 @@ export default function ChatDashboard({
     scrollMessageListToBottom,
   ]);
 
+  /* eslint-disable react-hooks/exhaustive-deps */
   useEffect(() => {
     if (!presenceRoomKey) return;
     let mounted = true;
@@ -3105,6 +3131,7 @@ export default function ChatDashboard({
     voiceMuted,
     voiceRoomKey,
   ]);
+  /* eslint-enable react-hooks/exhaustive-deps */
 
   useEffect(() => {
     const shouldTrackChannelParticipants = viewMode === "glytch" || viewMode === "glytch-settings";
@@ -3183,6 +3210,7 @@ export default function ChatDashboard({
     voiceChannels,
   ]);
 
+  /* eslint-disable react-hooks/exhaustive-deps */
   useEffect(() => {
     if (!voiceRoomKey) return;
     let mounted = true;
@@ -3265,17 +3293,23 @@ export default function ChatDashboard({
       window.clearInterval(interval);
     };
   }, [accessToken, currentUserId, voiceRoomKey]);
+  /* eslint-enable react-hooks/exhaustive-deps */
 
+  // Room-switch cleanup intentionally tracks room keys only.
+  /* eslint-disable react-hooks/exhaustive-deps */
   useEffect(() => {
     if (!voiceRoomKey) return;
     if (selectedVoiceRoomKey === voiceRoomKey) return;
     void stopVoiceSession(true);
   }, [selectedVoiceRoomKey, voiceRoomKey]);
+  /* eslint-enable react-hooks/exhaustive-deps */
 
   useEffect(() => {
     previousVoiceParticipantIdsRef.current = [];
   }, [presenceRoomKey]);
 
+  // Intentional mount/unmount cleanup effect.
+  /* eslint-disable react-hooks/exhaustive-deps */
   useEffect(() => {
     return () => {
       if (soundContextRef.current) {
@@ -3285,6 +3319,7 @@ export default function ChatDashboard({
       void stopVoiceSession(true);
     };
   }, []);
+  /* eslint-enable react-hooks/exhaustive-deps */
 
   const handleAddFriend = async (e: FormEvent) => {
     e.preventDefault();
@@ -4532,9 +4567,14 @@ export default function ChatDashboard({
   };
 
   const handleInsertEmoji = (emoji: string) => {
-    setDraft((prev) => `${prev}${emoji}`);
+    const input = messageInputRef.current;
+    if (input) {
+      input.value = `${input.value}${emoji}`;
+      const nextHasDraftText = input.value.trim().length > 0;
+      setHasDraftText((prev) => (prev === nextHasDraftText ? prev : nextHasDraftText));
+    }
     setShowEmojiPicker(false);
-    messageInputRef.current?.focus();
+    input?.focus();
   };
 
   const handleToggleMessageReaction = async (messageId: number, emoji: string) => {
@@ -4594,7 +4634,7 @@ export default function ChatDashboard({
 
   const sendMessage = async (e: FormEvent) => {
     e.preventDefault();
-    const text = draft.trim();
+    const text = (messageInputRef.current?.value || "").trim();
     const hasAttachment = Boolean(composerAttachment);
     const hasGif = Boolean(selectedGif);
     if (!text && !hasAttachment && !hasGif) return;
@@ -4668,7 +4708,10 @@ export default function ChatDashboard({
         if (shouldAutoScrollAfterSend) {
           scrollMessageListToBottom("smooth");
         }
-        setDraft("");
+        if (messageInputRef.current) {
+          messageInputRef.current.value = "";
+        }
+        setHasDraftText(false);
         setComposerAttachment(null);
         setSelectedGif(null);
         setShowEmojiPicker(false);
@@ -4705,7 +4748,10 @@ export default function ChatDashboard({
           })),
         );
         setMessages((prev) => [...prev, ...appended]);
-        setDraft("");
+        if (messageInputRef.current) {
+          messageInputRef.current.value = "";
+        }
+        setHasDraftText(false);
         setComposerAttachment(null);
         setSelectedGif(null);
         setShowEmojiPicker(false);
@@ -5009,7 +5055,7 @@ export default function ChatDashboard({
     }
   };
 
-  const startSpeakingMeter = (userId: string, stream: MediaStream) => {
+  const startSpeakingMeter = useCallback((userId: string, stream: MediaStream) => {
     if (speakingAnalyserCleanupRef.current.has(userId)) {
       const cleanup = speakingAnalyserCleanupRef.current.get(userId);
       cleanup?.();
@@ -5057,9 +5103,9 @@ export default function ChatDashboard({
     };
 
     speakingAnalyserCleanupRef.current.set(userId, cleanup);
-  };
+  }, []);
 
-  const closePeerConnection = (userId: string) => {
+  const closePeerConnection = useCallback((userId: string) => {
     const pc = peerConnectionsRef.current.get(userId);
     if (pc) {
       pc.onicecandidate = null;
@@ -5095,9 +5141,9 @@ export default function ChatDashboard({
     }
 
     pendingCandidatesRef.current.delete(userId);
-  };
+  }, [syncRemoteScreenShareUsers]);
 
-  const teardownVoice = () => {
+  const teardownVoice = useCallback(() => {
     Array.from(peerConnectionsRef.current.keys()).forEach(closePeerConnection);
     const selfCleanup = speakingAnalyserCleanupRef.current.get(currentUserId);
     if (selfCleanup) {
@@ -5123,9 +5169,9 @@ export default function ChatDashboard({
     setScreenShareBusy(false);
     signalSinceIdRef.current = 0;
     setSpeakingUserIds([]);
-  };
+  }, [closePeerConnection, currentUserId]);
 
-  const stopVoiceSession = async (notifyServer: boolean) => {
+  const stopVoiceSession = useCallback(async (notifyServer: boolean) => {
     const roomToLeave = voiceRoomKey;
     teardownVoice();
     setVoiceParticipants([]);
@@ -5135,7 +5181,7 @@ export default function ChatDashboard({
     if (notifyServer && roomToLeave) {
       await leaveVoiceRoom(accessToken, roomToLeave, currentUserId).catch(() => undefined);
     }
-  };
+  }, [accessToken, currentUserId, teardownVoice, voiceRoomKey]);
 
   const flushPendingCandidates = async (userId: string, pc: RTCPeerConnection) => {
     const queued = pendingCandidatesRef.current.get(userId);
@@ -5151,7 +5197,7 @@ export default function ChatDashboard({
     pendingCandidatesRef.current.delete(userId);
   };
 
-  const getOrCreatePeerConnection = async (targetUserId: string, initiateOffer: boolean) => {
+  const getOrCreatePeerConnection = useCallback(async (targetUserId: string, initiateOffer: boolean) => {
     const existing = peerConnectionsRef.current.get(targetUserId);
     if (existing) return existing;
 
@@ -5249,7 +5295,17 @@ export default function ChatDashboard({
     }
 
     return pc;
-  };
+  }, [
+    accessToken,
+    applyRemoteAudioOutput,
+    closePeerConnection,
+    currentUserId,
+    removeRemoteScreenShare,
+    renegotiatePeerConnection,
+    startSpeakingMeter,
+    syncRemoteScreenShareUsers,
+    voiceRoomKey,
+  ]);
 
   const handleJoinVoice = async () => {
     const room =
@@ -5416,7 +5472,7 @@ export default function ChatDashboard({
   const canAttachMediaInCurrentView = canComposeInCurrentView && !isCurrentChannelTextOnly;
 
   const canSend =
-    (draft.trim().length > 0 || hasMediaToSend) &&
+    (hasDraftText || hasMediaToSend) &&
     canComposeInCurrentView &&
     (!isCurrentChannelImagesOnly || hasMediaToSend) &&
     (!isCurrentChannelTextOnly || !hasMediaToSend) &&
@@ -5443,7 +5499,6 @@ export default function ChatDashboard({
     return undefined;
   }, [
     activeChannel?.kind,
-    activeChannelId,
     activeChannelSharedBackground,
     activeDm?.sharedBackground,
     activeConversationId,
@@ -8559,8 +8614,10 @@ export default function ChatDashboard({
                     </button>
                     <input
                       ref={messageInputRef}
-                      value={draft}
-                      onChange={(e) => setDraft(e.target.value)}
+                      onChange={(e) => {
+                        const nextHasDraftText = e.target.value.trim().length > 0;
+                        setHasDraftText((prev) => (prev === nextHasDraftText ? prev : nextHasDraftText));
+                      }}
                       placeholder={
                         viewMode === "dm"
                           ? activeConversationId
