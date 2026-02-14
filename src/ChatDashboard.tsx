@@ -1447,6 +1447,7 @@ export default function ChatDashboard({
   );
   const isInGlytchView = viewMode === "glytch" || viewMode === "glytch-settings";
   const shouldShowGlytchRailIcon = isInGlytchView && Boolean(activeGlytch) && !showGlytchDirectory;
+  const shouldHideGlytchMessageArea = viewMode === "glytch" && (showGlytchDirectory || !activeGlytch);
   const shouldShowVoiceControls = viewMode === "dm" || (viewMode === "glytch" && activeChannel?.kind === "voice");
   const shouldRenderHeaderActions = shouldShowVoiceControls || shouldShowQuickThemeControl;
   const effectiveVoiceMuted = voiceMuted || voiceDeafened;
@@ -6048,6 +6049,15 @@ export default function ChatDashboard({
     );
   };
 
+  const handleOpenGlytchDirectory = useCallback(() => {
+    setShowGlytchDirectory(true);
+    setActiveGlytchId(null);
+    setActiveChannelId(null);
+    setMessages([]);
+    setChatError("");
+    setShowQuickThemeEditor(false);
+  }, []);
+
   return (
     <div className="page" style={pageStyle}>
       <aside className="sidemenu">
@@ -6059,7 +6069,7 @@ export default function ChatDashboard({
               aria-label={showGlytchDirectory ? "Hide Glytch list" : "Show Glytch list"}
               title={activeGlytch.name}
               data-glytch-name={activeGlytch.name}
-              onClick={() => setShowGlytchDirectory((prev) => !prev)}
+              onClick={handleOpenGlytchDirectory}
             >
               <span className="navGlytchIcon" aria-hidden="true">
                 {activeGlytch.icon_url ? (
@@ -6428,7 +6438,7 @@ export default function ChatDashboard({
                         </button>
                       )}
                     </div>
-                    <button type="button" className="ghostButton activeGlytchSwitchButton" onClick={() => setShowGlytchDirectory(true)}>
+                    <button type="button" className="ghostButton activeGlytchSwitchButton" onClick={handleOpenGlytchDirectory}>
                       Switch Glytch
                     </button>
                     <button
@@ -8297,6 +8307,10 @@ export default function ChatDashboard({
                 )}
               </section>
             )}
+          </section>
+        ) : shouldHideGlytchMessageArea ? (
+          <section className="glytchSelectionState" aria-label="Choose a Glytch">
+            <p className="chatInfo">Choose a Glytch from the left panel to open its channels.</p>
           </section>
         ) : (
           <div
