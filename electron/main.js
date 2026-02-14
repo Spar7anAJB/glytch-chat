@@ -1,0 +1,118 @@
+import { app, BrowserWindow, desktopCapturer, ipcMain, session, shell } from "electron";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const devServerUrl = process.env.ELECTRON_DEV_SERVER_URL;
+const isDev = Boolean(devServerUrl);
+
+if (isDev) {
+  app.commandLine.appendSwitch("allow-http-screen-capture");
+}
+app.commandLine.appendSwitch("enable-usermedia-screen-capturing");
+
+async function getDesktopCaptureSources() {
+  return desktopCapturer.getSources({
+    types: ["screen", "window"],
+    thumbnailSize: { width: 0, height: 0 },
+    fetchWindowIcons: false,
+  });
+}
+
+ipcMain.handle("electron:list-desktop-sources", async () => {
+  const sources = await getDesktopCaptureSources();
+  return sources.map((source) => ({
+    id: source.id,
+    name: source.name,
+    kind: source.id.startsWith("screen:") ? "screen" : "window",
+  }));
+});
+
+ipcMain.handle("electron:get-desktop-source-id", async (_event, preferredSourceId = null) => {
+  const sources = await getDesktopCaptureSources();
+  if (typeof preferredSourceId === "string" && preferredSourceId.length > 0) {
+    const matching = sources.find((source) => source.id === preferredSourceId);
+    if (matching) return matching.id;
+  }
+
+  const preferredSource = sources.find((source) => source.id.startsWith("screen:")) || sources[0];
+  return preferredSource?.id || null;
+});
+
+function createWindow() {
+  const win = new BrowserWindow({
+    width: 1360,
+    height: 840,
+    minWidth: 980,
+    minHeight: 640,
+    backgroundColor: "#edf2fb",
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol === "https:" || parsed.protocol === "http:") {
+        void shell.openExternal(parsed.toString());
+      }
+    } catch {
+      // Ignore malformed or unsupported URLs.
+    }
+    return { action: "deny" };
+  });
+
+  if (isDev) {
+    void win.loadURL(devServerUrl);
+    win.webContents.openDevTools({ mode: "detach" });
+    return;
+  }
+
+  void win.loadFile(path.join(__dirname, "..", "dist", "index.html"));
+}
+
+app.whenReady().then(() => {
+  session.defaultSession.setDisplayMediaRequestHandler(
+    async (_request, callback) => {
+      try {
+        const sources = await getDesktopCaptureSources();
+        const preferredSource = sources.find((source) => source.id.startsWith("screen:")) || sources[0];
+        if (!preferredSource) {
+          callback({ video: false, audio: false });
+          return;
+        }
+        callback({ video: preferredSource, audio: false });
+      } catch {
+        callback({ video: false, audio: false });
+      }
+    },
+    { useSystemPicker: true },
+  );
+
+  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+    if (permission === "media" || permission === "display-capture") {
+      callback(true);
+      return;
+    }
+    callback(false);
+  });
+
+  createWindow();
+
+  app.on("activate", () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+    }
+  });
+});
+
+app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") {
+    app.quit();
+  }
+});
