@@ -1254,6 +1254,27 @@ export async function fetchLatestDmMessages(accessToken: string, conversationIds
   return (await readJsonOrThrow(res)) as DmMessage[];
 }
 
+export async function fetchLatestGlytchMessages(accessToken: string, channelIds: number[]): Promise<GlytchMessage[]> {
+  const uniqueIds = Array.from(new Set(channelIds.filter((id) => Number.isFinite(id) && id > 0)));
+  if (uniqueIds.length === 0) return [];
+  assertConfig();
+
+  const limit = Math.min(320, Math.max(60, uniqueIds.length * 6));
+  const query = new URLSearchParams({
+    select: "id,glytch_channel_id,sender_id,content,attachment_url,attachment_type,created_at",
+    glytch_channel_id: `in.(${uniqueIds.join(",")})`,
+    order: "id.desc",
+    limit: String(limit),
+  });
+
+  const res = await supabaseFetch(`/rest/v1/glytch_messages?${query.toString()}`, {
+    method: "GET",
+    headers: supabaseHeaders(accessToken),
+  });
+
+  return (await readJsonOrThrow(res)) as GlytchMessage[];
+}
+
 export async function createDmMessage(
   accessToken: string,
   senderId: string,

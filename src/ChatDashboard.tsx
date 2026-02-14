@@ -17,6 +17,7 @@ import {
   createGlytchMessage,
   fetchDmMessages,
   fetchLatestDmMessages,
+  fetchLatestGlytchMessages,
   fetchGlytchMessages,
   fetchProfilesByIds,
   findProfileByUsername,
@@ -190,6 +191,9 @@ type ProfileForm = {
   notificationsEnabled: boolean;
   notifyDmMessages: boolean;
   notifyDmCalls: boolean;
+  notifyGlytchMessages: boolean;
+  notifyFriendRequests: boolean;
+  notifyFriendRequestAccepted: boolean;
 };
 
 type UiVoiceParticipant = {
@@ -1027,6 +1031,10 @@ function buildProfileForm(profile: Profile | null): ProfileForm {
     typeof theme.notificationsEnabled === "boolean" ? theme.notificationsEnabled : true;
   const notifyDmMessages = typeof theme.notifyDmMessages === "boolean" ? theme.notifyDmMessages : true;
   const notifyDmCalls = typeof theme.notifyDmCalls === "boolean" ? theme.notifyDmCalls : true;
+  const notifyGlytchMessages = typeof theme.notifyGlytchMessages === "boolean" ? theme.notifyGlytchMessages : true;
+  const notifyFriendRequests = typeof theme.notifyFriendRequests === "boolean" ? theme.notifyFriendRequests : true;
+  const notifyFriendRequestAccepted =
+    typeof theme.notifyFriendRequestAccepted === "boolean" ? theme.notifyFriendRequestAccepted : true;
   const dmBackgroundByConversation = normalizeBackgroundGradientMap(theme.dmBackgroundByConversation);
   const glytchBackgroundByChannel = normalizeBackgroundGradientMap(theme.glytchBackgroundByChannel);
   const showcases = normalizeProfileShowcases(theme.showcases);
@@ -1060,6 +1068,9 @@ function buildProfileForm(profile: Profile | null): ProfileForm {
     notificationsEnabled,
     notifyDmMessages,
     notifyDmCalls,
+    notifyGlytchMessages,
+    notifyFriendRequests,
+    notifyFriendRequestAccepted,
   };
 }
 
@@ -1089,6 +1100,9 @@ function buildProfileThemePayload(form: ProfileForm): Record<string, unknown> {
     notificationsEnabled: form.notificationsEnabled,
     notifyDmMessages: form.notifyDmMessages,
     notifyDmCalls: form.notifyDmCalls,
+    notifyGlytchMessages: form.notifyGlytchMessages,
+    notifyFriendRequests: form.notifyFriendRequests,
+    notifyFriendRequestAccepted: form.notifyFriendRequestAccepted,
   };
 }
 
@@ -1234,6 +1248,7 @@ export default function ChatDashboard({
   const isUserIdleRef = useRef(false);
   const dmMessagesPollingInFlightRef = useRef(false);
   const glytchMessagesPollingInFlightRef = useRef(false);
+  const glytchNotificationPollingInFlightRef = useRef(false);
   const messageDisplayRef = useRef<HTMLElement | null>(null);
   const messageEndRef = useRef<HTMLDivElement | null>(null);
   const messageInputRef = useRef<HTMLInputElement | null>(null);
@@ -1253,11 +1268,16 @@ export default function ChatDashboard({
   const signalSinceIdRef = useRef(0);
   const previousVoiceParticipantIdsRef = useRef<string[]>([]);
   const soundContextRef = useRef<AudioContext | null>(null);
+  const notificationSoundLastPlayedAtRef = useRef(0);
   const notificationPermissionRequestedRef = useRef(false);
   const dmLatestMessageIdsRef = useRef<Record<number, number>>({});
   const dmMessageNotificationSeededRef = useRef(false);
+  const glytchLatestMessageIdsRef = useRef<Record<number, number>>({});
+  const glytchMessageNotificationSeededRef = useRef(false);
   const dmCallParticipantCountsRef = useRef<Record<number, number>>({});
   const dmCallNotificationSeededRef = useRef(false);
+  const friendRequestStatusByIdRef = useRef<Record<number, FriendRequest["status"]>>({});
+  const friendRequestNotificationSeededRef = useRef(false);
   const dmLastLoadedConversationIdRef = useRef<number | null>(null);
   const dmLastLoadedMessageIdRef = useRef(0);
   const glytchLastLoadedChannelIdRef = useRef<number | null>(null);
@@ -1581,6 +1601,51 @@ export default function ChatDashboard({
     }
   }, []);
 
+  const playNotificationSound = useCallback(async () => {
+    const nowMs = Date.now();
+    if (nowMs - notificationSoundLastPlayedAtRef.current < 450) {
+      return;
+    }
+    notificationSoundLastPlayedAtRef.current = nowMs;
+
+    try {
+      let audioCtx = soundContextRef.current;
+      if (!audioCtx) {
+        audioCtx = new AudioContext();
+        soundContextRef.current = audioCtx;
+      }
+      if (audioCtx.state !== "running") {
+        await audioCtx.resume();
+      }
+      if (audioCtx.state !== "running") return;
+
+      const masterGain = audioCtx.createGain();
+      masterGain.gain.value = 0.0001;
+      masterGain.connect(audioCtx.destination);
+
+      const low = audioCtx.createOscillator();
+      const high = audioCtx.createOscillator();
+      low.type = "sine";
+      high.type = "triangle";
+      const now = audioCtx.currentTime;
+      low.frequency.setValueAtTime(880, now);
+      high.frequency.setValueAtTime(1320, now + 0.08);
+      low.connect(masterGain);
+      high.connect(masterGain);
+
+      masterGain.gain.exponentialRampToValueAtTime(0.045, now + 0.015);
+      masterGain.gain.exponentialRampToValueAtTime(0.02, now + 0.09);
+      masterGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.24);
+
+      low.start(now);
+      low.stop(now + 0.16);
+      high.start(now + 0.08);
+      high.stop(now + 0.24);
+    } catch {
+      // Ignore autoplay-policy and audio device failures.
+    }
+  }, []);
+
   const triggerDesktopNotification = useCallback(
     async ({
       title,
@@ -1612,11 +1677,12 @@ export default function ChatDashboard({
           onClick?.();
           notification.close();
         };
+        void playNotificationSound();
       } catch {
         // Ignore notification failures (blocked APIs, invalid icon URLs, etc.)
       }
     },
-    [ensureNotificationPermission],
+    [ensureNotificationPermission, playNotificationSound],
   );
 
   const ensureSoundContext = async () => {
@@ -1852,6 +1918,10 @@ export default function ChatDashboard({
   const displayName = currentProfile?.username || currentUserName;
   const dmMessageNotificationsEnabled = profileForm.notificationsEnabled && profileForm.notifyDmMessages;
   const dmCallNotificationsEnabled = profileForm.notificationsEnabled && profileForm.notifyDmCalls;
+  const glytchMessageNotificationsEnabled = profileForm.notificationsEnabled && profileForm.notifyGlytchMessages;
+  const friendRequestNotificationsEnabled = profileForm.notificationsEnabled && profileForm.notifyFriendRequests;
+  const friendRequestAcceptedNotificationsEnabled =
+    profileForm.notificationsEnabled && profileForm.notifyFriendRequestAccepted;
   const isElectronRuntime = typeof window !== "undefined" && Boolean(window.electronAPI?.isElectron);
   const isComposerInputFocused = useCallback(
     () =>
@@ -2840,6 +2910,203 @@ export default function ChatDashboard({
     isElectronRuntime,
     isAppVisibleAndFocused,
     shouldPauseBackgroundPolling,
+    triggerDesktopNotification,
+    viewMode,
+  ]);
+
+  useEffect(() => {
+    if (glytches.length === 0) {
+      glytchLatestMessageIdsRef.current = {};
+      glytchMessageNotificationSeededRef.current = false;
+      return;
+    }
+
+    let mounted = true;
+
+    const pollLatestGlytchMessages = async () => {
+      if (glytchNotificationPollingInFlightRef.current) return;
+      glytchNotificationPollingInFlightRef.current = true;
+      try {
+        const snapshots = await Promise.all(
+          glytches.map(async (glytch) => ({
+            glytch,
+            channels: await listGlytchChannels(accessToken, glytch.id),
+          })),
+        );
+        if (!mounted) return;
+
+        const textChannelIds: number[] = [];
+        const channelMetaById = new Map<number, { glytchId: number; glytchName: string; channelName: string }>();
+        snapshots.forEach(({ glytch, channels: channelRows }) => {
+          channelRows.forEach((channel) => {
+            if (channel.kind !== "text") return;
+            textChannelIds.push(channel.id);
+            channelMetaById.set(channel.id, {
+              glytchId: glytch.id,
+              glytchName: glytch.name,
+              channelName: channel.name,
+            });
+          });
+        });
+
+        if (textChannelIds.length === 0) {
+          glytchLatestMessageIdsRef.current = {};
+          if (!glytchMessageNotificationSeededRef.current) {
+            glytchMessageNotificationSeededRef.current = true;
+          }
+          return;
+        }
+
+        const rows = await fetchLatestGlytchMessages(accessToken, textChannelIds);
+        if (!mounted) return;
+
+        const latestByChannel = new Map<number, (typeof rows)[number]>();
+        rows.forEach((row) => {
+          if (!latestByChannel.has(row.glytch_channel_id)) {
+            latestByChannel.set(row.glytch_channel_id, row);
+          }
+        });
+
+        const previousByChannel = glytchLatestMessageIdsRef.current;
+        const nextByChannel: Record<number, number> = {};
+
+        for (const channelId of textChannelIds) {
+          const previousId = previousByChannel[channelId] ?? 0;
+          nextByChannel[channelId] = previousId;
+
+          const latest = latestByChannel.get(channelId);
+          if (!latest) continue;
+
+          nextByChannel[channelId] = latest.id;
+          const hasNewIncomingMessage =
+            glytchMessageNotificationSeededRef.current &&
+            latest.sender_id !== currentUserId &&
+            latest.id > previousId;
+          if (!hasNewIncomingMessage) continue;
+          if (!glytchMessageNotificationsEnabled) continue;
+
+          const viewingThisChannel = viewMode === "glytch" && activeChannelId === channelId && isAppVisibleAndFocused();
+          if (viewingThisChannel) continue;
+
+          const channelMeta = channelMetaById.get(channelId);
+          if (!channelMeta) continue;
+          const senderProfile = knownProfiles[latest.sender_id];
+          const senderName = senderProfile?.username || senderProfile?.display_name || "Someone";
+
+          void triggerDesktopNotification({
+            title: `${channelMeta.glytchName} · #${channelMeta.channelName}`,
+            body: `${senderName}: ${dmMessagePreviewText({ content: latest.content, attachment_url: latest.attachment_url })}`,
+            tag: `glytch-message-${channelId}`,
+            icon: senderProfile?.avatar_url || undefined,
+            onClick: () => {
+              setViewMode("glytch");
+              setShowGlytchDirectory(false);
+              setActiveGlytchId(channelMeta.glytchId);
+              setActiveChannelId(channelId);
+            },
+          });
+        }
+
+        glytchLatestMessageIdsRef.current = nextByChannel;
+        if (!glytchMessageNotificationSeededRef.current) {
+          glytchMessageNotificationSeededRef.current = true;
+        }
+      } catch {
+        // Keep notification polling silent to avoid interrupting chat usage.
+      } finally {
+        glytchNotificationPollingInFlightRef.current = false;
+      }
+    };
+
+    void pollLatestGlytchMessages();
+    const interval = window.setInterval(() => {
+      if (shouldPauseBackgroundPolling()) return;
+      void pollLatestGlytchMessages();
+    }, isElectronRuntime ? 12_000 : 6_000);
+
+    return () => {
+      mounted = false;
+      window.clearInterval(interval);
+      glytchNotificationPollingInFlightRef.current = false;
+    };
+  }, [
+    accessToken,
+    activeChannelId,
+    currentUserId,
+    glytchMessageNotificationsEnabled,
+    glytches,
+    isElectronRuntime,
+    isAppVisibleAndFocused,
+    knownProfiles,
+    shouldPauseBackgroundPolling,
+    triggerDesktopNotification,
+    viewMode,
+  ]);
+
+  useEffect(() => {
+    const previousById = friendRequestStatusByIdRef.current;
+    const nextById: Record<number, FriendRequest["status"]> = {};
+
+    requests.forEach((req) => {
+      nextById[req.id] = req.status;
+      if (!friendRequestNotificationSeededRef.current) return;
+
+      const previousStatus = previousById[req.id];
+      if (req.receiver_id === currentUserId && req.status === "pending" && previousStatus !== "pending") {
+        if (!friendRequestNotificationsEnabled) return;
+        const viewingFriendsPanel = viewMode === "dm" && dmPanelMode === "friends" && isAppVisibleAndFocused();
+        if (viewingFriendsPanel) return;
+        const senderName = req.sender_profile?.username || req.sender_profile?.display_name || "Someone";
+        void triggerDesktopNotification({
+          title: "New friend request",
+          body: `${senderName} sent you a friend request.`,
+          tag: `friend-request-${req.id}`,
+          icon: req.sender_profile?.avatar_url || undefined,
+          onClick: () => {
+            setViewMode("dm");
+            setDmPanelMode("friends");
+          },
+        });
+        return;
+      }
+
+      if (
+        req.sender_id === currentUserId &&
+        req.status === "accepted" &&
+        previousStatus &&
+        previousStatus !== "accepted"
+      ) {
+        if (!friendRequestAcceptedNotificationsEnabled) return;
+        const receiverName = req.receiver_profile?.username || req.receiver_profile?.display_name || "Your friend";
+        const receiverDm = dms.find((dm) => dm.friendUserId === req.receiver_id) || null;
+        void triggerDesktopNotification({
+          title: "Friend request accepted",
+          body: `${receiverName} accepted your friend request.`,
+          tag: `friend-accepted-${req.id}`,
+          icon: req.receiver_profile?.avatar_url || undefined,
+          onClick: () => {
+            setViewMode("dm");
+            setDmPanelMode("dms");
+            if (receiverDm) {
+              setActiveConversationId(receiverDm.conversationId);
+            }
+          },
+        });
+      }
+    });
+
+    friendRequestStatusByIdRef.current = nextById;
+    if (!friendRequestNotificationSeededRef.current) {
+      friendRequestNotificationSeededRef.current = true;
+    }
+  }, [
+    currentUserId,
+    dmPanelMode,
+    dms,
+    friendRequestAcceptedNotificationsEnabled,
+    friendRequestNotificationsEnabled,
+    isAppVisibleAndFocused,
+    requests,
     triggerDesktopNotification,
     viewMode,
   ]);
@@ -4006,7 +4273,16 @@ export default function ChatDashboard({
         setProfileForm((prev) => ({ ...buildProfileForm(nextProfile), presenceStatus: prev.presenceStatus }));
       }
 
-      if (profileForm.notificationsEnabled && (profileForm.notifyDmMessages || profileForm.notifyDmCalls)) {
+      if (
+        profileForm.notificationsEnabled &&
+        (
+          profileForm.notifyDmMessages ||
+          profileForm.notifyDmCalls ||
+          profileForm.notifyGlytchMessages ||
+          profileForm.notifyFriendRequests ||
+          profileForm.notifyFriendRequestAccepted
+        )
+      ) {
         const permission = await ensureNotificationPermission();
         if (permission === "denied") {
           setProfileSaveError("Notifications are enabled, but browser/OS permission is blocked.");
@@ -7611,6 +7887,9 @@ export default function ChatDashboard({
                           notificationsEnabled: enabled,
                           notifyDmMessages: enabled ? prev.notifyDmMessages : false,
                           notifyDmCalls: enabled ? prev.notifyDmCalls : false,
+                          notifyGlytchMessages: enabled ? prev.notifyGlytchMessages : false,
+                          notifyFriendRequests: enabled ? prev.notifyFriendRequests : false,
+                          notifyFriendRequestAccepted: enabled ? prev.notifyFriendRequestAccepted : false,
                         };
                       })
                     }
@@ -7636,6 +7915,38 @@ export default function ChatDashboard({
                     onChange={(e) => setProfileForm((prev) => ({ ...prev, notifyDmCalls: e.target.checked }))}
                   />
                   <span>Notify for incoming DM calls</span>
+                </label>
+
+                <label className="permissionToggle settingsToggle">
+                  <input
+                    type="checkbox"
+                    checked={profileForm.notifyGlytchMessages}
+                    disabled={!profileForm.notificationsEnabled}
+                    onChange={(e) => setProfileForm((prev) => ({ ...prev, notifyGlytchMessages: e.target.checked }))}
+                  />
+                  <span>Notify for new Glytch messages</span>
+                </label>
+
+                <label className="permissionToggle settingsToggle">
+                  <input
+                    type="checkbox"
+                    checked={profileForm.notifyFriendRequests}
+                    disabled={!profileForm.notificationsEnabled}
+                    onChange={(e) => setProfileForm((prev) => ({ ...prev, notifyFriendRequests: e.target.checked }))}
+                  />
+                  <span>Notify for new friend requests</span>
+                </label>
+
+                <label className="permissionToggle settingsToggle">
+                  <input
+                    type="checkbox"
+                    checked={profileForm.notifyFriendRequestAccepted}
+                    disabled={!profileForm.notificationsEnabled}
+                    onChange={(e) =>
+                      setProfileForm((prev) => ({ ...prev, notifyFriendRequestAccepted: e.target.checked }))
+                    }
+                  />
+                  <span>Notify when friend requests are accepted</span>
                 </label>
 
                 <p className="smallMuted">
