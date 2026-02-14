@@ -976,10 +976,12 @@ export async function searchGifLibrary(
 
 export async function fetchDmMessages(accessToken: string, conversationId: number): Promise<DmMessage[]> {
   assertConfig();
+  const recentLimit = 250;
   const query = new URLSearchParams({
     select: "id,conversation_id,sender_id,content,attachment_url,attachment_type,created_at,read_by_receiver_at",
     conversation_id: `eq.${conversationId}`,
-    order: "created_at.asc",
+    order: "id.desc",
+    limit: String(recentLimit),
   });
 
   const res = await supabaseFetch(`/rest/v1/dm_messages?${query.toString()}`, {
@@ -987,7 +989,8 @@ export async function fetchDmMessages(accessToken: string, conversationId: numbe
     headers: supabaseHeaders(accessToken),
   });
 
-  return (await readJsonOrThrow(res)) as DmMessage[];
+  const rows = (await readJsonOrThrow(res)) as DmMessage[];
+  return rows.reverse();
 }
 
 export async function listDmMessageReactions(accessToken: string, messageIds: number[]): Promise<DmMessageReaction[]> {
@@ -1708,10 +1711,12 @@ export async function setRoleChannelPermissions(
 
 export async function fetchGlytchMessages(accessToken: string, glytchChannelId: number): Promise<GlytchMessage[]> {
   assertConfig();
+  const recentLimit = 250;
   const query = new URLSearchParams({
     select: "id,glytch_channel_id,sender_id,content,attachment_url,attachment_type,created_at",
     glytch_channel_id: `eq.${glytchChannelId}`,
-    order: "created_at.asc",
+    order: "id.desc",
+    limit: String(recentLimit),
   });
 
   const res = await supabaseFetch(`/rest/v1/glytch_messages?${query.toString()}`, {
@@ -1719,7 +1724,8 @@ export async function fetchGlytchMessages(accessToken: string, glytchChannelId: 
     headers: supabaseHeaders(accessToken),
   });
 
-  return (await readJsonOrThrow(res)) as GlytchMessage[];
+  const rows = (await readJsonOrThrow(res)) as GlytchMessage[];
+  return rows.reverse();
 }
 
 export async function listGlytchMessageReactions(

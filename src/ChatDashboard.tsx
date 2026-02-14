@@ -258,6 +258,7 @@ const MAX_THEME_IMAGE_BYTES = 8 * 1024 * 1024;
 const MAX_GIF_RESULTS = 20;
 const SHOWCASE_MAX_MODULES = 12;
 const SHOWCASE_MAX_ENTRIES = 16;
+const MAX_RENDERED_MESSAGES = 120;
 const SHOWCASE_MAX_TITLE_LENGTH = 60;
 const SHOWCASE_MAX_TEXT_LENGTH = 1000;
 const PRESENCE_HEARTBEAT_MS = 45_000;
@@ -847,7 +848,7 @@ function buildMessageSnapshotKey(messages: UiMessage[]): string {
         .map((reaction) => `${reaction.emoji}:${reaction.count}:${reaction.reactedByMe ? 1 : 0}`)
         .join(",");
       const readAt = message.readAt ? message.readAt.getTime() : 0;
-      return `${message.id}|${message.text}|${message.attachmentUrl || ""}|${message.attachmentType || ""}|${readAt}|${reactions}`;
+      return `${message.id}|${message.attachmentType || ""}|${readAt}|${reactions}`;
     })
     .join("~");
 }
@@ -1124,7 +1125,6 @@ export default function ChatDashboard({
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("edit");
   const [currentProfile, setCurrentProfile] = useState<Profile | null>(null);
   const [profileForm, setProfileForm] = useState<ProfileForm>(buildProfileForm(null));
-  const [lastPresenceInteractionAt, setLastPresenceInteractionAt] = useState(() => Date.now());
   const [isUserIdle, setIsUserIdle] = useState(false);
   const [profileSaveError, setProfileSaveError] = useState("");
   const [profileSaveBusy, setProfileSaveBusy] = useState(false);
@@ -1173,6 +1173,10 @@ export default function ChatDashboard({
   const [quickThemeError, setQuickThemeError] = useState("");
   const [draggingShowcaseId, setDraggingShowcaseId] = useState<string | null>(null);
   const [showcaseDropTargetId, setShowcaseDropTargetId] = useState<string | null>(null);
+  const lastPresenceInteractionAtRef = useRef(Date.now());
+  const isUserIdleRef = useRef(false);
+  const dmMessagesPollingInFlightRef = useRef(false);
+  const glytchMessagesPollingInFlightRef = useRef(false);
   const messageDisplayRef = useRef<HTMLElement | null>(null);
   const messageEndRef = useRef<HTMLDivElement | null>(null);
   const messageInputRef = useRef<HTMLInputElement | null>(null);
@@ -1764,6 +1768,21 @@ export default function ChatDashboard({
   const dmMessageNotificationsEnabled = profileForm.notificationsEnabled && profileForm.notifyDmMessages;
   const dmCallNotificationsEnabled = profileForm.notificationsEnabled && profileForm.notifyDmCalls;
   const isElectronRuntime = typeof window !== "undefined" && Boolean(window.electronAPI?.isElectron);
+  const isComposerInputFocused = useCallback(
+    () =>
+      typeof document !== "undefined" &&
+      Boolean(messageInputRef.current) &&
+      document.activeElement === messageInputRef.current,
+    [],
+  );
+  const shouldPauseBackgroundPolling = useCallback(
+    () => isElectronRuntime && isComposerInputFocused(),
+    [isComposerInputFocused, isElectronRuntime],
+  );
+  const shouldDeferMessagePolling = useCallback(
+    () => shouldPauseBackgroundPolling(),
+    [shouldPauseBackgroundPolling],
+  );
   const isScreenSharing = Boolean(localScreenStream);
   const remoteScreenShares = useMemo(
     () =>
@@ -2403,10 +2422,17 @@ export default function ChatDashboard({
   }, [loadMyProfile]);
 
   useEffect(() => {
+    isUserIdleRef.current = isUserIdle;
+  }, [isUserIdle]);
+
+  useEffect(() => {
     if (typeof window === "undefined" || typeof document === "undefined") return;
     const markInteraction = () => {
-      setLastPresenceInteractionAt(Date.now());
-      setIsUserIdle(false);
+      lastPresenceInteractionAtRef.current = Date.now();
+      if (isUserIdleRef.current) {
+        isUserIdleRef.current = false;
+        setIsUserIdle(false);
+      }
     };
     const handleVisibilityChange = () => {
       if (document.visibilityState === "visible") {
@@ -2432,8 +2458,11 @@ export default function ChatDashboard({
 
     const evaluateIdle = () => {
       const hidden = document.visibilityState === "hidden";
-      const idleByInactivity = Date.now() - lastPresenceInteractionAt >= PRESENCE_AWAY_IDLE_MS;
-      setIsUserIdle(hidden || idleByInactivity);
+      const idleByInactivity = Date.now() - lastPresenceInteractionAtRef.current >= PRESENCE_AWAY_IDLE_MS;
+      const nextIsUserIdle = hidden || idleByInactivity;
+      if (nextIsUserIdle === isUserIdleRef.current) return;
+      isUserIdleRef.current = nextIsUserIdle;
+      setIsUserIdle(nextIsUserIdle);
     };
 
     evaluateIdle();
@@ -2441,7 +2470,7 @@ export default function ChatDashboard({
     return () => {
       window.clearInterval(interval);
     };
-  }, [lastPresenceInteractionAt]);
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -2542,14 +2571,15 @@ export default function ChatDashboard({
 
     void loadRoles();
     const interval = window.setInterval(() => {
+      if (shouldPauseBackgroundPolling()) return;
       void loadRoles();
-    }, 5000);
+    }, isElectronRuntime ? 12_000 : 5_000);
 
     return () => {
       mounted = false;
       window.clearInterval(interval);
     };
-  }, [activeGlytchId, loadGlytchRoleData]);
+  }, [activeGlytchId, isElectronRuntime, loadGlytchRoleData, shouldPauseBackgroundPolling]);
 
   useEffect(() => {
     if (viewMode !== "glytch-settings") return;
@@ -2597,14 +2627,15 @@ export default function ChatDashboard({
 
     void load();
     const interval = window.setInterval(() => {
+      if (shouldPauseBackgroundPolling()) return;
       void load();
-    }, 4000);
+    }, isElectronRuntime ? 8_000 : 4_000);
 
     return () => {
       mounted = false;
       window.clearInterval(interval);
     };
-  }, [loadDmSidebarData]);
+  }, [isElectronRuntime, loadDmSidebarData, shouldPauseBackgroundPolling]);
 
   useEffect(() => {
     if (dms.length === 0) {
@@ -2676,8 +2707,9 @@ export default function ChatDashboard({
 
     void pollLatestMessages();
     const interval = window.setInterval(() => {
+      if (shouldPauseBackgroundPolling()) return;
       void pollLatestMessages();
-    }, 4000);
+    }, isElectronRuntime ? 8_000 : 4_000);
 
     return () => {
       mounted = false;
@@ -2689,7 +2721,9 @@ export default function ChatDashboard({
     currentUserId,
     dmMessageNotificationsEnabled,
     dms,
+    isElectronRuntime,
     isAppVisibleAndFocused,
+    shouldPauseBackgroundPolling,
     triggerDesktopNotification,
     viewMode,
   ]);
@@ -2753,14 +2787,24 @@ export default function ChatDashboard({
 
     void pollIncomingDmCalls();
     const interval = window.setInterval(() => {
+      if (shouldPauseBackgroundPolling()) return;
       void pollIncomingDmCalls();
-    }, 4000);
+    }, isElectronRuntime ? 8_000 : 4_000);
 
     return () => {
       mounted = false;
       window.clearInterval(interval);
     };
-  }, [accessToken, currentUserId, dmCallNotificationsEnabled, dms, triggerDesktopNotification, voiceRoomKey]);
+  }, [
+    accessToken,
+    currentUserId,
+    dmCallNotificationsEnabled,
+    dms,
+    isElectronRuntime,
+    shouldPauseBackgroundPolling,
+    triggerDesktopNotification,
+    voiceRoomKey,
+  ]);
 
   useEffect(() => {
     let mounted = true;
@@ -2776,14 +2820,15 @@ export default function ChatDashboard({
 
     void load();
     const interval = window.setInterval(() => {
+      if (shouldPauseBackgroundPolling()) return;
       void load();
-    }, 4000);
+    }, isElectronRuntime ? 8_000 : 4_000);
 
     return () => {
       mounted = false;
       window.clearInterval(interval);
     };
-  }, [loadGlytchSidebarData]);
+  }, [isElectronRuntime, loadGlytchSidebarData, shouldPauseBackgroundPolling]);
 
   useEffect(() => {
     if (viewMode !== "dm") {
@@ -2826,10 +2871,15 @@ export default function ChatDashboard({
     let mounted = true;
 
     const loadMessages = async () => {
+      if (dmMessagesPollingInFlightRef.current) return;
+      dmMessagesPollingInFlightRef.current = true;
       const conversationId = activeConversationId;
+      const isConversationSwitch = dmLastLoadedConversationIdRef.current !== conversationId;
       let shouldAutoScrollAfterLoad = false;
       let scrollBehavior: ScrollBehavior = "smooth";
-      setLoadingMessages(true);
+      if (isConversationSwitch) {
+        setLoadingMessages(true);
+      }
       try {
         const rows = await fetchDmMessages(accessToken, conversationId);
         if (!mounted) return;
@@ -2855,7 +2905,6 @@ export default function ChatDashboard({
         );
         if (!mounted) return;
 
-        const isConversationSwitch = dmLastLoadedConversationIdRef.current !== conversationId;
         const previousLatestMessageId = isConversationSwitch ? 0 : dmLastLoadedMessageIdRef.current;
         const nextLatestMessageId = normalized[normalized.length - 1]?.id ?? 0;
         const hasNewerMessages = nextLatestMessageId > previousLatestMessageId;
@@ -2890,18 +2939,22 @@ export default function ChatDashboard({
         setChatError(err instanceof Error ? err.message : "Could not load messages.");
       } finally {
         if (mounted) {
-          setLoadingMessages(false);
+          if (isConversationSwitch) {
+            setLoadingMessages(false);
+          }
           if (shouldAutoScrollAfterLoad) {
             scrollMessageListToBottom(scrollBehavior);
           }
         }
+        dmMessagesPollingInFlightRef.current = false;
       }
     };
 
     void loadMessages();
     const interval = window.setInterval(() => {
+      if (shouldDeferMessagePolling()) return;
       void loadMessages();
-    }, 3000);
+    }, isElectronRuntime ? 5_000 : 3_000);
 
     return () => {
       mounted = false;
@@ -2915,6 +2968,8 @@ export default function ChatDashboard({
     currentProfile?.avatar_url,
     activeDm?.friendName,
     activeDm?.friendAvatarUrl,
+    isElectronRuntime,
+    shouldDeferMessagePolling,
     viewMode,
     isMessageListNearBottom,
     scrollMessageListToBottom,
@@ -2932,10 +2987,15 @@ export default function ChatDashboard({
     let mounted = true;
 
     const loadMessages = async () => {
+      if (glytchMessagesPollingInFlightRef.current) return;
+      glytchMessagesPollingInFlightRef.current = true;
       const channelId = activeChannelId;
+      const isChannelSwitch = glytchLastLoadedChannelIdRef.current !== channelId;
       let shouldAutoScrollAfterLoad = false;
       let scrollBehavior: ScrollBehavior = "smooth";
-      setLoadingMessages(true);
+      if (isChannelSwitch) {
+        setLoadingMessages(true);
+      }
       try {
         const rows = await fetchGlytchMessages(accessToken, channelId);
         if (!mounted) return;
@@ -2973,7 +3033,6 @@ export default function ChatDashboard({
         );
         if (!mounted) return;
 
-        const isChannelSwitch = glytchLastLoadedChannelIdRef.current !== channelId;
         const previousLatestMessageId = isChannelSwitch ? 0 : glytchLastLoadedMessageIdRef.current;
         const nextLatestMessageId = normalized[normalized.length - 1]?.id ?? 0;
         const hasNewerMessages = nextLatestMessageId > previousLatestMessageId;
@@ -2996,18 +3055,22 @@ export default function ChatDashboard({
         setChatError(err instanceof Error ? err.message : "Could not load messages.");
       } finally {
         if (mounted) {
-          setLoadingMessages(false);
+          if (isChannelSwitch) {
+            setLoadingMessages(false);
+          }
           if (shouldAutoScrollAfterLoad) {
             scrollMessageListToBottom(scrollBehavior);
           }
         }
+        glytchMessagesPollingInFlightRef.current = false;
       }
     };
 
     void loadMessages();
     const interval = window.setInterval(() => {
+      if (shouldDeferMessagePolling()) return;
       void loadMessages();
-    }, 3000);
+    }, isElectronRuntime ? 5_000 : 3_000);
 
     return () => {
       mounted = false;
@@ -3020,6 +3083,8 @@ export default function ChatDashboard({
     currentUserId,
     currentUserName,
     currentProfile?.avatar_url,
+    isElectronRuntime,
+    shouldDeferMessagePolling,
     viewMode,
     isMessageListNearBottom,
     scrollMessageListToBottom,
@@ -3192,8 +3257,9 @@ export default function ChatDashboard({
 
     void refreshVoiceParticipantsByChannel();
     const interval = window.setInterval(() => {
+      if (shouldPauseBackgroundPolling()) return;
       void refreshVoiceParticipantsByChannel();
-    }, 2000);
+    }, isElectronRuntime ? 6_000 : 2_000);
 
     return () => {
       mounted = false;
@@ -3205,7 +3271,9 @@ export default function ChatDashboard({
     currentProfile,
     currentUserId,
     displayName,
+    isElectronRuntime,
     knownProfiles,
+    shouldPauseBackgroundPolling,
     viewMode,
     voiceChannels,
   ]);
@@ -3459,7 +3527,7 @@ export default function ChatDashboard({
     }
   };
 
-  const handleJoinInviteFromDmMessage = async (messageId: number, invite: GlytchInviteMessagePayload) => {
+  const handleJoinInviteFromDmMessage = useCallback(async (messageId: number, invite: GlytchInviteMessagePayload) => {
     try {
       setJoinInviteBusyMessageId(messageId);
       setChatError("");
@@ -3483,9 +3551,9 @@ export default function ChatDashboard({
     } finally {
       setJoinInviteBusyMessageId((prev) => (prev === messageId ? null : prev));
     }
-  };
+  }, [accessToken, glytches, loadGlytchSidebarData]);
 
-  const handleRejectInviteFromDmMessage = async (messageId: number) => {
+  const handleRejectInviteFromDmMessage = useCallback(async (messageId: number) => {
     try {
       setJoinInviteBusyMessageId(messageId);
       setChatError("");
@@ -3496,7 +3564,7 @@ export default function ChatDashboard({
     } finally {
       setJoinInviteBusyMessageId((prev) => (prev === messageId ? null : prev));
     }
-  };
+  }, [accessToken]);
 
   const handleCreateChannel = async (e: FormEvent) => {
     e.preventDefault();
@@ -3756,8 +3824,11 @@ export default function ChatDashboard({
 
   const handleChangePresenceStatus = async (nextStatus: UserPresenceStatus) => {
     if (nextStatus === "active") {
-      setLastPresenceInteractionAt(Date.now());
-      setIsUserIdle(false);
+      lastPresenceInteractionAtRef.current = Date.now();
+      if (isUserIdleRef.current) {
+        isUserIdleRef.current = false;
+        setIsUserIdle(false);
+      }
     }
     setProfileSaveError("");
     setProfileForm((prev) => ({ ...prev, presenceStatus: nextStatus }));
@@ -4577,7 +4648,7 @@ export default function ChatDashboard({
     input?.focus();
   };
 
-  const handleToggleMessageReaction = async (messageId: number, emoji: string) => {
+  const handleToggleMessageReaction = useCallback(async (messageId: number, emoji: string) => {
     const normalizedEmoji = emoji.trim();
     if (!normalizedEmoji) return;
 
@@ -4630,7 +4701,7 @@ export default function ChatDashboard({
       setReactionBusyKey((prev) => (prev === busyKey ? null : prev));
       setReactionPickerMessageId((prev) => (prev === messageId ? null : prev));
     }
-  };
+  }, [accessToken, currentUserId, messages, viewMode]);
 
   const sendMessage = async (e: FormEvent) => {
     e.preventDefault();
@@ -5519,6 +5590,147 @@ export default function ChatDashboard({
     }
     return null;
   }, [messages]);
+  const renderedMessageRows = useMemo(
+    () => {
+      const visibleMessages =
+        messages.length > MAX_RENDERED_MESSAGES ? messages.slice(messages.length - MAX_RENDERED_MESSAGES) : messages;
+      return visibleMessages.map((msg) => {
+        const invitePayload = viewMode === "dm" ? parseGlytchInviteMessage(msg.text || "") : null;
+        return (
+          <article key={msg.id} className={`messageRow ${msg.sender === "me" ? "fromMe" : "fromOther"}`}>
+            <span className="messageAvatar" aria-hidden="true">
+              {msg.senderAvatarUrl ? <img src={msg.senderAvatarUrl} alt="" /> : <span>{initialsFromName(msg.senderName)}</span>}
+            </span>
+            <div className="messageContent">
+              {msg.sender !== "me" && <p className="senderName">{msg.senderName}</p>}
+              <div className="messageBody">
+                {invitePayload ? (
+                  <div className="dmInviteCard">
+                    <div className="dmInviteHeader">
+                      <span className="dmInviteIcon" aria-hidden="true">
+                        {invitePayload.glytchIconUrl ? <img src={invitePayload.glytchIconUrl} alt="" /> : <span>{initialsFromName(invitePayload.glytchName)}</span>}
+                      </span>
+                      <div className="dmInviteHeaderText">
+                        <p className="dmInviteTitle">
+                          {msg.sender === "other"
+                            ? `${invitePayload.inviterName} invited you to join ${invitePayload.glytchName}.`
+                            : `You invited this user to join ${invitePayload.glytchName}.`}
+                        </p>
+                        <p className="dmInviteMeta">Glytch invite</p>
+                      </div>
+                    </div>
+                    {msg.sender === "other" && (
+                      <div className="dmInviteActionRow">
+                        <button
+                          type="button"
+                          className="dmInviteJoinButton"
+                          onClick={() => void handleJoinInviteFromDmMessage(msg.id, invitePayload)}
+                          disabled={joinInviteBusyMessageId === msg.id}
+                        >
+                          {joinInviteBusyMessageId === msg.id ? "Joining..." : "Join"}
+                        </button>
+                        <button
+                          type="button"
+                          className="dmInviteRejectButton"
+                          onClick={() => void handleRejectInviteFromDmMessage(msg.id)}
+                          disabled={joinInviteBusyMessageId === msg.id}
+                        >
+                          {joinInviteBusyMessageId === msg.id ? "Working..." : "Reject"}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  msg.text && <div className="msg">{msg.text}</div>
+                )}
+                {msg.attachmentUrl && (
+                  <a href={msg.attachmentUrl} target="_blank" rel="noreferrer" className="messageMediaLink">
+                    <img
+                      src={msg.attachmentUrl}
+                      alt={`${msg.senderName} attachment`}
+                      className={msg.attachmentType === "gif" ? "messageMedia gif" : "messageMedia"}
+                      loading="lazy"
+                    />
+                  </a>
+                )}
+              </div>
+              <div className="messageReactions">
+                {msg.reactions.map((reaction) => {
+                  const reactionKey = `${msg.id}:${reaction.emoji}`;
+                  return (
+                    <button
+                      key={reaction.emoji}
+                      type="button"
+                      className={`messageReactionChip${reaction.reactedByMe ? " mine" : ""}`}
+                      onClick={() => {
+                        void handleToggleMessageReaction(msg.id, reaction.emoji);
+                      }}
+                      disabled={reactionBusyKey === reactionKey}
+                      aria-label={`Toggle ${reaction.emoji} reaction`}
+                    >
+                      <span>{reaction.emoji}</span>
+                      <span>{reaction.count}</span>
+                    </button>
+                  );
+                })}
+                <button
+                  type="button"
+                  className={`messageReactionAdd${reactionPickerMessageId === msg.id ? " active" : ""}`}
+                  onClick={() =>
+                    setReactionPickerMessageId((prev) => {
+                      if (prev === msg.id) return null;
+                      return msg.id;
+                    })
+                  }
+                  disabled={Boolean(reactionBusyKey)}
+                  aria-label="Add reaction"
+                >
+                  🙂
+                </button>
+                {reactionPickerMessageId === msg.id && (
+                  <div className="messageReactionPicker" role="listbox" aria-label="Pick reaction emoji">
+                    {REACTION_EMOJIS.map((emoji) => {
+                      const reactionKey = `${msg.id}:${emoji}`;
+                      const reactedByMe = msg.reactions.some((reaction) => reaction.emoji === emoji && reaction.reactedByMe);
+                      return (
+                        <button
+                          key={emoji}
+                          type="button"
+                          className={`messageReactionOption${reactedByMe ? " active" : ""}`}
+                          onClick={() => {
+                            void handleToggleMessageReaction(msg.id, emoji);
+                          }}
+                          disabled={reactionBusyKey === reactionKey}
+                          aria-label={`React with ${emoji}`}
+                        >
+                          {emoji}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+              <div className="msgMeta">
+                <time className="msgTime">{formatTime(msg.timestamp)}</time>
+                {msg.sender === "me" && latestSeenOutgoingMessageId === msg.id && <span className="msgSeen">Seen</span>}
+              </div>
+            </div>
+          </article>
+        );
+      });
+    },
+    [
+      handleJoinInviteFromDmMessage,
+      handleRejectInviteFromDmMessage,
+      handleToggleMessageReaction,
+      joinInviteBusyMessageId,
+      latestSeenOutgoingMessageId,
+      messages,
+      reactionBusyKey,
+      reactionPickerMessageId,
+      viewMode,
+    ],
+  );
 
   const openProfileViewer = async (userId: string) => {
     setMemberFriendActionError("");
@@ -8358,136 +8570,7 @@ export default function ChatDashboard({
                 )}
                 {chatError && <p className="chatError">{chatError}</p>}
 
-                {messages.map((msg) => {
-                  const invitePayload = viewMode === "dm" ? parseGlytchInviteMessage(msg.text || "") : null;
-                  return (
-                    <article key={msg.id} className={`messageRow ${msg.sender === "me" ? "fromMe" : "fromOther"}`}>
-                      <span className="messageAvatar" aria-hidden="true">
-                        {msg.senderAvatarUrl ? <img src={msg.senderAvatarUrl} alt="" /> : <span>{initialsFromName(msg.senderName)}</span>}
-                      </span>
-                      <div className="messageContent">
-                        {msg.sender !== "me" && <p className="senderName">{msg.senderName}</p>}
-                        <div className="messageBody">
-                          {invitePayload ? (
-                            <div className="dmInviteCard">
-                              <div className="dmInviteHeader">
-                                <span className="dmInviteIcon" aria-hidden="true">
-                                  {invitePayload.glytchIconUrl ? (
-                                    <img src={invitePayload.glytchIconUrl} alt="" />
-                                  ) : (
-                                    <span>{initialsFromName(invitePayload.glytchName)}</span>
-                                  )}
-                                </span>
-                                <div className="dmInviteHeaderText">
-                                  <p className="dmInviteTitle">
-                                    {msg.sender === "other"
-                                      ? `${invitePayload.inviterName} invited you to join ${invitePayload.glytchName}.`
-                                      : `You invited this user to join ${invitePayload.glytchName}.`}
-                                  </p>
-                                  <p className="dmInviteMeta">Glytch invite</p>
-                                </div>
-                              </div>
-                              {msg.sender === "other" && (
-                                <div className="dmInviteActionRow">
-                                  <button
-                                    type="button"
-                                    className="dmInviteJoinButton"
-                                    onClick={() => void handleJoinInviteFromDmMessage(msg.id, invitePayload)}
-                                    disabled={joinInviteBusyMessageId === msg.id}
-                                  >
-                                    {joinInviteBusyMessageId === msg.id ? "Joining..." : "Join"}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="dmInviteRejectButton"
-                                    onClick={() => void handleRejectInviteFromDmMessage(msg.id)}
-                                    disabled={joinInviteBusyMessageId === msg.id}
-                                  >
-                                    {joinInviteBusyMessageId === msg.id ? "Working..." : "Reject"}
-                                  </button>
-                                </div>
-                              )}
-                            </div>
-                          ) : (
-                            msg.text && <div className="msg">{msg.text}</div>
-                          )}
-                          {msg.attachmentUrl && (
-                            <a href={msg.attachmentUrl} target="_blank" rel="noreferrer" className="messageMediaLink">
-                              <img
-                                src={msg.attachmentUrl}
-                                alt={`${msg.senderName} attachment`}
-                                className={msg.attachmentType === "gif" ? "messageMedia gif" : "messageMedia"}
-                                loading="lazy"
-                              />
-                            </a>
-                          )}
-                        </div>
-                        <div className="messageReactions">
-                          {msg.reactions.map((reaction) => {
-                            const reactionKey = `${msg.id}:${reaction.emoji}`;
-                            return (
-                              <button
-                                key={reaction.emoji}
-                                type="button"
-                                className={`messageReactionChip${reaction.reactedByMe ? " mine" : ""}`}
-                                onClick={() => {
-                                  void handleToggleMessageReaction(msg.id, reaction.emoji);
-                                }}
-                                disabled={reactionBusyKey === reactionKey}
-                                aria-label={`Toggle ${reaction.emoji} reaction`}
-                              >
-                                <span>{reaction.emoji}</span>
-                                <span>{reaction.count}</span>
-                              </button>
-                            );
-                          })}
-                          <button
-                            type="button"
-                            className={`messageReactionAdd${reactionPickerMessageId === msg.id ? " active" : ""}`}
-                            onClick={() =>
-                              setReactionPickerMessageId((prev) => {
-                                if (prev === msg.id) return null;
-                                return msg.id;
-                              })
-                            }
-                            disabled={Boolean(reactionBusyKey)}
-                            aria-label="Add reaction"
-                          >
-                            🙂
-                          </button>
-                          {reactionPickerMessageId === msg.id && (
-                            <div className="messageReactionPicker" role="listbox" aria-label="Pick reaction emoji">
-                              {REACTION_EMOJIS.map((emoji) => {
-                                const reactionKey = `${msg.id}:${emoji}`;
-                                const reactedByMe = msg.reactions.some(
-                                  (reaction) => reaction.emoji === emoji && reaction.reactedByMe,
-                                );
-                                return (
-                                  <button
-                                    key={emoji}
-                                    type="button"
-                                    className={`messageReactionOption${reactedByMe ? " active" : ""}`}
-                                    onClick={() => {
-                                      void handleToggleMessageReaction(msg.id, emoji);
-                                    }}
-                                    disabled={reactionBusyKey === reactionKey}
-                                    aria-label={`React with ${emoji}`}
-                                  >
-                                    {emoji}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          )}
-                        </div>
-                        <div className="msgMeta">
-                          <time className="msgTime">{formatTime(msg.timestamp)}</time>
-                          {msg.sender === "me" && latestSeenOutgoingMessageId === msg.id && <span className="msgSeen">Seen</span>}
-                        </div>
-                      </div>
-                    </article>
-                  );
-                })}
+                {renderedMessageRows}
 
                 {(viewMode === "dm"
                   ? !!activeConversationId
