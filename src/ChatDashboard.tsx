@@ -259,6 +259,16 @@ const MAX_GIF_RESULTS = 20;
 const SHOWCASE_MAX_MODULES = 12;
 const SHOWCASE_MAX_ENTRIES = 16;
 const MAX_RENDERED_MESSAGES = 120;
+const DEFAULT_DM_CHAT_BACKGROUND: BackgroundGradient = {
+  from: "#111b2f",
+  to: "#0d1730",
+  mode: "gradient",
+};
+const DEFAULT_GLYTCH_CHAT_BACKGROUND: BackgroundGradient = {
+  from: "#0f1c31",
+  to: "#0b1528",
+  mode: "gradient",
+};
 const SHOWCASE_MAX_TITLE_LENGTH = 60;
 const SHOWCASE_MAX_TEXT_LENGTH = 1000;
 const PRESENCE_HEARTBEAT_MS = 45_000;
@@ -546,18 +556,20 @@ function normalizeBackgroundGradient(raw: unknown): BackgroundGradient | null {
     typeof candidate.imageUrl === "string" && candidate.imageUrl.trim().length > 0
       ? candidate.imageUrl.trim()
       : undefined;
-  const mode =
-    candidate.mode === "image" && imageUrl
-      ? "image"
-      : imageUrl
-        ? "image"
-        : "gradient";
+  let mode: "image" | "gradient";
+  if (candidate.mode === "image") {
+    mode = imageUrl ? "image" : "gradient";
+  } else if (candidate.mode === "gradient") {
+    mode = "gradient";
+  } else {
+    mode = imageUrl ? "image" : "gradient";
+  }
 
   return {
     from,
     to,
     mode,
-    imageUrl,
+    imageUrl: mode === "image" ? imageUrl : undefined,
   };
 }
 
@@ -747,6 +759,10 @@ function resolveChatBackgroundStyle(background: BackgroundGradient): CSSProperti
   }
 
   return {
+    backgroundImage: "none",
+    backgroundSize: "auto",
+    backgroundPosition: "initial",
+    backgroundRepeat: "repeat",
     background: `linear-gradient(165deg, ${background.from}, ${background.to})`,
   };
 }
@@ -995,10 +1011,14 @@ function buildProfileForm(profile: Profile | null): ProfileForm {
     cardStyle: theme.cardStyle === "solid" ? "solid" : "glass",
     appThemeMode,
     appTheme,
-    dmBackgroundFrom: typeof theme.dmBackgroundFrom === "string" ? theme.dmBackgroundFrom : "#111b2f",
-    dmBackgroundTo: typeof theme.dmBackgroundTo === "string" ? theme.dmBackgroundTo : "#0d1730",
-    glytchBackgroundFrom: typeof theme.glytchBackgroundFrom === "string" ? theme.glytchBackgroundFrom : "#0f1c31",
-    glytchBackgroundTo: typeof theme.glytchBackgroundTo === "string" ? theme.glytchBackgroundTo : "#0b1528",
+    dmBackgroundFrom:
+      typeof theme.dmBackgroundFrom === "string" ? theme.dmBackgroundFrom : DEFAULT_DM_CHAT_BACKGROUND.from,
+    dmBackgroundTo:
+      typeof theme.dmBackgroundTo === "string" ? theme.dmBackgroundTo : DEFAULT_DM_CHAT_BACKGROUND.to,
+    glytchBackgroundFrom:
+      typeof theme.glytchBackgroundFrom === "string" ? theme.glytchBackgroundFrom : DEFAULT_GLYTCH_CHAT_BACKGROUND.from,
+    glytchBackgroundTo:
+      typeof theme.glytchBackgroundTo === "string" ? theme.glytchBackgroundTo : DEFAULT_GLYTCH_CHAT_BACKGROUND.to,
     dmBackgroundByConversation,
     glytchBackgroundByChannel,
     showcases,
@@ -1171,6 +1191,8 @@ export default function ChatDashboard({
   const [quickThemeImageUploadBusy, setQuickThemeImageUploadBusy] = useState(false);
   const [quickThemeBusy, setQuickThemeBusy] = useState(false);
   const [quickThemeError, setQuickThemeError] = useState("");
+  const [forcedDefaultDmConversationIds, setForcedDefaultDmConversationIds] = useState<Record<number, true>>({});
+  const [forcedDefaultGlytchChannelIds, setForcedDefaultGlytchChannelIds] = useState<Record<number, true>>({});
   const [draggingShowcaseId, setDraggingShowcaseId] = useState<string | null>(null);
   const [showcaseDropTargetId, setShowcaseDropTargetId] = useState<string | null>(null);
   const lastPresenceInteractionAtRef = useRef(Date.now());
@@ -1232,10 +1254,12 @@ export default function ChatDashboard({
     () => channels.find((channel) => channel.id === activeChannelId) || null,
     [channels, activeChannelId],
   );
-  const activeChannelSharedBackground = useMemo(
-    () => normalizeBackgroundGradient(activeChannel?.channel_theme),
-    [activeChannel?.channel_theme],
-  );
+  const activeChannelSharedBackground = useMemo(() => {
+    if (activeChannelId && forcedDefaultGlytchChannelIds[activeChannelId]) {
+      return null;
+    }
+    return normalizeBackgroundGradient(activeChannel?.channel_theme);
+  }, [activeChannel?.channel_theme, activeChannelId, forcedDefaultGlytchChannelIds]);
 
   const myRoleIdsInActiveGlytch = useMemo(
     () =>
@@ -1380,11 +1404,36 @@ export default function ChatDashboard({
   }, [viewMode, activeConversationId, activeDm?.friendName, activeChannel?.kind, activeChannel?.name, activeChannelId]);
   const quickThemeTargetOverride = useMemo(() => {
     if (!quickThemeTarget) return null;
+    const targetId = Number.parseInt(quickThemeTarget.key, 10);
     if (quickThemeTarget.kind === "dm") {
+      if (Number.isFinite(targetId) && targetId > 0 && forcedDefaultDmConversationIds[targetId]) {
+        return null;
+      }
       return activeDm?.sharedBackground || null;
     }
+    if (Number.isFinite(targetId) && targetId > 0 && forcedDefaultGlytchChannelIds[targetId]) {
+      return null;
+    }
     return activeChannelSharedBackground;
-  }, [quickThemeTarget, activeDm?.sharedBackground, activeChannelSharedBackground]);
+  }, [
+    quickThemeTarget,
+    activeDm?.sharedBackground,
+    activeChannelSharedBackground,
+    forcedDefaultDmConversationIds,
+    forcedDefaultGlytchChannelIds,
+  ]);
+  const quickThemeLegacyDmOverride = useMemo(() => {
+    if (!quickThemeTarget || quickThemeTarget.kind !== "dm") return null;
+    const conversationId = Number.parseInt(quickThemeTarget.key, 10);
+    if (Number.isFinite(conversationId) && conversationId > 0 && forcedDefaultDmConversationIds[conversationId]) {
+      return null;
+    }
+    return profileForm.dmBackgroundByConversation[quickThemeTarget.key] || null;
+  }, [profileForm.dmBackgroundByConversation, quickThemeTarget, forcedDefaultDmConversationIds]);
+  const quickThemeHasOverride = useMemo(
+    () => Boolean(quickThemeTargetOverride || quickThemeLegacyDmOverride),
+    [quickThemeLegacyDmOverride, quickThemeTargetOverride],
+  );
   const shouldShowQuickThemeControl = Boolean(
     quickThemeTarget && (quickThemeTarget.kind === "dm" || canManageChannelsInActiveGlytch),
   );
@@ -2127,12 +2176,13 @@ export default function ChatDashboard({
     const nextDms = conversations.map((conv) => {
       const friendUserId = getFriendId(conv, currentUserId);
       const profile = profileMap.get(friendUserId);
+      const isForcedDefault = Boolean(forcedDefaultDmConversationIds[conv.id]);
       return {
         conversationId: conv.id,
         friendUserId,
         friendName: profile?.username || profile?.display_name || "User",
         friendAvatarUrl: profile?.avatar_url || "",
-        sharedBackground: normalizeBackgroundGradient(conv.dm_theme),
+        sharedBackground: isForcedDefault ? null : normalizeBackgroundGradient(conv.dm_theme),
       };
     });
 
@@ -2151,7 +2201,7 @@ export default function ChatDashboard({
       setActiveConversationId(null);
       setUnreadDmCounts({});
     }
-  }, [accessToken, currentUserId]);
+  }, [accessToken, currentUserId, forcedDefaultDmConversationIds]);
 
   const loadGlytchSidebarData = useCallback(async () => {
     const rows = await listGlytches(accessToken);
@@ -2167,27 +2217,35 @@ export default function ChatDashboard({
 
     const currentGlytchId = activeGlytchIdRef.current;
     const currentChannelId = activeChannelIdRef.current;
-    const nextGlytchId = rows.some((g) => g.id === currentGlytchId) ? currentGlytchId : rows[0].id;
+    const nextGlytchId = rows.some((g) => g.id === currentGlytchId) ? currentGlytchId : null;
     setActiveGlytchId(nextGlytchId);
 
-    if (!nextGlytchId) return;
+    if (!nextGlytchId) {
+      setChannelCategories([]);
+      setChannels([]);
+      setActiveChannelId(null);
+      return;
+    }
 
     const [categoryRows, channelRows] = await Promise.all([
       listGlytchChannelCategories(accessToken, nextGlytchId),
       listGlytchChannels(accessToken, nextGlytchId),
     ]);
+    const normalizedChannelRows = channelRows.map((channel) =>
+      forcedDefaultGlytchChannelIds[channel.id] ? { ...channel, channel_theme: null } : channel,
+    );
     setChannelCategories(categoryRows);
-    setChannels(channelRows);
+    setChannels(normalizedChannelRows);
 
-    if (channelRows.length === 0) {
+    if (normalizedChannelRows.length === 0) {
       setActiveChannelId(null);
       return;
     }
 
-    if (!channelRows.some((channel) => channel.id === currentChannelId)) {
-      setActiveChannelId(channelRows[0].id);
+    if (!normalizedChannelRows.some((channel) => channel.id === currentChannelId)) {
+      setActiveChannelId(normalizedChannelRows[0].id);
     }
-  }, [accessToken]);
+  }, [accessToken, forcedDefaultGlytchChannelIds]);
 
   const loadGlytchRoleData = useCallback(async (glytchId: number) => {
     const [roles, members, memberRoles, perChannelPermissions, bans] = await Promise.all([
@@ -2331,11 +2389,21 @@ export default function ChatDashboard({
   useEffect(() => {
     if (!showQuickThemeEditor || !quickThemeTarget) return;
     if (quickThemeTarget.kind === "dm") {
-      const personalFallback = profileForm.dmBackgroundByConversation[quickThemeTarget.key] || null;
-      const background = activeDm?.sharedBackground || personalFallback || {
-        from: profileForm.dmBackgroundFrom,
-        to: profileForm.dmBackgroundTo,
-      };
+      const conversationId = Number.parseInt(quickThemeTarget.key, 10);
+      const isForcedDefault =
+        Number.isFinite(conversationId) && conversationId > 0 && Boolean(forcedDefaultDmConversationIds[conversationId]);
+      const personalFallback =
+        isForcedDefault ? null : profileForm.dmBackgroundByConversation[quickThemeTarget.key] || null;
+      const sharedBackground = isForcedDefault ? null : activeDm?.sharedBackground || null;
+      const background =
+        sharedBackground ||
+        personalFallback ||
+        (isForcedDefault
+          ? DEFAULT_DM_CHAT_BACKGROUND
+          : {
+              from: profileForm.dmBackgroundFrom,
+              to: profileForm.dmBackgroundTo,
+            });
       setQuickThemeModeDraft(background.mode === "image" && background.imageUrl ? "image" : "gradient");
       setQuickThemeFromDraft(background.from);
       setQuickThemeToDraft(background.to);
@@ -2343,10 +2411,16 @@ export default function ChatDashboard({
       setQuickThemeError("");
       return;
     }
-    const background = activeChannelSharedBackground || {
-      from: profileForm.glytchBackgroundFrom,
-      to: profileForm.glytchBackgroundTo,
-    };
+    const isForcedDefaultChannel =
+      Boolean(activeChannelId) && Boolean(forcedDefaultGlytchChannelIds[activeChannelId || 0]);
+    const background =
+      activeChannelSharedBackground ||
+      (isForcedDefaultChannel
+        ? DEFAULT_GLYTCH_CHAT_BACKGROUND
+        : {
+            from: profileForm.glytchBackgroundFrom,
+            to: profileForm.glytchBackgroundTo,
+          });
     setQuickThemeModeDraft(background.mode === "image" && background.imageUrl ? "image" : "gradient");
     setQuickThemeFromDraft(background.from);
     setQuickThemeToDraft(background.to);
@@ -2354,7 +2428,10 @@ export default function ChatDashboard({
     setQuickThemeError("");
   }, [
     activeChannelSharedBackground,
+    activeChannelId,
     activeDm?.sharedBackground,
+    forcedDefaultDmConversationIds,
+    forcedDefaultGlytchChannelIds,
     profileForm.dmBackgroundByConversation,
     profileForm.dmBackgroundFrom,
     profileForm.dmBackgroundTo,
@@ -2529,15 +2606,18 @@ export default function ChatDashboard({
           listGlytchChannelCategories(accessToken, activeGlytchId),
           listGlytchChannels(accessToken, activeGlytchId),
         ]);
+        const normalizedChannelRows = channelRows.map((channel) =>
+          forcedDefaultGlytchChannelIds[channel.id] ? { ...channel, channel_theme: null } : channel,
+        );
         if (!mounted) return;
         setChannelCategories(categoryRows);
-        setChannels(channelRows);
-        if (channelRows.length === 0) {
+        setChannels(normalizedChannelRows);
+        if (normalizedChannelRows.length === 0) {
           setActiveChannelId(null);
           return;
         }
-        if (!channelRows.some((channel) => channel.id === activeChannelId)) {
-          setActiveChannelId(channelRows[0].id);
+        if (!normalizedChannelRows.some((channel) => channel.id === activeChannelId)) {
+          setActiveChannelId(normalizedChannelRows[0].id);
         }
       } catch (err) {
         if (!mounted) return;
@@ -2550,7 +2630,7 @@ export default function ChatDashboard({
     return () => {
       mounted = false;
     };
-  }, [accessToken, activeGlytchId, activeChannelId]);
+  }, [accessToken, activeGlytchId, activeChannelId, forcedDefaultGlytchChannelIds]);
 
   useEffect(() => {
     if (!activeGlytchId) return;
@@ -4103,6 +4183,12 @@ export default function ChatDashboard({
       mode: quickThemeModeDraft,
       imageUrl: quickThemeModeDraft === "image" ? normalizedImageUrl : undefined,
     };
+    const nextThemePayload: Record<string, unknown> = {
+      from: normalizedFrom,
+      to: normalizedTo,
+      mode: quickThemeModeDraft,
+      imageUrl: quickThemeModeDraft === "image" ? normalizedImageUrl : "",
+    };
 
     try {
       if (quickThemeTarget.kind === "dm") {
@@ -4110,7 +4196,7 @@ export default function ChatDashboard({
         if (!Number.isFinite(conversationId) || conversationId <= 0) {
           throw new Error("Invalid DM conversation.");
         }
-        const updatedConversation = await setDmConversationTheme(accessToken, conversationId, nextOverride);
+        const updatedConversation = await setDmConversationTheme(accessToken, conversationId, nextThemePayload);
         const sharedBackground = normalizeBackgroundGradient(updatedConversation.dm_theme) || nextOverride;
         setDms((prev) =>
           prev.map((dm) =>
@@ -4122,12 +4208,18 @@ export default function ChatDashboard({
               : dm,
           ),
         );
+        setForcedDefaultDmConversationIds((prev) => {
+          if (!prev[conversationId]) return prev;
+          const next = { ...prev };
+          delete next[conversationId];
+          return next;
+        });
       } else {
         const channelId = Number.parseInt(quickThemeTarget.key, 10);
         if (!Number.isFinite(channelId) || channelId <= 0) {
           throw new Error("Invalid Glytch channel.");
         }
-        const updatedChannel = await setGlytchChannelTheme(accessToken, channelId, nextOverride);
+        const updatedChannel = await setGlytchChannelTheme(accessToken, channelId, nextThemePayload);
         setChannels((prev) =>
           prev.map((channel) =>
             channel.id === channelId
@@ -4135,6 +4227,12 @@ export default function ChatDashboard({
               : channel,
           ),
         );
+        setForcedDefaultGlytchChannelIds((prev) => {
+          if (!prev[channelId]) return prev;
+          const next = { ...prev };
+          delete next[channelId];
+          return next;
+        });
       }
       setShowQuickThemeEditor(false);
     } catch (err) {
@@ -4159,27 +4257,51 @@ export default function ChatDashboard({
         if (!Number.isFinite(conversationId) || conversationId <= 0) {
           throw new Error("Invalid DM conversation.");
         }
-        await setDmConversationTheme(accessToken, conversationId, null);
+        const defaultTheme = DEFAULT_DM_CHAT_BACKGROUND;
+        const defaultThemePayload: Record<string, unknown> = {
+          ...defaultTheme,
+          imageUrl: "",
+        };
         setDms((prev) =>
           prev.map((dm) =>
             dm.conversationId === conversationId
               ? {
                   ...dm,
-                  sharedBackground: null,
+                  sharedBackground: defaultTheme,
                 }
               : dm,
           ),
         );
+        setForcedDefaultDmConversationIds((prev) => ({ ...prev, [conversationId]: true }));
+        setProfileForm((prev) => {
+          const nextByConversation = { ...prev.dmBackgroundByConversation };
+          delete nextByConversation[quickThemeTarget.key];
+          return {
+            ...prev,
+            dmBackgroundByConversation: nextByConversation,
+          };
+        });
+        await setDmConversationTheme(accessToken, conversationId, defaultThemePayload);
       } else {
         const channelId = Number.parseInt(quickThemeTarget.key, 10);
         if (!Number.isFinite(channelId) || channelId <= 0) {
           throw new Error("Invalid Glytch channel.");
         }
-        await setGlytchChannelTheme(accessToken, channelId, null);
+        const defaultTheme = DEFAULT_GLYTCH_CHAT_BACKGROUND;
+        const defaultThemePayload: Record<string, unknown> = {
+          ...defaultTheme,
+          imageUrl: "",
+        };
         setChannels((prev) =>
-          prev.map((channel) => (channel.id === channelId ? { ...channel, channel_theme: null } : channel)),
+          prev.map((channel) =>
+            channel.id === channelId ? { ...channel, channel_theme: defaultThemePayload } : channel,
+          ),
         );
+        setForcedDefaultGlytchChannelIds((prev) => ({ ...prev, [channelId]: true }));
+        await setGlytchChannelTheme(accessToken, channelId, defaultThemePayload);
       }
+      setQuickThemeModeDraft("gradient");
+      setQuickThemeImageDraft("");
       setShowQuickThemeEditor(false);
     } catch (err) {
       setQuickThemeError(err instanceof Error ? err.message : "Could not clear theme override.");
@@ -5548,31 +5670,64 @@ export default function ChatDashboard({
     (!isCurrentChannelImagesOnly || hasMediaToSend) &&
     (!isCurrentChannelTextOnly || !hasMediaToSend) &&
     !messageMediaBusy;
+  const isCurrentMessageBackgroundForcedDefault = useMemo(() => {
+    if (viewMode === "dm" && activeConversationId) {
+      return Boolean(forcedDefaultDmConversationIds[activeConversationId]);
+    }
+    if (viewMode === "glytch" && activeChannel?.kind === "text" && activeChannelId) {
+      return Boolean(forcedDefaultGlytchChannelIds[activeChannelId]);
+    }
+    return false;
+  }, [activeChannel?.kind, activeChannelId, activeConversationId, forcedDefaultDmConversationIds, forcedDefaultGlytchChannelIds, viewMode]);
   const messageDisplayStyle = useMemo<CSSProperties | undefined>(() => {
     if (viewMode === "dm") {
-      const sharedOverride = activeDm?.sharedBackground || null;
-      const personalOverride = activeConversationId
-        ? profileForm.dmBackgroundByConversation[String(activeConversationId)] || null
-        : null;
-      const background = sharedOverride || personalOverride || {
-        from: profileForm.dmBackgroundFrom,
-        to: profileForm.dmBackgroundTo,
-      };
-      return resolveChatBackgroundStyle(background);
+      const isForcedDefaultConversation =
+        Boolean(activeConversationId) && Boolean(forcedDefaultDmConversationIds[activeConversationId || 0]);
+      const sharedOverride = isForcedDefaultConversation ? null : activeDm?.sharedBackground || null;
+      const personalOverride =
+        isForcedDefaultConversation || !activeConversationId
+          ? null
+          : profileForm.dmBackgroundByConversation[String(activeConversationId)] || null;
+      const background =
+        sharedOverride ||
+        personalOverride ||
+        (isForcedDefaultConversation
+          ? DEFAULT_DM_CHAT_BACKGROUND
+          : {
+              from: profileForm.dmBackgroundFrom,
+              to: profileForm.dmBackgroundTo,
+            });
+      return {
+        ...resolveChatBackgroundStyle(background),
+        "--chat-bg-from": background.from,
+        "--chat-bg-to": background.to,
+      } as CSSProperties;
     }
     if (viewMode === "glytch" && activeChannel?.kind === "text") {
-      const background = activeChannelSharedBackground || {
-        from: profileForm.glytchBackgroundFrom,
-        to: profileForm.glytchBackgroundTo,
-      };
-      return resolveChatBackgroundStyle(background);
+      const isForcedDefaultChannel = Boolean(activeChannelId) && Boolean(forcedDefaultGlytchChannelIds[activeChannelId || 0]);
+      const background =
+        (isForcedDefaultChannel ? null : activeChannelSharedBackground) ||
+        (isForcedDefaultChannel
+          ? DEFAULT_GLYTCH_CHAT_BACKGROUND
+          : {
+              from: profileForm.glytchBackgroundFrom,
+              to: profileForm.glytchBackgroundTo,
+            });
+      return {
+        ...resolveChatBackgroundStyle(background),
+        "--chat-bg-from": background.from,
+        "--chat-bg-to": background.to,
+      } as CSSProperties;
     }
     return undefined;
   }, [
     activeChannel?.kind,
+    activeChannelId,
     activeChannelSharedBackground,
     activeDm?.sharedBackground,
     activeConversationId,
+    forcedDefaultDmConversationIds,
+    forcedDefaultGlytchChannelIds,
     profileForm.dmBackgroundFrom,
     profileForm.dmBackgroundTo,
     profileForm.dmBackgroundByConversation,
@@ -6921,7 +7076,7 @@ export default function ChatDashboard({
                     >
                       <p className="quickThemeTitle">{quickThemeTarget.label}</p>
                       <p className="quickThemeMeta">
-                        {quickThemeTargetOverride
+                        {quickThemeHasOverride
                           ? "Custom colors are active for this chat."
                           : quickThemeTarget.kind === "dm"
                             ? "Using your default DM colors."
@@ -7008,9 +7163,9 @@ export default function ChatDashboard({
                           type="button"
                           className="voiceButton compact"
                           onClick={() => void handleClearQuickThemeOverride()}
-                          disabled={quickThemeBusy || quickThemeImageUploadBusy || !quickThemeTargetOverride}
+                          disabled={quickThemeBusy || quickThemeImageUploadBusy || !quickThemeHasOverride}
                         >
-                          Use Default
+                          Restore Default
                         </button>
                       </div>
                     </div>
@@ -8551,13 +8706,18 @@ export default function ChatDashboard({
                   )}
                 </article>
               )}
-              <section ref={messageDisplayRef} className="messagedisplay" style={messageDisplayStyle} aria-label="Messages">
+              <section
+                ref={messageDisplayRef}
+                className={isCurrentMessageBackgroundForcedDefault ? "messagedisplay forceDefaultBackground" : "messagedisplay"}
+                style={messageDisplayStyle}
+                aria-label="Messages"
+              >
                 {voiceError && <p className="chatError">{voiceError}</p>}
                 {viewMode === "dm" && !activeConversationId && (
                   <p className="chatInfo">Add friends and accept requests to start a private DM.</p>
                 )}
                 {viewMode === "glytch" && !activeChannelId && (
-                  <p className="chatInfo">Create or join a Glytch to start chatting.</p>
+                  <p className="chatInfo">Choose a Glytch to see its channels and start chatting.</p>
                 )}
                 {viewMode === "glytch" && activeChannel?.kind === "voice" && (
                   <p className="chatInfo">This is a voice channel. Join voice to talk.</p>

@@ -15,7 +15,14 @@ import LandingPage from "./pages/LandingPage";
 import RouteGuardPage from "./pages/RouteGuardPage";
 import { useHashRoute } from "./routing/useHashRoute";
 import { fallbackUsername, isValidUsername, normalizeUsername } from "./lib/auth";
-import { clearSessionStorage, loadSession, saveSession, withSessionExpiry } from "./lib/sessionStorage";
+import {
+  clearSessionStorage,
+  getStoredSessionPersistence,
+  loadSession,
+  saveSession,
+  type SessionPersistence,
+  withSessionExpiry,
+} from "./lib/sessionStorage";
 import type { SessionUser } from "./types/session";
 import "./App.css";
 import "./routes.css";
@@ -24,6 +31,7 @@ const ACCESS_TOKEN_REFRESH_BUFFER_MS = 2 * 60 * 1000;
 const ACCESS_TOKEN_MIN_REFRESH_DELAY_MS = 15_000;
 const ACCESS_TOKEN_FALLBACK_REFRESH_DELAY_MS = 25 * 60 * 1000;
 const RESUME_REFRESH_THROTTLE_MS = 15_000;
+const REMEMBER_ME_PREF_KEY = "glytch_remember_me";
 
 const EMPTY_AUTH_FORM: AuthFormState = {
   username: "",
@@ -35,17 +43,26 @@ const EMPTY_AUTH_FORM: AuthFormState = {
 function App() {
   const [mode, setMode] = useState<AuthMode>("login");
   const [form, setForm] = useState<AuthFormState>(EMPTY_AUTH_FORM);
+  const [rememberMe, setRememberMe] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(REMEMBER_ME_PREF_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [currentUser, setCurrentUser] = useState<SessionUser | null>(null);
   const { route, navigate } = useHashRoute();
 
   const currentUserRef = useRef<SessionUser | null>(null);
+  const sessionPersistenceRef = useRef<SessionPersistence>("session");
   const refreshInFlightRef = useRef<Promise<SessionUser | null> | null>(null);
   const lastResumeRefreshAtRef = useRef(0);
 
   const clearSession = useCallback(() => {
     clearSessionStorage();
+    sessionPersistenceRef.current = "session";
     setCurrentUser(null);
   }, []);
 
@@ -95,7 +112,7 @@ function App() {
       const refreshPromise = (async () => {
         try {
           const next = await applyRefreshedSession(existing);
-          saveSession(next);
+          saveSession(next, sessionPersistenceRef.current);
           setCurrentUser(next);
           return next;
         } catch (err) {
@@ -128,6 +145,11 @@ function App() {
     const boot = async () => {
       const existing = loadSession();
       if (!existing) return;
+      const storedPersistence = getStoredSessionPersistence();
+      if (storedPersistence) {
+        sessionPersistenceRef.current = storedPersistence;
+        setRememberMe(storedPersistence === "local");
+      }
 
       try {
         const maybeRefreshed =
@@ -150,7 +172,7 @@ function App() {
           username: resolvedUsername,
         });
 
-        saveSession(next);
+        saveSession(next, sessionPersistenceRef.current);
         if (!cancelled) {
           setCurrentUser(next);
         }
@@ -159,7 +181,7 @@ function App() {
         if (msg.includes("jwt expired") || msg.includes("invalid jwt")) {
           try {
             const next = await applyRefreshedSession(existing);
-            saveSession(next);
+            saveSession(next, sessionPersistenceRef.current);
             if (!cancelled) {
               setCurrentUser(next);
             }
@@ -305,7 +327,8 @@ function App() {
           refreshToken: result.session.refresh_token,
         });
 
-        saveSession(sessionUser);
+        sessionPersistenceRef.current = "session";
+        saveSession(sessionUser, "session");
         setCurrentUser(sessionUser);
         navigate("/app");
       } catch (err) {
@@ -342,7 +365,10 @@ function App() {
         refreshToken: session.refresh_token,
       });
 
-      saveSession(sessionUser);
+      const persistence: SessionPersistence = rememberMe ? "local" : "session";
+      sessionPersistenceRef.current = persistence;
+      saveSession(sessionUser, persistence);
+      localStorage.setItem(REMEMBER_ME_PREF_KEY, rememberMe ? "1" : "0");
       setCurrentUser(sessionUser);
       navigate("/app");
     } catch (err) {
@@ -381,6 +407,7 @@ function App() {
       <AuthPage
         mode={mode}
         form={form}
+        rememberMe={rememberMe}
         loading={loading}
         error={error}
         onModeChange={(nextMode) => {
@@ -388,6 +415,7 @@ function App() {
           setError("");
         }}
         onFieldChange={updateAuthField}
+        onRememberMeChange={setRememberMe}
         onSubmit={handleAuthSubmit}
         onBack={() => {
           setError("");

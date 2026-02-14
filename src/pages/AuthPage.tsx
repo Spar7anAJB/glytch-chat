@@ -12,10 +12,12 @@ export type AuthFormState = {
 type AuthPageProps = {
   mode: AuthMode;
   form: AuthFormState;
+  rememberMe: boolean;
   loading: boolean;
   error: string;
   onModeChange: (mode: AuthMode) => void;
   onFieldChange: (field: keyof AuthFormState, value: string) => void;
+  onRememberMeChange: (remember: boolean) => void;
   onSubmit: (event: FormEvent) => void;
   onBack: () => void;
 };
@@ -23,10 +25,12 @@ type AuthPageProps = {
 function AuthPage({
   mode,
   form,
+  rememberMe,
   loading,
   error,
   onModeChange,
   onFieldChange,
+  onRememberMeChange,
   onSubmit,
   onBack,
 }: AuthPageProps) {
@@ -107,6 +111,17 @@ function AuthPage({
                 placeholder="Re-enter password"
                 autoComplete="new-password"
               />
+            </label>
+          )}
+
+          {mode === "login" && (
+            <label className="authRememberMe">
+              <input
+                checked={rememberMe}
+                onChange={(event) => onRememberMeChange(event.target.checked)}
+                type="checkbox"
+              />
+              Remember me
             </label>
           )}
 
