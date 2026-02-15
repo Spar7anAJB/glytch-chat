@@ -21,9 +21,11 @@ import {
   fetchGlytchMessages,
   fetchProfilesByIds,
   findProfileByUsername,
+  getGlytchBotSettings,
   getMyProfile,
   forceVoiceParticipantState,
   joinGlytchByCode,
+  JoinGlytchBannedError,
   kickGlytchMember,
   kickVoiceParticipant,
   listDmConversations,
@@ -36,6 +38,7 @@ import {
   listGlytchMemberRoles,
   listGlytchMessageReactions,
   listGlytchMembers,
+  listGlytchUnbanRequests,
   listGlytchRoles,
   listGlytches,
   listDmMessageReactions,
@@ -59,8 +62,11 @@ import {
   searchGifLibrary,
   sendFriendRequest,
   ingestRemoteMessageAsset,
+  reviewGlytchUnbanRequest,
+  submitGlytchUnbanRequest,
   updateGlytchRolePermissions,
   updateGlytchRolePriority,
+  updateGlytchBotSettings,
   updateMyPresence,
   updateMyProfileCustomization,
   unbanGlytchUser,
@@ -79,6 +85,8 @@ import {
   type GlytchChannelRolePermission,
   type GlytchMessageReaction,
   type GlytchMemberRole,
+  type GlytchBotSettings,
+  type GlytchUnbanRequest,
   type GlytchBan,
   type GlytchRole,
   type MessageAttachmentType,
@@ -100,7 +108,7 @@ type ViewMode = "dm" | "glytch" | "glytch-settings" | "settings";
 type GlytchActionMode = "none" | "create" | "join";
 type DmPanelMode = "dms" | "friends";
 type SettingsTab = "edit" | "theme" | "showcases" | "preview" | "notifications";
-type GlytchSettingsTab = "profile" | "roles" | "moderation" | "channels";
+type GlytchSettingsTab = "profile" | "roles" | "moderation" | "bot" | "channels";
 type RoleSettingsMode = "new-role" | "permissions";
 type GlytchRolePermissionKey =
   | "ban_members"
@@ -220,6 +228,15 @@ type UiGlytchBan = {
   reason: string | null;
   bannedByName: string;
   bannedAt: string;
+};
+
+type UiGlytchUnbanRequest = {
+  requestId: number;
+  userId: string;
+  name: string;
+  avatarUrl: string;
+  message: string | null;
+  requestedAt: string;
 };
 
 type GlytchInviteMessagePayload = {
@@ -753,6 +770,15 @@ function parseShowcaseStatEntry(entry: string): { label: string; value: string }
   };
 }
 
+function normalizeBlockedWordsDraft(raw: string): string[] {
+  return Array.from(new Set(
+    raw
+      .split(/[\n,]/)
+      .map((item) => item.trim().toLowerCase())
+      .filter((item) => item.length > 0),
+  )).slice(0, 200);
+}
+
 function isShowcaseVisible(showcase: ProfileShowcase, options: { isSelf: boolean; isFriend: boolean }): boolean {
   if (options.isSelf) return true;
   if (showcase.visibility === "private") return false;
@@ -1142,6 +1168,10 @@ export default function ChatDashboard({
   const [glytchInviteNotice, setGlytchInviteNotice] = useState("");
   const [glytchInviteError, setGlytchInviteError] = useState("");
   const [glytchError, setGlytchError] = useState("");
+  const [joinBannedGlytchId, setJoinBannedGlytchId] = useState<number | null>(null);
+  const [joinUnbanRequestDraft, setJoinUnbanRequestDraft] = useState("");
+  const [joinUnbanRequestBusy, setJoinUnbanRequestBusy] = useState(false);
+  const [joinUnbanRequestNotice, setJoinUnbanRequestNotice] = useState("");
   const [glytches, setGlytches] = useState<Glytch[]>([]);
   const [activeGlytchId, setActiveGlytchId] = useState<number | null>(null);
   const activeGlytchIdRef = useRef<number | null>(null);
@@ -1153,9 +1183,16 @@ export default function ChatDashboard({
   const [glytchMemberRolesRows, setGlytchMemberRolesRows] = useState<GlytchMemberRole[]>([]);
   const [glytchMembersUi, setGlytchMembersUi] = useState<UiGlytchMember[]>([]);
   const [glytchBansUi, setGlytchBansUi] = useState<UiGlytchBan[]>([]);
+  const [glytchUnbanRequestsUi, setGlytchUnbanRequestsUi] = useState<UiGlytchUnbanRequest[]>([]);
+  const [glytchBotSettings, setGlytchBotSettings] = useState<GlytchBotSettings | null>(null);
+  const [glytchBotBlockedWordsDraft, setGlytchBotBlockedWordsDraft] = useState("");
+  const [glytchBotSettingsBusy, setGlytchBotSettingsBusy] = useState(false);
+  const [glytchBotSettingsError, setGlytchBotSettingsError] = useState("");
+  const [glytchBotSettingsNotice, setGlytchBotSettingsNotice] = useState("");
   const [selectedBanMemberId, setSelectedBanMemberId] = useState<string>("");
   const [banReasonDraft, setBanReasonDraft] = useState("");
   const [banActionBusyKey, setBanActionBusyKey] = useState<string | null>(null);
+  const [unbanRequestActionBusyKey, setUnbanRequestActionBusyKey] = useState<string | null>(null);
   const [memberFriendActionUserId, setMemberFriendActionUserId] = useState<string | null>(null);
   const [memberFriendActionType, setMemberFriendActionType] = useState<"add" | "remove" | null>(null);
   const [memberFriendActionError, setMemberFriendActionError] = useState("");
@@ -1278,6 +1315,7 @@ export default function ChatDashboard({
   const dmCallNotificationSeededRef = useRef(false);
   const friendRequestStatusByIdRef = useRef<Record<number, FriendRequest["status"]>>({});
   const friendRequestNotificationSeededRef = useRef(false);
+  const dmConversationToMarkReadRef = useRef<number | null>(null);
   const dmLastLoadedConversationIdRef = useRef<number | null>(null);
   const dmLastLoadedMessageIdRef = useRef(0);
   const glytchLastLoadedChannelIdRef = useRef<number | null>(null);
@@ -2309,6 +2347,21 @@ export default function ChatDashboard({
     }
   }, [accessToken, currentUserId, forcedDefaultDmConversationIds]);
 
+  const flushDmConversationReadOnLeave = useCallback((conversationId: number) => {
+    if (!Number.isFinite(conversationId) || conversationId <= 0) return;
+    void markDmConversationRead(accessToken, conversationId)
+      .then((result) => {
+        setUnreadDmCounts((prev) => {
+          if (!prev[conversationId]) return prev;
+          return { ...prev, [conversationId]: 0 };
+        });
+        if (result.deleted_empty_conversation) {
+          void loadDmSidebarData();
+        }
+      })
+      .catch(() => undefined);
+  }, [accessToken, loadDmSidebarData]);
+
   const loadGlytchSidebarData = useCallback(async () => {
     const rows = await listGlytches(accessToken);
     setGlytches(rows);
@@ -2353,13 +2406,25 @@ export default function ChatDashboard({
     }
   }, [accessToken, forcedDefaultGlytchChannelIds]);
 
+  const loadGlytchBotSettingsData = useCallback(async (glytchId: number) => {
+    try {
+      const settings = await getGlytchBotSettings(accessToken, glytchId);
+      setGlytchBotSettings(settings);
+      setGlytchBotBlockedWordsDraft((settings.blocked_words || []).join(", "));
+      setGlytchBotSettingsError("");
+    } catch (err) {
+      setGlytchBotSettingsError(err instanceof Error ? err.message : "Could not load Glytch bot settings.");
+    }
+  }, [accessToken]);
+
   const loadGlytchRoleData = useCallback(async (glytchId: number) => {
-    const [roles, members, memberRoles, perChannelPermissions, bans] = await Promise.all([
+    const [roles, members, memberRoles, perChannelPermissions, bans, unbanRequests] = await Promise.all([
       listGlytchRoles(accessToken, glytchId),
       listGlytchMembers(accessToken, glytchId),
       listGlytchMemberRoles(accessToken, glytchId),
       listGlytchChannelRolePermissions(accessToken, glytchId),
       listGlytchBans(accessToken, glytchId),
+      listGlytchUnbanRequests(accessToken, glytchId, "pending"),
     ]);
 
     setGlytchRoles(roles);
@@ -2370,6 +2435,10 @@ export default function ChatDashboard({
       ...members.map((member) => member.user_id),
       ...bans.map((ban) => ban.user_id),
       ...bans.map((ban) => ban.banned_by),
+      ...unbanRequests.map((request) => request.user_id),
+      ...unbanRequests
+        .map((request) => request.reviewed_by)
+        .filter((reviewedBy): reviewedBy is string => typeof reviewedBy === "string" && reviewedBy.length > 0),
     ]));
     const profiles = await fetchProfilesByIds(accessToken, profileIds);
     const profileMap = new Map(profiles.map((profile) => [profile.user_id, profile]));
@@ -2414,6 +2483,19 @@ export default function ChatDashboard({
       };
     });
     setGlytchBansUi(uiBans);
+
+    const uiUnbanRequests: UiGlytchUnbanRequest[] = unbanRequests.map((request: GlytchUnbanRequest) => {
+      const requestedByProfile = profileMap.get(request.user_id);
+      return {
+        requestId: request.id,
+        userId: request.user_id,
+        name: requestedByProfile?.username || requestedByProfile?.display_name || "User",
+        avatarUrl: requestedByProfile?.avatar_url || "",
+        message: request.message || null,
+        requestedAt: request.requested_at,
+      };
+    });
+    setGlytchUnbanRequestsUi(uiUnbanRequests);
 
     const hasSelectedRole = selectedRoleId ? roles.some((role) => role.id === selectedRoleId) : false;
     if (roles.length > 0 && !hasSelectedRole) {
@@ -2698,6 +2780,14 @@ export default function ChatDashboard({
       setGlytchRoles([]);
       setGlytchMemberRolesRows([]);
       setGlytchMembersUi([]);
+      setGlytchBansUi([]);
+      setGlytchUnbanRequestsUi([]);
+      setGlytchBotSettings(null);
+      setGlytchBotBlockedWordsDraft("");
+      setGlytchBotSettingsError("");
+      setGlytchBotSettingsNotice("");
+      setGlytchBotSettingsBusy(false);
+      setUnbanRequestActionBusyKey(null);
       setChannelRolePermissions([]);
       setSelectedPermissionRoleId(null);
       setSelectedPermissionChannelId(null);
@@ -2737,6 +2827,13 @@ export default function ChatDashboard({
       mounted = false;
     };
   }, [accessToken, activeGlytchId, activeChannelId, forcedDefaultGlytchChannelIds]);
+
+  useEffect(() => {
+    if (!activeGlytchId) return;
+    setGlytchBotSettingsNotice("");
+    setGlytchBotSettingsError("");
+    void loadGlytchBotSettingsData(activeGlytchId);
+  }, [activeGlytchId, loadGlytchBotSettingsData]);
 
   useEffect(() => {
     if (!activeGlytchId) return;
@@ -3225,6 +3322,17 @@ export default function ChatDashboard({
   }, [viewMode]);
 
   useEffect(() => {
+    const previousConversationId = dmConversationToMarkReadRef.current;
+    const nextConversationId = viewMode === "dm" ? activeConversationId : null;
+
+    if (previousConversationId && previousConversationId !== nextConversationId) {
+      flushDmConversationReadOnLeave(previousConversationId);
+    }
+
+    dmConversationToMarkReadRef.current = nextConversationId;
+  }, [activeConversationId, flushDmConversationReadOnLeave, viewMode]);
+
+  useEffect(() => {
     const nextContextKey =
       viewMode === "dm"
         ? activeConversationId
@@ -3305,18 +3413,6 @@ export default function ChatDashboard({
           setMessages(normalized);
         }
         setChatError("");
-
-        const hasUnreadIncoming = rows.some((row) => row.sender_id !== currentUserId && !row.read_by_receiver_at);
-        if (hasUnreadIncoming) {
-          void markDmConversationRead(accessToken, conversationId)
-            .then(() => {
-              setUnreadDmCounts((prev) => {
-                if (!prev[conversationId]) return prev;
-                return { ...prev, [conversationId]: 0 };
-              });
-            })
-            .catch(() => undefined);
-        }
       } catch (err) {
         if (!mounted) return;
         setChatError(err instanceof Error ? err.message : "Could not load messages.");
@@ -3836,6 +3932,9 @@ export default function ChatDashboard({
       const created = await createGlytch(accessToken, name);
       setGlytchNameDraft("");
       setGlytchError("");
+      setJoinBannedGlytchId(null);
+      setJoinUnbanRequestDraft("");
+      setJoinUnbanRequestNotice("");
       await loadGlytchSidebarData();
       setViewMode("glytch");
       setActiveGlytchId(created.glytch_id);
@@ -3846,6 +3945,19 @@ export default function ChatDashboard({
       setGlytchError(err instanceof Error ? err.message : "Could not create Glytch.");
     }
   };
+
+  const openJoinUnbanRequestFlow = useCallback((glytchId: number | null, inviteCode?: string) => {
+    setViewMode("glytch");
+    setShowGlytchDirectory(true);
+    setGlytchActionMode("join");
+    if (typeof inviteCode === "string") {
+      setInviteCodeDraft(inviteCode.trim().toLowerCase());
+    }
+    setJoinBannedGlytchId(glytchId);
+    setJoinUnbanRequestDraft("");
+    setJoinUnbanRequestNotice("");
+    setGlytchError("You are banned from this Glytch. Submit an unban request for review.");
+  }, []);
 
   const handleJoinGlytch = async (e: FormEvent) => {
     e.preventDefault();
@@ -3859,13 +3971,43 @@ export default function ChatDashboard({
       const joined = await joinGlytchByCode(accessToken, code);
       setInviteCodeDraft("");
       setGlytchError("");
+      setJoinBannedGlytchId(null);
+      setJoinUnbanRequestDraft("");
+      setJoinUnbanRequestNotice("");
       await loadGlytchSidebarData();
       setViewMode("glytch");
       setActiveGlytchId(joined.glytch_id);
       setGlytchActionMode("none");
       setShowGlytchDirectory(false);
     } catch (err) {
+      if (err instanceof JoinGlytchBannedError) {
+        openJoinUnbanRequestFlow(err.glytchId);
+        return;
+      }
+      setJoinBannedGlytchId(null);
+      setJoinUnbanRequestNotice("");
       setGlytchError(err instanceof Error ? err.message : "Could not join Glytch.");
+    }
+  };
+
+  const handleSubmitJoinUnbanRequest = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!joinBannedGlytchId) {
+      setGlytchError("Join a banned Glytch first.");
+      return;
+    }
+
+    setJoinUnbanRequestBusy(true);
+    setGlytchError("");
+    setJoinUnbanRequestNotice("");
+    try {
+      await submitGlytchUnbanRequest(accessToken, joinBannedGlytchId, joinUnbanRequestDraft.trim() || null);
+      setJoinUnbanRequestDraft("");
+      setJoinUnbanRequestNotice("Unban request submitted. Glytch moderators can now review it.");
+    } catch (err) {
+      setGlytchError(err instanceof Error ? err.message : "Could not submit unban request.");
+    } finally {
+      setJoinUnbanRequestBusy(false);
     }
   };
 
@@ -3930,11 +4072,15 @@ export default function ChatDashboard({
       await deleteDmMessage(accessToken, messageId);
       setMessages((prev) => prev.filter((msg) => msg.id !== messageId));
     } catch (err) {
+      if (err instanceof JoinGlytchBannedError) {
+        openJoinUnbanRequestFlow(err.glytchId ?? invite.glytchId, invite.inviteCode);
+        return;
+      }
       setChatError(err instanceof Error ? err.message : "Could not join Glytch.");
     } finally {
       setJoinInviteBusyMessageId((prev) => (prev === messageId ? null : prev));
     }
-  }, [accessToken, glytches, loadGlytchSidebarData]);
+  }, [accessToken, glytches, loadGlytchSidebarData, openJoinUnbanRequestFlow]);
 
   const handleRejectInviteFromDmMessage = useCallback(async (messageId: number) => {
     try {
@@ -4173,6 +4319,68 @@ export default function ChatDashboard({
       setRoleError(err instanceof Error ? err.message : "Could not unban member.");
     } finally {
       setBanActionBusyKey((prev) => (prev === busyKey ? null : prev));
+    }
+  };
+
+  const handleSaveGlytchBotSettings = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!activeGlytchId) {
+      setGlytchBotSettingsError("Select a Glytch first.");
+      return;
+    }
+    if (!canBanMembersInActiveGlytch) {
+      setGlytchBotSettingsError("You do not have permission to configure the Glytch bot.");
+      return;
+    }
+    if (!glytchBotSettings) {
+      setGlytchBotSettingsError("Glytch bot settings are not loaded yet.");
+      return;
+    }
+
+    const blockedWords = normalizeBlockedWordsDraft(glytchBotBlockedWordsDraft);
+    setGlytchBotSettingsBusy(true);
+    setGlytchBotSettingsError("");
+    setGlytchBotSettingsNotice("");
+    try {
+      const updated = await updateGlytchBotSettings(accessToken, activeGlytchId, {
+        enabled: glytchBotSettings.enabled,
+        block_external_links: glytchBotSettings.block_external_links,
+        block_invite_links: glytchBotSettings.block_invite_links,
+        block_blocked_words: glytchBotSettings.block_blocked_words,
+        blocked_words: blockedWords,
+        dm_on_kick_or_ban: glytchBotSettings.dm_on_kick_or_ban,
+        dm_on_message_block: glytchBotSettings.dm_on_message_block,
+      });
+      setGlytchBotSettings(updated);
+      setGlytchBotBlockedWordsDraft((updated.blocked_words || []).join(", "));
+      setGlytchBotSettingsNotice("Glytch bot settings saved.");
+    } catch (err) {
+      setGlytchBotSettingsError(err instanceof Error ? err.message : "Could not save Glytch bot settings.");
+    } finally {
+      setGlytchBotSettingsBusy(false);
+    }
+  };
+
+  const handleReviewUnbanRequest = async (requestId: number, status: "approved" | "rejected") => {
+    if (!activeGlytchId) {
+      setRoleError("Select a Glytch first.");
+      return;
+    }
+    if (!canBanMembersInActiveGlytch) {
+      setRoleError("You do not have permission to review unban requests.");
+      return;
+    }
+
+    const busyKey = `${status}:${requestId}`;
+    setUnbanRequestActionBusyKey(busyKey);
+    setRoleError("");
+    try {
+      await reviewGlytchUnbanRequest(accessToken, requestId, status, null);
+      await loadGlytchRoleData(activeGlytchId);
+    } catch (err) {
+      setRoleError(err instanceof Error ? err.message : "Could not review unban request.");
+    } finally {
+      setUnbanRequestActionBusyKey((prev) => (prev === busyKey ? null : prev));
     }
   };
 
@@ -5260,7 +5468,15 @@ export default function ChatDashboard({
             reactions: [],
           })),
         );
+        const transientMessageIds = inserted
+          .filter((row) => Boolean(row.bot_should_delete))
+          .map((row) => row.id);
         setMessages((prev) => [...prev, ...appended]);
+        if (transientMessageIds.length > 0) {
+          window.setTimeout(() => {
+            setMessages((prev) => prev.filter((msg) => !transientMessageIds.includes(msg.id)));
+          }, 900);
+        }
         if (messageInputRef.current) {
           messageInputRef.current.value = "";
         }
@@ -6374,6 +6590,13 @@ export default function ChatDashboard({
     setActiveChannelId(null);
     setMessages([]);
     setChatError("");
+    setJoinBannedGlytchId(null);
+    setJoinUnbanRequestDraft("");
+    setJoinUnbanRequestNotice("");
+    setGlytchBotSettings(null);
+    setGlytchBotBlockedWordsDraft("");
+    setGlytchBotSettingsError("");
+    setGlytchBotSettingsNotice("");
     setShowQuickThemeEditor(false);
   }, []);
 
@@ -6649,14 +6872,27 @@ export default function ChatDashboard({
                       <button
                         className={glytchActionMode === "create" ? "channelItem active" : "channelItem"}
                         type="button"
-                        onClick={() => setGlytchActionMode((prev) => (prev === "create" ? "none" : "create"))}
+                        onClick={() => {
+                          setGlytchActionMode((prev) => (prev === "create" ? "none" : "create"));
+                          setJoinBannedGlytchId(null);
+                          setJoinUnbanRequestDraft("");
+                          setJoinUnbanRequestNotice("");
+                        }}
                       >
                         Create Glytch
                       </button>
                       <button
                         className={glytchActionMode === "join" ? "channelItem active" : "channelItem"}
                         type="button"
-                        onClick={() => setGlytchActionMode((prev) => (prev === "join" ? "none" : "join"))}
+                        onClick={() => {
+                          const nextMode = glytchActionMode === "join" ? "none" : "join";
+                          setGlytchActionMode(nextMode);
+                          if (nextMode !== "join") {
+                            setJoinBannedGlytchId(null);
+                            setJoinUnbanRequestDraft("");
+                            setJoinUnbanRequestNotice("");
+                          }
+                        }}
                       >
                         Join Glytch
                       </button>
@@ -6675,15 +6911,43 @@ export default function ChatDashboard({
                     )}
 
                     {glytchActionMode === "join" && (
-                      <form className="stackedForm" onSubmit={handleJoinGlytch}>
-                        <input
-                          value={inviteCodeDraft}
-                          onChange={(e) => setInviteCodeDraft(e.target.value)}
-                          placeholder="Invite code"
-                          aria-label="Invite code"
-                        />
-                        <button type="submit">Join</button>
-                      </form>
+                      <>
+                        <form className="stackedForm" onSubmit={handleJoinGlytch}>
+                          <input
+                            value={inviteCodeDraft}
+                            onChange={(e) => {
+                              setInviteCodeDraft(e.target.value);
+                              setJoinBannedGlytchId(null);
+                              setJoinUnbanRequestNotice("");
+                            }}
+                            placeholder="Invite code"
+                            aria-label="Invite code"
+                          />
+                          <button type="submit">Join</button>
+                        </form>
+                        {joinBannedGlytchId && (
+                          <form className="stackedForm" onSubmit={handleSubmitJoinUnbanRequest}>
+                            <p className="smallMuted">
+                              You are banned from this Glytch. Submit an unban request and moderators can review it.
+                            </p>
+                            <textarea
+                              value={joinUnbanRequestDraft}
+                              onChange={(e) => setJoinUnbanRequestDraft(e.target.value)}
+                              placeholder="Why should we unban you? (optional)"
+                              aria-label="Unban request message"
+                              rows={3}
+                              disabled={joinUnbanRequestBusy || Boolean(joinUnbanRequestNotice)}
+                            />
+                            <button
+                              type="submit"
+                              disabled={joinUnbanRequestBusy || Boolean(joinUnbanRequestNotice)}
+                            >
+                              {joinUnbanRequestBusy ? "Submitting..." : "Submit Unban Request"}
+                            </button>
+                            {joinUnbanRequestNotice && <p className="smallMuted">{joinUnbanRequestNotice}</p>}
+                          </form>
+                        )}
+                      </>
                     )}
 
                     <section className="requestSection">
@@ -8026,6 +8290,13 @@ export default function ChatDashboard({
                 Moderation
               </button>
               <button
+                className={glytchSettingsTab === "bot" ? "tab active" : "tab"}
+                type="button"
+                onClick={() => setGlytchSettingsTab("bot")}
+              >
+                Bot Settings
+              </button>
+              <button
                 className={glytchSettingsTab === "channels" ? "tab active" : "tab"}
                 type="button"
                 onClick={() => setGlytchSettingsTab("channels")}
@@ -8481,9 +8752,163 @@ export default function ChatDashboard({
                         ))
                       )}
                     </div>
+
+                    <div className="stackedForm">
+                      <p className="sectionLabel">Unban Requests</p>
+                      {glytchUnbanRequestsUi.length === 0 ? (
+                        <p className="smallMuted">No pending unban requests.</p>
+                      ) : (
+                        glytchUnbanRequestsUi.map((request) => {
+                          const approveBusyKey = `approved:${request.requestId}`;
+                          const rejectBusyKey = `rejected:${request.requestId}`;
+                          const requestBusy =
+                            unbanRequestActionBusyKey === approveBusyKey || unbanRequestActionBusyKey === rejectBusyKey;
+                          return (
+                            <div key={request.requestId} className="requestCard">
+                              <div className="roleAccessRow">
+                                <span className="friendAvatar" aria-hidden="true">
+                                  {request.avatarUrl ? (
+                                    <img src={request.avatarUrl} alt="" />
+                                  ) : (
+                                    <span>{initialsFromName(request.name)}</span>
+                                  )}
+                                </span>
+                                <span>
+                                  {request.name}
+                                  <span className="smallMuted">
+                                    {" "}
+                                    · Requested {new Date(request.requestedAt).toLocaleString()}
+                                  </span>
+                                </span>
+                              </div>
+                              {request.message ? <p className="smallMuted">{request.message}</p> : null}
+                              <div className="moderationActionRow">
+                                <button
+                                  type="button"
+                                  onClick={() => void handleReviewUnbanRequest(request.requestId, "approved")}
+                                  disabled={requestBusy}
+                                >
+                                  {unbanRequestActionBusyKey === approveBusyKey ? "Approving..." : "Approve"}
+                                </button>
+                                <button
+                                  type="button"
+                                  className="ghostButton"
+                                  onClick={() => void handleReviewUnbanRequest(request.requestId, "rejected")}
+                                  disabled={requestBusy}
+                                >
+                                  {unbanRequestActionBusyKey === rejectBusyKey ? "Rejecting..." : "Reject"}
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
                   </>
                 ) : (
                   <p className="smallMuted">You do not have permission to manage bans.</p>
+                )}
+              </section>
+            ) : glytchSettingsTab === "bot" ? (
+              <section className="requestSection">
+                <p className="sectionLabel">Bot Settings</p>
+                {canBanMembersInActiveGlytch ? (
+                  <form className="stackedForm" onSubmit={handleSaveGlytchBotSettings}>
+                    <p className="smallMuted">
+                      Every Glytch includes a built-in moderation bot. Configure what it can block and when it DMs users.
+                    </p>
+                    {glytchBotSettingsError && <p className="chatError">{glytchBotSettingsError}</p>}
+                    {glytchBotSettingsNotice && <p className="smallMuted">{glytchBotSettingsNotice}</p>}
+                    <label className="permissionToggle">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(glytchBotSettings?.enabled)}
+                        onChange={(e) =>
+                          setGlytchBotSettings((prev) => (prev ? { ...prev, enabled: e.target.checked } : prev))
+                        }
+                        disabled={!glytchBotSettings || glytchBotSettingsBusy}
+                      />
+                      <span>Enable Glytch Bot automod</span>
+                    </label>
+                    <label className="permissionToggle">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(glytchBotSettings?.block_invite_links)}
+                        onChange={(e) =>
+                          setGlytchBotSettings((prev) =>
+                            prev ? { ...prev, block_invite_links: e.target.checked } : prev,
+                          )
+                        }
+                        disabled={!glytchBotSettings || glytchBotSettingsBusy}
+                      />
+                      <span>Block invite links</span>
+                    </label>
+                    <label className="permissionToggle">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(glytchBotSettings?.block_external_links)}
+                        onChange={(e) =>
+                          setGlytchBotSettings((prev) =>
+                            prev ? { ...prev, block_external_links: e.target.checked } : prev,
+                          )
+                        }
+                        disabled={!glytchBotSettings || glytchBotSettingsBusy}
+                      />
+                      <span>Block external links</span>
+                    </label>
+                    <label className="permissionToggle">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(glytchBotSettings?.block_blocked_words)}
+                        onChange={(e) =>
+                          setGlytchBotSettings((prev) =>
+                            prev ? { ...prev, block_blocked_words: e.target.checked } : prev,
+                          )
+                        }
+                        disabled={!glytchBotSettings || glytchBotSettingsBusy}
+                      />
+                      <span>Block custom word list</span>
+                    </label>
+                    <textarea
+                      value={glytchBotBlockedWordsDraft}
+                      onChange={(e) => setGlytchBotBlockedWordsDraft(e.target.value)}
+                      placeholder="Blocked words (comma or newline separated)"
+                      aria-label="Blocked words"
+                      rows={3}
+                      disabled={!glytchBotSettings || !glytchBotSettings.block_blocked_words || glytchBotSettingsBusy}
+                    />
+                    <label className="permissionToggle">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(glytchBotSettings?.dm_on_kick_or_ban)}
+                        onChange={(e) =>
+                          setGlytchBotSettings((prev) =>
+                            prev ? { ...prev, dm_on_kick_or_ban: e.target.checked } : prev,
+                          )
+                        }
+                        disabled={!glytchBotSettings || glytchBotSettingsBusy}
+                      />
+                      <span>DM users when kicked or banned</span>
+                    </label>
+                    <label className="permissionToggle">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(glytchBotSettings?.dm_on_message_block)}
+                        onChange={(e) =>
+                          setGlytchBotSettings((prev) =>
+                            prev ? { ...prev, dm_on_message_block: e.target.checked } : prev,
+                          )
+                        }
+                        disabled={!glytchBotSettings || glytchBotSettingsBusy}
+                      />
+                      <span>DM users when a message is blocked</span>
+                    </label>
+                    <button type="submit" disabled={!glytchBotSettings || glytchBotSettingsBusy}>
+                      {glytchBotSettingsBusy ? "Saving..." : "Save Glytch Bot Settings"}
+                    </button>
+                  </form>
+                ) : (
+                  <p className="smallMuted">You do not have permission to configure bot settings.</p>
                 )}
               </section>
             ) : (

@@ -139,6 +139,43 @@ export type GlytchBan = {
   banned_at: string;
 };
 
+export type GlytchUnbanRequestStatus = "pending" | "approved" | "rejected";
+
+export type GlytchUnbanRequest = {
+  id: number;
+  glytch_id: number;
+  user_id: string;
+  status: GlytchUnbanRequestStatus;
+  message?: string | null;
+  requested_at: string;
+  reviewed_by?: string | null;
+  reviewed_at?: string | null;
+  review_note?: string | null;
+};
+
+export type GlytchBotSettings = {
+  glytch_id: number;
+  enabled: boolean;
+  block_external_links: boolean;
+  block_invite_links: boolean;
+  block_blocked_words: boolean;
+  blocked_words: string[];
+  dm_on_kick_or_ban: boolean;
+  dm_on_message_block: boolean;
+  updated_by?: string | null;
+  updated_at?: string;
+};
+
+export class JoinGlytchBannedError extends Error {
+  glytchId: number | null;
+
+  constructor(message: string, glytchId: number | null = null) {
+    super(message);
+    this.name = "JoinGlytchBannedError";
+    this.glytchId = glytchId;
+  }
+}
+
 export type GlytchChannelRolePermission = {
   glytch_id: number;
   role_id: number;
@@ -161,6 +198,7 @@ export type GlytchMessage = {
   content: string;
   attachment_url?: string | null;
   attachment_type?: MessageAttachmentType | null;
+  bot_should_delete?: boolean;
   created_at: string;
 };
 
@@ -284,14 +322,75 @@ function supabaseHeaders(accessToken?: string): HeadersInit {
 async function readJsonOrThrow(res: Response) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const message =
-      (data?.msg as string) ||
-      (data?.error_description as string) ||
-      (data?.message as string) ||
-      (Array.isArray(data) && typeof data[0]?.message === "string" ? (data[0].message as string) : "");
+    const message = extractErrorMessageFromPayload(data);
     throw new Error(message || "Supabase request failed.");
   }
   return data;
+}
+
+function extractErrorMessageFromPayload(data: unknown): string {
+  if (Array.isArray(data) && typeof data[0]?.message === "string") {
+    return data[0].message;
+  }
+  if (!data || typeof data !== "object") return "";
+  const payload = data as { msg?: unknown; error_description?: unknown; message?: unknown };
+  if (typeof payload.msg === "string") return payload.msg;
+  if (typeof payload.error_description === "string") return payload.error_description;
+  if (typeof payload.message === "string") return payload.message;
+  return "";
+}
+
+function parseGlytchIdFromJoinErrorDetails(details: unknown): number | null {
+  if (typeof details === "number" && Number.isFinite(details) && details > 0) {
+    return Math.trunc(details);
+  }
+
+  if (typeof details === "string") {
+    const raw = details.trim();
+    if (!raw) return null;
+
+    const direct = Number.parseInt(raw, 10);
+    if (Number.isFinite(direct) && direct > 0) {
+      return direct;
+    }
+
+    try {
+      const parsed = JSON.parse(raw) as { glytch_id?: unknown } | null;
+      const maybeId = parsed?.glytch_id;
+      if (typeof maybeId === "number" && Number.isFinite(maybeId) && maybeId > 0) {
+        return Math.trunc(maybeId);
+      }
+      if (typeof maybeId === "string") {
+        const parsedId = Number.parseInt(maybeId, 10);
+        if (Number.isFinite(parsedId) && parsedId > 0) {
+          return parsedId;
+        }
+      }
+    } catch {
+      const match = raw.match(/glytch_id["'\s:=]+(\d+)/i);
+      if (match) {
+        const parsedId = Number.parseInt(match[1], 10);
+        if (Number.isFinite(parsedId) && parsedId > 0) {
+          return parsedId;
+        }
+      }
+    }
+  }
+
+  if (details && typeof details === "object") {
+    const maybeId = (details as { glytch_id?: unknown }).glytch_id;
+    if (typeof maybeId === "number" && Number.isFinite(maybeId) && maybeId > 0) {
+      return Math.trunc(maybeId);
+    }
+    if (typeof maybeId === "string") {
+      const parsedId = Number.parseInt(maybeId, 10);
+      if (Number.isFinite(parsedId) && parsedId > 0) {
+        return parsedId;
+      }
+    }
+  }
+
+  return null;
 }
 
 function isMissingChannelSettingsSchemaError(message: string): boolean {
@@ -303,11 +402,18 @@ function isMissingChannelSettingsSchemaError(message: string): boolean {
     normalized.includes("voice_participants.moderator_forced_muted") ||
     normalized.includes("voice_participants.moderator_forced_deafened") ||
     normalized.includes("glytch_bans") ||
+    normalized.includes("glytch_unban_requests") ||
+    normalized.includes("glytch_bot_settings") ||
     normalized.includes("set_glytch_channel_settings") ||
     normalized.includes("set_glytch_channel_theme") ||
     normalized.includes("ban_user_from_glytch") ||
     normalized.includes("unban_user_from_glytch") ||
     normalized.includes("kick_member_from_glytch") ||
+    normalized.includes("get_glytch_bot_settings") ||
+    normalized.includes("set_glytch_bot_settings") ||
+    normalized.includes("send_glytch_bot_dm_notice") ||
+    normalized.includes("submit_glytch_unban_request") ||
+    normalized.includes("review_glytch_unban_request") ||
     normalized.includes("p_force_muted") ||
     normalized.includes("p_force_deafened") ||
     (normalized.includes("text_post_mode") && normalized.includes("does not exist")) ||
@@ -315,7 +421,9 @@ function isMissingChannelSettingsSchemaError(message: string): boolean {
     (normalized.includes("channel_theme") && normalized.includes("does not exist")) ||
     (normalized.includes("moderator_forced_muted") && normalized.includes("does not exist")) ||
     (normalized.includes("moderator_forced_deafened") && normalized.includes("does not exist")) ||
-    (normalized.includes("glytch_bans") && normalized.includes("does not exist"))
+    (normalized.includes("glytch_bans") && normalized.includes("does not exist")) ||
+    (normalized.includes("glytch_unban_requests") && normalized.includes("does not exist")) ||
+    (normalized.includes("glytch_bot_settings") && normalized.includes("does not exist"))
   );
 }
 
@@ -1230,7 +1338,11 @@ export async function markDmConversationRead(accessToken: string, conversationId
     body: JSON.stringify({ p_conversation_id: conversationId }),
   });
 
-  return (await readJsonOrThrow(res)) as { updated_count: number };
+  return (await readJsonOrThrow(res)) as {
+    updated_count: number;
+    deleted_bot_message_count?: number;
+    deleted_empty_conversation?: boolean;
+  };
 }
 
 export async function fetchLatestDmMessages(accessToken: string, conversationIds: number[]): Promise<DmMessage[]> {
@@ -1323,7 +1435,19 @@ export async function joinGlytchByCode(accessToken: string, inviteCode: string) 
     body: JSON.stringify({ p_invite_code: inviteCode.trim().toLowerCase() }),
   });
 
-  return (await readJsonOrThrow(res)) as { glytch_id: number };
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const message = extractErrorMessageFromPayload(data) || "Supabase request failed.";
+    const payload = data as { hint?: unknown; details?: unknown };
+    const hint = typeof payload.hint === "string" ? payload.hint.trim().toUpperCase() : "";
+    const normalizedMessage = message.toLowerCase();
+    if (hint === "GLYTCH_BANNED" || normalizedMessage.includes("banned from this glytch")) {
+      throw new JoinGlytchBannedError(message, parseGlytchIdFromJoinErrorDetails(payload.details));
+    }
+    throw new Error(message);
+  }
+
+  return data as { glytch_id: number };
 }
 
 export async function listGlytches(accessToken: string): Promise<Glytch[]> {
@@ -1718,6 +1842,87 @@ export async function listGlytchMemberRoles(accessToken: string, glytchId: numbe
   return (await readJsonOrThrow(res)) as GlytchMemberRole[];
 }
 
+function defaultGlytchBotSettings(glytchId: number): GlytchBotSettings {
+  return {
+    glytch_id: glytchId,
+    enabled: true,
+    block_external_links: false,
+    block_invite_links: true,
+    block_blocked_words: false,
+    blocked_words: [],
+    dm_on_kick_or_ban: true,
+    dm_on_message_block: true,
+    updated_by: null,
+  };
+}
+
+export async function getGlytchBotSettings(accessToken: string, glytchId: number): Promise<GlytchBotSettings> {
+  assertConfig();
+  try {
+    const res = await supabaseFetch(`/rest/v1/rpc/get_glytch_bot_settings`, {
+      method: "POST",
+      headers: supabaseHeaders(accessToken),
+      body: JSON.stringify({
+        p_glytch_id: glytchId,
+      }),
+    });
+
+    const row = (await readJsonOrThrow(res)) as Partial<GlytchBotSettings>;
+    return {
+      ...defaultGlytchBotSettings(glytchId),
+      ...row,
+      glytch_id: row.glytch_id ?? glytchId,
+      blocked_words: Array.isArray(row.blocked_words)
+        ? row.blocked_words.filter((word): word is string => typeof word === "string")
+        : [],
+    };
+  } catch (err) {
+    if (err instanceof Error && isMissingChannelSettingsSchemaError(err.message)) {
+      return defaultGlytchBotSettings(glytchId);
+    }
+    throw err;
+  }
+}
+
+export async function updateGlytchBotSettings(
+  accessToken: string,
+  glytchId: number,
+  settings: Partial<Omit<GlytchBotSettings, "glytch_id" | "updated_by" | "updated_at">>,
+): Promise<GlytchBotSettings> {
+  assertConfig();
+  try {
+    const res = await supabaseFetch(`/rest/v1/rpc/set_glytch_bot_settings`, {
+      method: "POST",
+      headers: supabaseHeaders(accessToken),
+      body: JSON.stringify({
+        p_glytch_id: glytchId,
+        p_enabled: settings.enabled ?? null,
+        p_block_external_links: settings.block_external_links ?? null,
+        p_block_invite_links: settings.block_invite_links ?? null,
+        p_block_blocked_words: settings.block_blocked_words ?? null,
+        p_blocked_words: settings.blocked_words ?? null,
+        p_dm_on_kick_or_ban: settings.dm_on_kick_or_ban ?? null,
+        p_dm_on_message_block: settings.dm_on_message_block ?? null,
+      }),
+    });
+
+    const row = (await readJsonOrThrow(res)) as Partial<GlytchBotSettings>;
+    return {
+      ...defaultGlytchBotSettings(glytchId),
+      ...row,
+      glytch_id: row.glytch_id ?? glytchId,
+      blocked_words: Array.isArray(row.blocked_words)
+        ? row.blocked_words.filter((word): word is string => typeof word === "string")
+        : [],
+    };
+  } catch (err) {
+    if (err instanceof Error && isMissingChannelSettingsSchemaError(err.message)) {
+      throw new Error("Glytch bot moderation settings are unavailable until the latest database migrations are applied.");
+    }
+    throw err;
+  }
+}
+
 export async function listGlytchBans(accessToken: string, glytchId: number): Promise<GlytchBan[]> {
   assertConfig();
   try {
@@ -1736,6 +1941,88 @@ export async function listGlytchBans(accessToken: string, glytchId: number): Pro
   } catch (err) {
     if (err instanceof Error && isMissingChannelSettingsSchemaError(err.message)) {
       return [];
+    }
+    throw err;
+  }
+}
+
+export async function listGlytchUnbanRequests(
+  accessToken: string,
+  glytchId: number,
+  status: GlytchUnbanRequestStatus | null = "pending",
+): Promise<GlytchUnbanRequest[]> {
+  assertConfig();
+  try {
+    const query = new URLSearchParams({
+      select: "id,glytch_id,user_id,status,message,requested_at,reviewed_by,reviewed_at,review_note",
+      glytch_id: `eq.${glytchId}`,
+      order: "requested_at.desc",
+    });
+    if (status) {
+      query.set("status", `eq.${status}`);
+    }
+
+    const res = await supabaseFetch(`/rest/v1/glytch_unban_requests?${query.toString()}`, {
+      method: "GET",
+      headers: supabaseHeaders(accessToken),
+    });
+
+    return (await readJsonOrThrow(res)) as GlytchUnbanRequest[];
+  } catch (err) {
+    if (err instanceof Error && isMissingChannelSettingsSchemaError(err.message)) {
+      return [];
+    }
+    throw err;
+  }
+}
+
+export async function submitGlytchUnbanRequest(
+  accessToken: string,
+  glytchId: number,
+  message?: string | null,
+) {
+  assertConfig();
+  try {
+    const res = await supabaseFetch(`/rest/v1/rpc/submit_glytch_unban_request`, {
+      method: "POST",
+      headers: supabaseHeaders(accessToken),
+      body: JSON.stringify({
+        p_glytch_id: glytchId,
+        p_message: message ?? null,
+      }),
+    });
+
+    return (await readJsonOrThrow(res)) as GlytchUnbanRequest;
+  } catch (err) {
+    if (err instanceof Error && isMissingChannelSettingsSchemaError(err.message)) {
+      throw new Error("Unban request system unavailable until the latest database migrations are applied.");
+    }
+    throw err;
+  }
+}
+
+export async function reviewGlytchUnbanRequest(
+  accessToken: string,
+  requestId: number,
+  status: "approved" | "rejected",
+  reviewNote?: string | null,
+) {
+  assertConfig();
+  try {
+    const res = await supabaseFetch(`/rest/v1/rpc/review_glytch_unban_request`, {
+      method: "POST",
+      headers: supabaseHeaders(accessToken),
+      body: JSON.stringify({
+        p_request_id: requestId,
+        p_status: status,
+        p_review_note: reviewNote ?? null,
+      }),
+    });
+
+    return (await readJsonOrThrow(res)) as GlytchUnbanRequest;
+  } catch (err) {
+    if (err instanceof Error && isMissingChannelSettingsSchemaError(err.message)) {
+      throw new Error("Unban request system unavailable until the latest database migrations are applied.");
     }
     throw err;
   }
