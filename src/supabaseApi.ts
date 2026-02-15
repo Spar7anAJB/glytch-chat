@@ -43,6 +43,15 @@ export type DmConversation = {
   user_b: string;
   created_at: string;
   dm_theme?: Record<string, unknown> | null;
+  is_pinned?: boolean;
+  pinned_at?: string | null;
+};
+
+export type DmConversationUserState = {
+  conversation_id: number;
+  user_id: string;
+  is_pinned: boolean;
+  pinned_at?: string | null;
 };
 
 export type GroupChat = {
@@ -469,6 +478,48 @@ function isMissingDmThemeSchemaError(message: string): boolean {
   );
 }
 
+function isMissingDmConversationStateSchemaError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("list_dm_conversations_for_user") ||
+    normalized.includes("hide_dm_conversation") ||
+    normalized.includes("set_dm_conversation_pinned") ||
+    normalized.includes("dm_conversation_user_state")
+  );
+}
+
+async function listDmConversationsLegacy(accessToken: string): Promise<DmConversation[]> {
+  try {
+    const query = new URLSearchParams({
+      select: "id,user_a,user_b,created_at,dm_theme",
+      order: "created_at.asc",
+    });
+
+    const res = await supabaseFetch(`/rest/v1/dm_conversations?${query.toString()}`, {
+      method: "GET",
+      headers: supabaseHeaders(accessToken),
+    });
+
+    return (await readJsonOrThrow(res)) as DmConversation[];
+  } catch (err) {
+    if (!(err instanceof Error) || !isMissingDmThemeSchemaError(err.message)) {
+      throw err;
+    }
+
+    const fallbackQuery = new URLSearchParams({
+      select: "id,user_a,user_b,created_at",
+      order: "created_at.asc",
+    });
+
+    const fallbackRes = await supabaseFetch(`/rest/v1/dm_conversations?${fallbackQuery.toString()}`, {
+      method: "GET",
+      headers: supabaseHeaders(accessToken),
+    });
+
+    return (await readJsonOrThrow(fallbackRes)) as DmConversation[];
+  }
+}
+
 function normalizeGlytchChannel(row: Partial<GlytchChannel>): GlytchChannel {
   const kind = row.kind === "voice" ? "voice" : "text";
   const textPostMode =
@@ -849,33 +900,20 @@ export async function unfriendUser(accessToken: string, userId: string) {
 export async function listDmConversations(accessToken: string): Promise<DmConversation[]> {
   assertConfig();
   try {
-    const query = new URLSearchParams({
-      select: "id,user_a,user_b,created_at,dm_theme",
-      order: "created_at.asc",
-    });
-
-    const res = await supabaseFetch(`/rest/v1/dm_conversations?${query.toString()}`, {
-      method: "GET",
+    const res = await supabaseFetch(`/rest/v1/rpc/list_dm_conversations_for_user`, {
+      method: "POST",
       headers: supabaseHeaders(accessToken),
+      body: JSON.stringify({}),
     });
-
     return (await readJsonOrThrow(res)) as DmConversation[];
   } catch (err) {
-    if (!(err instanceof Error) || !isMissingDmThemeSchemaError(err.message)) {
+    if (!(err instanceof Error)) {
       throw err;
     }
-
-    const fallbackQuery = new URLSearchParams({
-      select: "id,user_a,user_b,created_at",
-      order: "created_at.asc",
-    });
-
-    const fallbackRes = await supabaseFetch(`/rest/v1/dm_conversations?${fallbackQuery.toString()}`, {
-      method: "GET",
-      headers: supabaseHeaders(accessToken),
-    });
-
-    return (await readJsonOrThrow(fallbackRes)) as DmConversation[];
+    if (isMissingDmConversationStateSchemaError(err.message) || isMissingDmThemeSchemaError(err.message)) {
+      return listDmConversationsLegacy(accessToken);
+    }
+    throw err;
   }
 }
 
@@ -1557,6 +1595,80 @@ export async function markDmConversationRead(accessToken: string, conversationId
     deleted_bot_message_count?: number;
     deleted_empty_conversation?: boolean;
   };
+}
+
+export async function listDmConversationUserStates(
+  accessToken: string,
+  currentUserId: string,
+  conversationIds: number[],
+): Promise<DmConversationUserState[]> {
+  const uniqueIds = Array.from(new Set(conversationIds.filter((id) => Number.isFinite(id) && id > 0)));
+  if (uniqueIds.length === 0) return [];
+  assertConfig();
+
+  try {
+    const query = new URLSearchParams({
+      select: "conversation_id,user_id,is_pinned,pinned_at",
+      user_id: `eq.${currentUserId}`,
+      conversation_id: `in.(${uniqueIds.join(",")})`,
+      order: "pinned_at.desc",
+    });
+
+    const res = await supabaseFetch(`/rest/v1/dm_conversation_user_state?${query.toString()}`, {
+      method: "GET",
+      headers: supabaseHeaders(accessToken),
+    });
+
+    return (await readJsonOrThrow(res)) as DmConversationUserState[];
+  } catch (err) {
+    if (err instanceof Error && isMissingDmConversationStateSchemaError(err.message)) {
+      return [];
+    }
+    throw err;
+  }
+}
+
+export async function hideDmConversation(accessToken: string, conversationId: number) {
+  assertConfig();
+  try {
+    const res = await supabaseFetch(`/rest/v1/rpc/hide_dm_conversation`, {
+      method: "POST",
+      headers: supabaseHeaders(accessToken),
+      body: JSON.stringify({ p_conversation_id: conversationId }),
+    });
+
+    return (await readJsonOrThrow(res)) as {
+      conversation_id: number;
+      hidden_after_message_id: number;
+    };
+  } catch (err) {
+    if (err instanceof Error && isMissingDmConversationStateSchemaError(err.message)) {
+      throw new Error("Delete DM from list requires the latest database migration.");
+    }
+    throw err;
+  }
+}
+
+export async function setDmConversationPinned(accessToken: string, conversationId: number, pinned: boolean) {
+  assertConfig();
+  try {
+    const res = await supabaseFetch(`/rest/v1/rpc/set_dm_conversation_pinned`, {
+      method: "POST",
+      headers: supabaseHeaders(accessToken),
+      body: JSON.stringify({ p_conversation_id: conversationId, p_pinned: pinned }),
+    });
+
+    return (await readJsonOrThrow(res)) as {
+      conversation_id: number;
+      is_pinned: boolean;
+      pinned_at?: string | null;
+    };
+  } catch (err) {
+    if (err instanceof Error && isMissingDmConversationStateSchemaError(err.message)) {
+      throw new Error("Pin DM requires the latest database migration.");
+    }
+    throw err;
+  }
 }
 
 export async function markGroupChatRead(accessToken: string, groupChatId: number) {

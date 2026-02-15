@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ChangeEvent, CSSProperties, FormEvent, PointerEvent as ReactPointerEvent } from "react";
+import type { ChangeEvent, CSSProperties, FormEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
 import {
   addDmMessageReaction,
   addGroupChatMembers,
@@ -36,6 +36,7 @@ import {
   kickGlytchMember,
   kickVoiceParticipant,
   listDmConversations,
+  listDmConversationUserStates,
   listGroupChatMembers,
   listGroupChatMessageReactions,
   listGroupChats,
@@ -60,6 +61,7 @@ import {
   respondToFriendRequest,
   resolveMessageAttachmentUrl,
   markDmConversationRead,
+  hideDmConversation,
   markGroupChatRead,
   assignGlytchRole,
   createGlytchRole,
@@ -69,6 +71,7 @@ import {
   setGlytchChannelTheme,
   setGlytchIcon,
   setDmConversationTheme,
+  setDmConversationPinned,
   sendVoiceSignal,
   setVoiceState,
   searchGifLibrary,
@@ -139,6 +142,7 @@ type DmWithFriend = {
   friendName: string;
   friendAvatarUrl: string;
   sharedBackground: BackgroundGradient | null;
+  isPinned: boolean;
 };
 
 type GroupChatWithMembers = {
@@ -184,6 +188,34 @@ type UiMessageReaction = {
   emoji: string;
   count: number;
   reactedByMe: boolean;
+};
+
+type MessageContextMenuState = {
+  messageId: number;
+  x: number;
+  y: number;
+  canDelete: boolean;
+};
+
+type DmSidebarContextMenuState = {
+  conversationId: number;
+  x: number;
+  y: number;
+  unreadCount: number;
+  isPinned: boolean;
+};
+
+type ComposerReplyTarget = {
+  messageId: number;
+  senderName: string;
+  preview: string;
+};
+
+type DmReplyMessagePayload = {
+  replyToMessageId: number;
+  replyToSenderName: string;
+  replyPreview: string;
+  body: string;
 };
 
 type ComposerAttachment = {
@@ -320,8 +352,42 @@ const PRESENCE_HEARTBEAT_MS = 45_000;
 const PRESENCE_AWAY_IDLE_MS = 5 * 60_000;
 const PRESENCE_STALE_MS = 120_000;
 const QUICK_EMOJIS = ["😀", "😂", "😍", "😭", "🔥", "👍", "👏", "🎉", "✨", "❤️"];
-const REACTION_EMOJIS = ["👍", "❤️", "😂", "🔥", "👏", "🎉", "😮", "😢"];
+const REACTION_EMOJIS = [
+  "👍",
+  "👎",
+  "❤️",
+  "🧡",
+  "💛",
+  "💚",
+  "💙",
+  "💜",
+  "😂",
+  "🤣",
+  "😅",
+  "😊",
+  "😍",
+  "😘",
+  "😮",
+  "😢",
+  "😭",
+  "😡",
+  "🤯",
+  "🤔",
+  "🙌",
+  "👏",
+  "🔥",
+  "✨",
+  "🎉",
+  "💯",
+  "👌",
+  "🙏",
+  "👀",
+  "🤝",
+  "😎",
+  "🥳",
+];
 const GLYTCH_INVITE_MESSAGE_PREFIX = "[[GLYTCH_INVITE]]";
+const DM_REPLY_MESSAGE_PREFIX = "[[DM_REPLY]]";
 const SHOWCASE_KIND_LABELS: Record<ShowcaseKind, string> = {
   text: "Text",
   links: "Links",
@@ -568,6 +634,18 @@ function formatTime(date: Date): string {
 
 function getFriendId(conversation: DmConversation, me: string) {
   return conversation.user_a === me ? conversation.user_b : conversation.user_a;
+}
+
+function sortDmsByPinned(items: DmWithFriend[]): DmWithFriend[] {
+  return items
+    .map((item, index) => ({ item, index }))
+    .sort((a, b) => {
+      if (a.item.isPinned !== b.item.isPinned) {
+        return a.item.isPinned ? -1 : 1;
+      }
+      return a.index - b.index;
+    })
+    .map((entry) => entry.item);
 }
 
 function initialsFromName(name: string) {
@@ -838,15 +916,17 @@ function resolveChatBackgroundStyle(background: BackgroundGradient): CSSProperti
   if (background.mode === "image" && background.imageUrl) {
     const sanitizedUrl = background.imageUrl.replace(/"/g, "%22");
     return {
+      background: "none",
+      backgroundColor: background.from,
       backgroundImage: `url("${sanitizedUrl}")`,
       backgroundSize: "cover",
       backgroundPosition: "center",
       backgroundRepeat: "no-repeat",
-      backgroundColor: background.from,
     };
   }
 
   return {
+    backgroundColor: "transparent",
     backgroundImage: "none",
     backgroundSize: "auto",
     backgroundPosition: "initial",
@@ -1047,10 +1127,92 @@ function parseGlytchInviteMessage(content: string): GlytchInviteMessagePayload |
   }
 }
 
+function serializeDmReplyMessage(payload: DmReplyMessagePayload): string {
+  return `${DM_REPLY_MESSAGE_PREFIX}${JSON.stringify(payload)}`;
+}
+
+function parseLegacyDmReplyMessage(content: string): DmReplyMessagePayload | null {
+  if (!content.startsWith("Reply to ")) return null;
+  const firstNewlineIndex = content.indexOf("\n");
+  const header = firstNewlineIndex >= 0 ? content.slice(0, firstNewlineIndex) : content;
+  const body = firstNewlineIndex >= 0 ? content.slice(firstNewlineIndex + 1).trim() : "";
+  const separatorIndex = header.indexOf(": ");
+  if (separatorIndex <= "Reply to ".length) return null;
+
+  const replyToSenderName = header.slice("Reply to ".length, separatorIndex).trim();
+  const replyPreview = header.slice(separatorIndex + 2).trim();
+  if (!replyToSenderName || !replyPreview) return null;
+
+  return {
+    replyToMessageId: 0,
+    replyToSenderName,
+    replyPreview,
+    body,
+  };
+}
+
+function parseDmReplyMessage(content: string): DmReplyMessagePayload | null {
+  if (content.startsWith(DM_REPLY_MESSAGE_PREFIX)) {
+    const jsonPart = content.slice(DM_REPLY_MESSAGE_PREFIX.length).trim();
+    if (!jsonPart) return null;
+    try {
+      const parsed = JSON.parse(jsonPart) as Partial<DmReplyMessagePayload>;
+      if (
+        typeof parsed.replyToSenderName !== "string" ||
+        parsed.replyToSenderName.trim().length === 0 ||
+        typeof parsed.replyPreview !== "string" ||
+        parsed.replyPreview.trim().length === 0 ||
+        typeof parsed.body !== "string"
+      ) {
+        return null;
+      }
+      return {
+        replyToMessageId:
+          typeof parsed.replyToMessageId === "number" && Number.isFinite(parsed.replyToMessageId) && parsed.replyToMessageId > 0
+            ? Math.trunc(parsed.replyToMessageId)
+            : 0,
+        replyToSenderName: parsed.replyToSenderName.trim(),
+        replyPreview: parsed.replyPreview.trim(),
+        body: parsed.body.trim(),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  return parseLegacyDmReplyMessage(content);
+}
+
+function buildReplyPreviewFromMessage(message: UiMessage): string {
+  const rawText = (message.text || "").trim();
+  const replyPayload = parseDmReplyMessage(rawText);
+  let preview = replyPayload?.body || rawText;
+
+  if (rawText.startsWith(GLYTCH_INVITE_MESSAGE_PREFIX)) {
+    preview = "Glytch invite";
+  }
+
+  if (!preview) {
+    if (message.attachmentType === "gif") preview = "[GIF]";
+    else if (message.attachmentType === "image") preview = "[Image]";
+    else preview = "[Message]";
+  }
+
+  const normalized = preview.replace(/\s+/g, " ").trim();
+  if (normalized.length > 96) {
+    return `${normalized.slice(0, 93)}...`;
+  }
+  return normalized;
+}
+
 function dmMessagePreviewText(message: Pick<DmMessage, "content" | "attachment_url">): string {
   const invite = parseGlytchInviteMessage(message.content || "");
   if (invite) {
     return `${invite.inviterName} invited you to join ${invite.glytchName}.`;
+  }
+  const reply = parseDmReplyMessage(message.content || "");
+  if (reply) {
+    return reply.body || `Reply to ${reply.replyToSenderName}: ${reply.replyPreview}`;
   }
   return message.content?.trim() || (message.attachment_url ? "Sent an image." : "Open DMs to read the latest message.");
 }
@@ -1175,6 +1337,8 @@ export default function ChatDashboard({
   const [requests, setRequests] = useState<FriendRequest[]>([]);
   const [dms, setDms] = useState<DmWithFriend[]>([]);
   const [unreadDmCounts, setUnreadDmCounts] = useState<Record<number, number>>({});
+  const [dmSidebarContextMenu, setDmSidebarContextMenu] = useState<DmSidebarContextMenuState | null>(null);
+  const [dmSidebarActionBusyKey, setDmSidebarActionBusyKey] = useState<string | null>(null);
   const [groupChats, setGroupChats] = useState<GroupChatWithMembers[]>([]);
   const [unreadGroupCounts, setUnreadGroupCounts] = useState<Record<number, number>>({});
   const [groupError, setGroupError] = useState("");
@@ -1277,6 +1441,10 @@ export default function ChatDashboard({
   const [bannerUploadBusy, setBannerUploadBusy] = useState(false);
 
   const [messages, setMessages] = useState<UiMessage[]>([]);
+  const [dismissedDmMessageIds, setDismissedDmMessageIds] = useState<Record<number, true>>({});
+  const [messageContextMenu, setMessageContextMenu] = useState<MessageContextMenuState | null>(null);
+  const [messageContextMenuReactionsExpanded, setMessageContextMenuReactionsExpanded] = useState(false);
+  const [composerReplyTarget, setComposerReplyTarget] = useState<ComposerReplyTarget | null>(null);
   const [hasDraftText, setHasDraftText] = useState(false);
   const [composerAttachment, setComposerAttachment] = useState<ComposerAttachment | null>(null);
   const [selectedGif, setSelectedGif] = useState<ComposerGif | null>(null);
@@ -1327,6 +1495,8 @@ export default function ChatDashboard({
   const glytchMessagesPollingInFlightRef = useRef(false);
   const glytchNotificationPollingInFlightRef = useRef(false);
   const messageDisplayRef = useRef<HTMLElement | null>(null);
+  const chatStreamColumnRef = useRef<HTMLDivElement | null>(null);
+  const dmSidebarListRef = useRef<HTMLElement | null>(null);
   const messageEndRef = useRef<HTMLDivElement | null>(null);
   const messageInputRef = useRef<HTMLInputElement | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
@@ -2275,12 +2445,126 @@ export default function ChatDashboard({
     setShowGifPicker(false);
     setReactionPickerMessageId(null);
     setReactionBusyKey(null);
+    setMessageContextMenu(null);
+    setDmSidebarContextMenu(null);
+    setComposerReplyTarget(null);
+    setDismissedDmMessageIds({});
     setGifQueryDraft("");
     setGifResults([]);
     setGifError("");
     setComposerAttachment(null);
     setSelectedGif(null);
   }, [viewMode, activeConversationId, activeGroupChatId, activeChannelId]);
+
+  useEffect(() => {
+    if (!messageContextMenu) return;
+
+    const handlePointerDown = () => {
+      setMessageContextMenu(null);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setMessageContextMenu(null);
+      }
+    };
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("resize", handlePointerDown);
+    window.addEventListener("scroll", handlePointerDown, true);
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("resize", handlePointerDown);
+      window.removeEventListener("scroll", handlePointerDown, true);
+    };
+  }, [messageContextMenu]);
+
+  useEffect(() => {
+    if (viewMode === "dm" && dmPanelMode === "dms") return;
+    setDmSidebarContextMenu(null);
+  }, [dmPanelMode, viewMode]);
+
+  useEffect(() => {
+    if (!dmSidebarContextMenu) return;
+
+    const handlePointerDown = () => {
+      setDmSidebarContextMenu(null);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setDmSidebarContextMenu(null);
+      }
+    };
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("resize", handlePointerDown);
+    window.addEventListener("scroll", handlePointerDown, true);
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("resize", handlePointerDown);
+      window.removeEventListener("scroll", handlePointerDown, true);
+    };
+  }, [dmSidebarContextMenu]);
+
+  useEffect(() => {
+    if (messageContextMenu) return;
+    setMessageContextMenuReactionsExpanded(false);
+  }, [messageContextMenu]);
+
+  const openDmMessageContextMenuAt = useCallback((
+    anchorSource: HTMLElement,
+    messageId: number,
+    sender: UiMessage["sender"],
+    clickPoint?: { x: number; y: number },
+  ) => {
+    if (viewMode !== "dm") return;
+
+    if (!Number.isFinite(messageId) || messageId <= 0) return;
+
+    const messageBody =
+      anchorSource.querySelector<HTMLElement>("[data-dm-message-body='true']") || anchorSource;
+    const menuContainer = chatStreamColumnRef.current;
+    if (!menuContainer) return;
+
+    const menuWidth = 220;
+    const canDelete = sender === "me";
+    const menuHeight = canDelete ? 150 : 116;
+    const anchorRect = messageBody.getBoundingClientRect();
+    const containerRect = menuContainer.getBoundingClientRect();
+    const rowElement = messageBody.closest(".messageRow");
+    const prefersRightAlignment = Boolean(rowElement?.classList.contains("fromMe"));
+    let desiredViewportX = prefersRightAlignment ? anchorRect.right - menuWidth : anchorRect.left;
+    let desiredViewportY: number;
+
+    if (clickPoint) {
+      const spaceRight = containerRect.right - clickPoint.x;
+      const spaceBottom = containerRect.bottom - clickPoint.y;
+      desiredViewportX = spaceRight >= menuWidth + 8 ? clickPoint.x + 4 : clickPoint.x - menuWidth - 4;
+      desiredViewportY = spaceBottom >= menuHeight + 8 ? clickPoint.y + 4 : clickPoint.y - menuHeight - 4;
+    } else {
+      const aboveY = anchorRect.top - menuHeight - 8;
+      const belowY = anchorRect.bottom + 8;
+      desiredViewportY = aboveY >= containerRect.top + 8 ? aboveY : belowY;
+    }
+
+    const desiredLocalX = desiredViewportX - containerRect.left;
+    const desiredLocalY = desiredViewportY - containerRect.top;
+    const safeX = Math.max(8, Math.min(desiredLocalX, Math.max(8, containerRect.width - menuWidth - 8)));
+    const safeY = Math.max(8, Math.min(desiredLocalY, Math.max(8, containerRect.height - menuHeight - 8)));
+
+    setReactionPickerMessageId(null);
+    setDmSidebarContextMenu(null);
+    setMessageContextMenuReactionsExpanded(false);
+    setMessageContextMenu({
+      messageId,
+      x: safeX,
+      y: safeY,
+      canDelete,
+    });
+  }, [viewMode]);
 
   useEffect(() => {
     if (!showGifPicker) return;
@@ -2390,14 +2674,23 @@ export default function ChatDashboard({
     const conversationIds = conversations.map((conv) => conv.id);
     const friendIds = conversations.map((conv) => getFriendId(conv, currentUserId));
     const requestUserIds = requestRows.flatMap((req) => [req.sender_id, req.receiver_id]);
-    const [profiles, unreadRows] = await Promise.all([
+    const [profiles, unreadRows, conversationUserStateRows] = await Promise.all([
       fetchProfilesByIds(
         accessToken,
         Array.from(new Set([...friendIds, ...requestUserIds])),
       ),
       listUnreadDmMessages(accessToken, currentUserId, conversationIds),
+      listDmConversationUserStates(accessToken, currentUserId, conversationIds),
     ]);
     const profileMap = new Map<string, Profile>(profiles.map((p) => [p.user_id, p]));
+    const stateMap = new Map<number, { isPinned: boolean }>(
+      conversationUserStateRows.map((row) => [
+        row.conversation_id,
+        {
+          isPinned: Boolean(row.is_pinned),
+        },
+      ]),
+    );
     setKnownProfiles((prev) => ({
       ...prev,
       ...Object.fromEntries(profiles.map((profile) => [profile.user_id, profile])),
@@ -2421,10 +2714,12 @@ export default function ChatDashboard({
         friendName: profile?.username || profile?.display_name || "User",
         friendAvatarUrl: profile?.avatar_url || "",
         sharedBackground: isForcedDefault ? null : normalizeBackgroundGradient(conv.dm_theme),
+        isPinned: stateMap.get(conv.id)?.isPinned || false,
       };
     });
 
-    setDms(nextDms);
+    const sortedDms = sortDmsByPinned(nextDms);
+    setDms(sortedDms);
     const nextUnreadCounts: Record<number, number> = {};
     unreadRows.forEach((row) => {
       nextUnreadCounts[row.conversation_id] = (nextUnreadCounts[row.conversation_id] || 0) + 1;
@@ -2432,10 +2727,10 @@ export default function ChatDashboard({
     setUnreadDmCounts(nextUnreadCounts);
 
     const currentConversationId = activeConversationIdRef.current;
-    if (nextDms.length > 0 && !nextDms.some((dm) => dm.conversationId === currentConversationId)) {
-      setActiveConversationId(nextDms[0].conversationId);
+    if (sortedDms.length > 0 && !sortedDms.some((dm) => dm.conversationId === currentConversationId)) {
+      setActiveConversationId(sortedDms[0].conversationId);
     }
-    if (nextDms.length === 0) {
+    if (sortedDms.length === 0) {
       setActiveConversationId(null);
       setUnreadDmCounts({});
     }
@@ -2766,10 +3061,7 @@ export default function ChatDashboard({
       return;
     }
     if (quickThemeTarget.kind === "group") {
-      const background = profileForm.groupBackgroundByChat[quickThemeTarget.key] || {
-        from: profileForm.dmBackgroundFrom,
-        to: profileForm.dmBackgroundTo,
-      };
+      const background = profileForm.groupBackgroundByChat[quickThemeTarget.key] || DEFAULT_DM_CHAT_BACKGROUND;
       setQuickThemeModeDraft(background.mode === "image" && background.imageUrl ? "image" : "gradient");
       setQuickThemeFromDraft(background.from);
       setQuickThemeToDraft(background.to);
@@ -4576,7 +4868,8 @@ export default function ChatDashboard({
       setActiveGlytchId(joinedGlytchId);
       setViewMode("glytch");
       setShowGlytchDirectory(false);
-      await deleteDmMessage(accessToken, messageId);
+      setDismissedDmMessageIds((prev) => ({ ...prev, [messageId]: true }));
+      await deleteDmMessage(accessToken, messageId).catch(() => undefined);
       setMessages((prev) => prev.filter((msg) => msg.id !== messageId));
     } catch (err) {
       if (err instanceof JoinGlytchBannedError) {
@@ -4593,7 +4886,8 @@ export default function ChatDashboard({
     try {
       setJoinInviteBusyMessageId(messageId);
       setChatError("");
-      await deleteDmMessage(accessToken, messageId);
+      setDismissedDmMessageIds((prev) => ({ ...prev, [messageId]: true }));
+      await deleteDmMessage(accessToken, messageId).catch(() => undefined);
       setMessages((prev) => prev.filter((msg) => msg.id !== messageId));
     } catch (err) {
       setChatError(err instanceof Error ? err.message : "Could not reject invite.");
@@ -4601,6 +4895,193 @@ export default function ChatDashboard({
       setJoinInviteBusyMessageId((prev) => (prev === messageId ? null : prev));
     }
   }, [accessToken]);
+
+  const handleDeleteDmMessageFromContextMenu = useCallback(async () => {
+    if (!messageContextMenu) return;
+
+    const { messageId } = messageContextMenu;
+    setMessageContextMenu(null);
+    setChatError("");
+    try {
+      await deleteDmMessage(accessToken, messageId);
+      setMessages((prev) => prev.filter((message) => message.id !== messageId));
+    } catch (err) {
+      setChatError(err instanceof Error ? err.message : "Could not delete message.");
+    }
+  }, [accessToken, messageContextMenu]);
+
+  const handleReplyToDmMessageFromContextMenu = useCallback(() => {
+    if (!messageContextMenu) return;
+
+    const target = messages.find((message) => message.id === messageContextMenu.messageId);
+    setMessageContextMenu(null);
+    if (!target) return;
+
+    setComposerReplyTarget({
+      messageId: target.id,
+      senderName: target.senderName,
+      preview: buildReplyPreviewFromMessage(target),
+    });
+    requestAnimationFrame(() => {
+      messageInputRef.current?.focus();
+    });
+  }, [messageContextMenu, messages]);
+
+  const openDmSidebarContextMenu = useCallback((
+    event: ReactMouseEvent<HTMLElement>,
+    conversationId: number,
+    unreadCount: number,
+    isPinned: boolean,
+  ) => {
+    if (viewMode !== "dm" || dmPanelMode !== "dms") return;
+    if (!Number.isFinite(conversationId) || conversationId <= 0) return;
+    const menuContainer = dmSidebarListRef.current;
+    if (!menuContainer) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const menuWidth = 176;
+    const menuHeight = 120;
+    const menuContainerRect = menuContainer.getBoundingClientRect();
+    const viewportHost = menuContainer.closest(".sideContentBody");
+    const viewportRect =
+      viewportHost instanceof HTMLElement ? viewportHost.getBoundingClientRect() : menuContainerRect;
+
+    const desiredLocalX = event.clientX - menuContainerRect.left + 4;
+    const desiredLocalY = event.clientY - menuContainerRect.top + 4;
+
+    const minLocalX = Math.max(8, viewportRect.left - menuContainerRect.left + 8);
+    const minLocalY = Math.max(8, viewportRect.top - menuContainerRect.top + 8);
+    const maxLocalX = Math.max(minLocalX, viewportRect.right - menuContainerRect.left - menuWidth - 8);
+    const maxLocalY = Math.max(minLocalY, viewportRect.bottom - menuContainerRect.top - menuHeight - 8);
+
+    const safeX = Math.max(minLocalX, Math.min(desiredLocalX, maxLocalX));
+    const safeY = Math.max(minLocalY, Math.min(desiredLocalY, maxLocalY));
+
+    setMessageContextMenu(null);
+    setDmSidebarContextMenu({
+      conversationId,
+      x: safeX,
+      y: safeY,
+      unreadCount: Math.max(0, unreadCount),
+      isPinned,
+    });
+  }, [dmPanelMode, viewMode]);
+
+  const handleMarkDmSeenFromSidebarContextMenu = useCallback(async () => {
+    if (!dmSidebarContextMenu) return;
+    const { conversationId } = dmSidebarContextMenu;
+    const busyKey = `seen:${conversationId}`;
+
+    setDmSidebarContextMenu(null);
+    setDmSidebarActionBusyKey(busyKey);
+    setDmError("");
+
+    try {
+      const result = await markDmConversationRead(accessToken, conversationId);
+      setUnreadDmCounts((prev) => {
+        if (!prev[conversationId]) return prev;
+        return { ...prev, [conversationId]: 0 };
+      });
+      if (result.deleted_empty_conversation) {
+        await loadDmSidebarData();
+      }
+    } catch (err) {
+      setDmError(err instanceof Error ? err.message : "Could not mark DM as seen.");
+    } finally {
+      setDmSidebarActionBusyKey((prev) => (prev === busyKey ? null : prev));
+    }
+  }, [accessToken, dmSidebarContextMenu, loadDmSidebarData]);
+
+  const handleTogglePinDmFromSidebarContextMenu = useCallback(async () => {
+    if (!dmSidebarContextMenu) return;
+    const { conversationId, isPinned } = dmSidebarContextMenu;
+    const nextPinned = !isPinned;
+    const busyKey = `pin:${conversationId}`;
+
+    setDmSidebarContextMenu(null);
+    setDmSidebarActionBusyKey(busyKey);
+    setDmError("");
+
+    try {
+      await setDmConversationPinned(accessToken, conversationId, nextPinned);
+      setDms((prev) =>
+        sortDmsByPinned(
+          prev.map((dm) =>
+            dm.conversationId === conversationId
+              ? {
+                  ...dm,
+                  isPinned: nextPinned,
+                }
+              : dm,
+          ),
+        ),
+      );
+    } catch (err) {
+      setDmError(err instanceof Error ? err.message : "Could not update DM pin.");
+    } finally {
+      setDmSidebarActionBusyKey((prev) => (prev === busyKey ? null : prev));
+    }
+  }, [accessToken, dmSidebarContextMenu]);
+
+  const handleDeleteDmFromSidebarContextMenu = useCallback(async () => {
+    if (!dmSidebarContextMenu) return;
+    const { conversationId } = dmSidebarContextMenu;
+    const busyKey = `delete:${conversationId}`;
+
+    setDmSidebarContextMenu(null);
+    setDmSidebarActionBusyKey(busyKey);
+    setDmError("");
+
+    try {
+      await hideDmConversation(accessToken, conversationId);
+
+      const nextDms = dms.filter((dm) => dm.conversationId !== conversationId);
+      setDms(nextDms);
+      setUnreadDmCounts((prev) => {
+        if (!(conversationId in prev)) return prev;
+        const next = { ...prev };
+        delete next[conversationId];
+        return next;
+      });
+
+      const nextLatestMessageIds = { ...dmLatestMessageIdsRef.current };
+      delete nextLatestMessageIds[conversationId];
+      dmLatestMessageIdsRef.current = nextLatestMessageIds;
+
+      const nextCallCounts = { ...dmCallParticipantCountsRef.current };
+      delete nextCallCounts[conversationId];
+      dmCallParticipantCountsRef.current = nextCallCounts;
+
+      if (activeConversationIdRef.current === conversationId) {
+        setActiveConversationId(nextDms[0]?.conversationId ?? null);
+      }
+    } catch (err) {
+      setDmError(err instanceof Error ? err.message : "Could not delete DM.");
+    } finally {
+      setDmSidebarActionBusyKey((prev) => (prev === busyKey ? null : prev));
+    }
+  }, [accessToken, dmSidebarContextMenu, dms]);
+
+  const handleDmMessageContextMenuCapture = useCallback((event: ReactMouseEvent<HTMLElement>) => {
+    if (viewMode !== "dm") return;
+    const rawTarget = event.target;
+    const targetElement =
+      rawTarget instanceof Element
+        ? rawTarget
+        : rawTarget instanceof Node
+          ? rawTarget.parentElement
+          : null;
+    const messageRow = targetElement?.closest<HTMLElement>("[data-dm-message-row='true']") || null;
+    if (!messageRow) return;
+
+    const messageId = Number.parseInt(messageRow.dataset.messageId || "", 10);
+    if (!Number.isFinite(messageId) || messageId <= 0) return;
+    const sender = messageRow.dataset.sender === "me" ? "me" : "other";
+    event.preventDefault();
+    openDmMessageContextMenuAt(messageRow, messageId, sender, { x: event.clientX, y: event.clientY });
+  }, [openDmMessageContextMenuAt, viewMode]);
 
   const handleCreateChannel = async (e: FormEvent) => {
     e.preventDefault();
@@ -5908,10 +6389,19 @@ export default function ChatDashboard({
 
   const sendMessage = async (e: FormEvent) => {
     e.preventDefault();
-    const text = (messageInputRef.current?.value || "").trim();
+    const draftText = (messageInputRef.current?.value || "").trim();
     const hasAttachment = Boolean(composerAttachment);
     const hasGif = Boolean(selectedGif);
-    if (!text && !hasAttachment && !hasGif) return;
+    if (!draftText && !hasAttachment && !hasGif) return;
+    const text =
+      viewMode === "dm" && composerReplyTarget
+        ? serializeDmReplyMessage({
+            replyToMessageId: composerReplyTarget.messageId,
+            replyToSenderName: composerReplyTarget.senderName,
+            replyPreview: composerReplyTarget.preview,
+            body: draftText,
+          })
+        : draftText;
     if (viewMode === "glytch" && activeChannel?.kind === "text" && activeChannel.text_post_mode === "text_only" && (hasAttachment || hasGif)) {
       setChatError("This channel is text-only. Remove images/GIFs before sending.");
       return;
@@ -5997,6 +6487,7 @@ export default function ChatDashboard({
         setHasDraftText(false);
         setComposerAttachment(null);
         setSelectedGif(null);
+        setComposerReplyTarget(null);
         setShowEmojiPicker(false);
         setShowGifPicker(false);
         setChatError("");
@@ -6852,12 +7343,7 @@ export default function ChatDashboard({
       const personalOverride = activeGroupChatId
         ? profileForm.groupBackgroundByChat[String(activeGroupChatId)] || null
         : null;
-      const background = {
-        from: personalOverride?.from || profileForm.dmBackgroundFrom,
-        to: personalOverride?.to || profileForm.dmBackgroundTo,
-        mode: personalOverride?.mode,
-        imageUrl: personalOverride?.imageUrl,
-      };
+      const background = personalOverride || DEFAULT_DM_CHAT_BACKGROUND;
       return {
         ...resolveChatBackgroundStyle(background),
         "--chat-bg-from": background.from,
@@ -6908,20 +7394,37 @@ export default function ChatDashboard({
     }
     return null;
   }, [messages]);
+
+  const contextMenuMessage = useMemo(() => {
+    if (!messageContextMenu) return null;
+    return messages.find((message) => message.id === messageContextMenu.messageId) || null;
+  }, [messageContextMenu, messages]);
+
   const renderedMessageRows = useMemo(
     () => {
       const visibleMessages =
-        messages.length > MAX_RENDERED_MESSAGES ? messages.slice(messages.length - MAX_RENDERED_MESSAGES) : messages;
+        (messages.length > MAX_RENDERED_MESSAGES ? messages.slice(messages.length - MAX_RENDERED_MESSAGES) : messages)
+          .filter((msg) => !(viewMode === "dm" && dismissedDmMessageIds[msg.id]));
       return visibleMessages.map((msg) => {
         const invitePayload = viewMode === "dm" ? parseGlytchInviteMessage(msg.text || "") : null;
+        const replyPayload = viewMode === "dm" ? parseDmReplyMessage(msg.text || "") : null;
         return (
-          <article key={msg.id} className={`messageRow ${msg.sender === "me" ? "fromMe" : "fromOther"}`}>
+          <article
+            key={msg.id}
+            className={`messageRow ${msg.sender === "me" ? "fromMe" : "fromOther"}`}
+            data-dm-message-row="true"
+            data-message-id={msg.id}
+            data-sender={msg.sender}
+          >
             <span className="messageAvatar" aria-hidden="true">
               {msg.senderAvatarUrl ? <img src={msg.senderAvatarUrl} alt="" /> : <span>{initialsFromName(msg.senderName)}</span>}
             </span>
-            <div className="messageContent">
-              {msg.sender !== "me" && <p className="senderName">{msg.senderName}</p>}
-              <div className="messageBody">
+              <div className="messageContent">
+                {msg.sender !== "me" && <p className="senderName">{msg.senderName}</p>}
+              <div
+                className="messageBody"
+                data-dm-message-body="true"
+              >
                 {invitePayload ? (
                   <div className="dmInviteCard">
                     <div className="dmInviteHeader">
@@ -6959,7 +7462,17 @@ export default function ChatDashboard({
                     )}
                   </div>
                 ) : (
-                  msg.text && <div className="msg">{msg.text}</div>
+                  <>
+                    {replyPayload && (
+                      <div className="messageReplyBlock">
+                        <p className="messageReplyLabel">Replying to {replyPayload.replyToSenderName}</p>
+                        <p className="messageReplyText">{replyPayload.replyPreview}</p>
+                      </div>
+                    )}
+                    {((replyPayload && replyPayload.body) || (!replyPayload && msg.text)) && (
+                      <div className="msg">{replyPayload ? replyPayload.body : msg.text}</div>
+                    )}
+                  </>
                 )}
                 {msg.attachmentUrl && (
                   <a href={msg.attachmentUrl} target="_blank" rel="noreferrer" className="messageMediaLink">
@@ -6991,41 +7504,45 @@ export default function ChatDashboard({
                     </button>
                   );
                 })}
-                <button
-                  type="button"
-                  className={`messageReactionAdd${reactionPickerMessageId === msg.id ? " active" : ""}`}
-                  onClick={() =>
-                    setReactionPickerMessageId((prev) => {
-                      if (prev === msg.id) return null;
-                      return msg.id;
-                    })
-                  }
-                  disabled={Boolean(reactionBusyKey)}
-                  aria-label="Add reaction"
-                >
-                  🙂
-                </button>
-                {reactionPickerMessageId === msg.id && (
-                  <div className="messageReactionPicker" role="listbox" aria-label="Pick reaction emoji">
-                    {REACTION_EMOJIS.map((emoji) => {
-                      const reactionKey = `${msg.id}:${emoji}`;
-                      const reactedByMe = msg.reactions.some((reaction) => reaction.emoji === emoji && reaction.reactedByMe);
-                      return (
-                        <button
-                          key={emoji}
-                          type="button"
-                          className={`messageReactionOption${reactedByMe ? " active" : ""}`}
-                          onClick={() => {
-                            void handleToggleMessageReaction(msg.id, emoji);
-                          }}
-                          disabled={reactionBusyKey === reactionKey}
-                          aria-label={`React with ${emoji}`}
-                        >
-                          {emoji}
-                        </button>
-                      );
-                    })}
-                  </div>
+                {viewMode !== "dm" && (
+                  <>
+                    <button
+                      type="button"
+                      className={`messageReactionAdd${reactionPickerMessageId === msg.id ? " active" : ""}`}
+                      onClick={() =>
+                        setReactionPickerMessageId((prev) => {
+                          if (prev === msg.id) return null;
+                          return msg.id;
+                        })
+                      }
+                      disabled={Boolean(reactionBusyKey)}
+                      aria-label="Add reaction"
+                    >
+                      🙂
+                    </button>
+                    {reactionPickerMessageId === msg.id && (
+                      <div className="messageReactionPicker" role="listbox" aria-label="Pick reaction emoji">
+                        {REACTION_EMOJIS.map((emoji) => {
+                          const reactionKey = `${msg.id}:${emoji}`;
+                          const reactedByMe = msg.reactions.some((reaction) => reaction.emoji === emoji && reaction.reactedByMe);
+                          return (
+                            <button
+                              key={emoji}
+                              type="button"
+                              className={`messageReactionOption${reactedByMe ? " active" : ""}`}
+                              onClick={() => {
+                                void handleToggleMessageReaction(msg.id, emoji);
+                              }}
+                              disabled={reactionBusyKey === reactionKey}
+                              aria-label={`React with ${emoji}`}
+                            >
+                              {emoji}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
               <div className="msgMeta">
@@ -7039,6 +7556,7 @@ export default function ChatDashboard({
     },
     [
       handleJoinInviteFromDmMessage,
+      dismissedDmMessageIds,
       handleRejectInviteFromDmMessage,
       handleToggleMessageReaction,
       joinInviteBusyMessageId,
@@ -7466,7 +7984,7 @@ export default function ChatDashboard({
                     </section>
                   </>
                 ) : (
-                  <nav className="channelList" aria-label="Direct messages">
+                  <nav className="channelList" aria-label="Direct messages" ref={dmSidebarListRef}>
                     <p className="sectionLabel">Direct Messages</p>
                     {dms.length === 0 && <p className="smallMuted">No DMs yet</p>}
                     {dms.map((dm) => {
@@ -7475,12 +7993,21 @@ export default function ChatDashboard({
                       const dmPresenceStatus = resolvePresenceForUser(dm.friendUserId);
                       const dmPresenceTitle = `Status: ${presenceStatusLabel(dmPresenceStatus)}`;
                       return (
-                        <div key={dm.conversationId} className="friendRow">
+                        <div
+                          key={dm.conversationId}
+                          className="friendRow"
+                          onContextMenu={(event) => {
+                            openDmSidebarContextMenu(event, dm.conversationId, unreadCount, dm.isPinned);
+                          }}
+                        >
                           <button
                             className="friendAvatarButton"
                             type="button"
                             aria-label={`View ${dm.friendName} profile`}
-                            onClick={() => void openProfileViewer(dm.friendUserId)}
+                            onClick={() => {
+                              setDmSidebarContextMenu(null);
+                              void openProfileViewer(dm.friendUserId);
+                            }}
                           >
                             <span className="friendAvatar withPresence" title={dmPresenceTitle}>
                               {dm.friendAvatarUrl ? (
@@ -7498,7 +8025,10 @@ export default function ChatDashboard({
                                 : "channelItem friendItem"
                             }
                             type="button"
-                            onClick={() => setActiveConversationId(dm.conversationId)}
+                            onClick={() => {
+                              setDmSidebarContextMenu(null);
+                              setActiveConversationId(dm.conversationId);
+                            }}
                           >
                             <span>{dm.friendName}</span>
                             {unreadCount > 0 && <span className="unreadBubble">{unreadLabel}</span>}
@@ -7506,6 +8036,47 @@ export default function ChatDashboard({
                         </div>
                       );
                     })}
+                    {dmSidebarContextMenu && (
+                      <div
+                        className="dmSidebarContextMenu"
+                        role="menu"
+                        aria-label="Direct message options"
+                        style={{ left: dmSidebarContextMenu.x, top: dmSidebarContextMenu.y }}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onContextMenu={(event) => event.preventDefault()}
+                      >
+                        <button
+                          type="button"
+                          className="dmSidebarContextMenuItem"
+                          role="menuitem"
+                          onClick={() => void handleMarkDmSeenFromSidebarContextMenu()}
+                          disabled={
+                            dmSidebarContextMenu.unreadCount === 0 ||
+                            dmSidebarActionBusyKey === `seen:${dmSidebarContextMenu.conversationId}`
+                          }
+                        >
+                          Mark as seen
+                        </button>
+                        <button
+                          type="button"
+                          className="dmSidebarContextMenuItem"
+                          role="menuitem"
+                          onClick={() => void handleTogglePinDmFromSidebarContextMenu()}
+                          disabled={dmSidebarActionBusyKey === `pin:${dmSidebarContextMenu.conversationId}`}
+                        >
+                          {dmSidebarContextMenu.isPinned ? "Unpin DM" : "Pin DM"}
+                        </button>
+                        <button
+                          type="button"
+                          className="dmSidebarContextMenuItem danger"
+                          role="menuitem"
+                          onClick={() => void handleDeleteDmFromSidebarContextMenu()}
+                          disabled={dmSidebarActionBusyKey === `delete:${dmSidebarContextMenu.conversationId}`}
+                        >
+                          Delete DM
+                        </button>
+                      </div>
+                    )}
                   </nav>
                 )}
               </>
@@ -9837,7 +10408,7 @@ export default function ChatDashboard({
             className={viewMode === "glytch" ? "chatLayout withMembersPanel" : "chatLayout"}
             style={chatLayoutStyle}
           >
-            <div className="chatStreamColumn">
+            <div ref={chatStreamColumnRef} className="chatStreamColumn">
               {shouldShowScreenSharePanel && (
                 <article className="voicePanel screenSharePanel" aria-label="Screen share">
                   <p className="sectionLabel">Screen Share</p>
@@ -10244,6 +10815,7 @@ export default function ChatDashboard({
                 className={isCurrentMessageBackgroundForcedDefault ? "messagedisplay forceDefaultBackground" : "messagedisplay"}
                 style={messageDisplayStyle}
                 aria-label="Messages"
+                onContextMenuCapture={handleDmMessageContextMenuCapture}
               >
                 {voiceError && <p className="chatError">{voiceError}</p>}
                 {viewMode === "dm" && !activeConversationId && (
@@ -10280,8 +10852,82 @@ export default function ChatDashboard({
                 <div ref={messageEndRef} />
               </section>
 
+              {viewMode === "dm" && messageContextMenu && (
+                <div
+                  className="messageContextMenu"
+                  style={{ left: messageContextMenu.x, top: messageContextMenu.y }}
+                  role="menu"
+                  aria-label="Message options"
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onContextMenu={(event) => event.preventDefault()}
+                >
+                  <button type="button" className="messageContextMenuItem" onClick={handleReplyToDmMessageFromContextMenu}>
+                    Reply
+                  </button>
+                  <div className="messageContextMenuLabel">React</div>
+                  <button
+                    type="button"
+                    className={`messageContextMenuToggle${messageContextMenuReactionsExpanded ? " active" : ""}`}
+                    onClick={() => {
+                      setMessageContextMenuReactionsExpanded((prev) => !prev);
+                    }}
+                    aria-expanded={messageContextMenuReactionsExpanded}
+                    aria-controls={`dm-context-reactions-${messageContextMenu.messageId}`}
+                    aria-label="Show reaction options"
+                  >
+                    🙂
+                  </button>
+                  {messageContextMenuReactionsExpanded && (
+                    <div
+                      className="messageContextMenuReactions"
+                      role="listbox"
+                      aria-label="React to message"
+                      id={`dm-context-reactions-${messageContextMenu.messageId}`}
+                    >
+                      {REACTION_EMOJIS.map((emoji) => {
+                        const reactionKey = `${messageContextMenu.messageId}:${emoji}`;
+                        const reactedByMe = Boolean(
+                          contextMenuMessage?.reactions.some((reaction) => reaction.emoji === emoji && reaction.reactedByMe),
+                        );
+                        return (
+                          <button
+                            key={emoji}
+                            type="button"
+                            className={`messageContextMenuReaction${reactedByMe ? " active" : ""}`}
+                            onClick={() => {
+                              void handleToggleMessageReaction(messageContextMenu.messageId, emoji);
+                              setMessageContextMenu(null);
+                            }}
+                            disabled={reactionBusyKey === reactionKey}
+                            aria-label={`React with ${emoji}`}
+                          >
+                            {emoji}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {messageContextMenu.canDelete && (
+                    <button type="button" className="messageContextMenuItem danger" onClick={() => void handleDeleteDmMessageFromContextMenu()}>
+                      Delete
+                    </button>
+                  )}
+                </div>
+              )}
+
               {(viewMode === "dm" || viewMode === "group" || activeChannel?.kind !== "voice") && (
                 <>
+                  {viewMode === "dm" && composerReplyTarget && (
+                    <div className="composerReplyPreview">
+                      <div className="composerReplyMeta">
+                        <span>Replying to {composerReplyTarget.senderName}</span>
+                        <small>{composerReplyTarget.preview}</small>
+                      </div>
+                      <button type="button" onClick={() => setComposerReplyTarget(null)} disabled={messageMediaBusy}>
+                        Cancel
+                      </button>
+                    </div>
+                  )}
                   {composerAttachment && (
                     <div className="composerAttachmentPreview">
                       <img src={composerAttachment.previewUrl} alt="Attachment preview" />
