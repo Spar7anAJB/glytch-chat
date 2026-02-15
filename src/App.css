@@ -1012,6 +1012,31 @@ textarea:focus-visible {
   color: var(--text);
 }
 
+.groupMemberAddForm {
+  width: 100%;
+}
+
+.groupMemberAddForm > * {
+  min-width: 0;
+}
+
+.groupMemberAddForm select {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  border: 1px solid color-mix(in srgb, var(--card-border), transparent 18%);
+  border-radius: 11px;
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--panel), var(--bg) 10%);
+  color: var(--text);
+  outline: none;
+}
+
+.groupMemberAddForm button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 .channelList {
   display: flex;
   flex-direction: column;
@@ -1834,6 +1859,8 @@ textarea:focus-visible {
 
 .chat-header {
   height: 62px;
+  position: relative;
+  z-index: 6;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -3516,6 +3543,14 @@ textarea:focus-visible {
 @media (max-width: 640px) {
   .profileShowcaseList {
     grid-template-columns: 1fr;
+  }
+
+  .groupMemberAddForm {
+    flex-wrap: wrap;
+  }
+
+  .groupMemberAddForm button {
+    width: 100%;
   }
 }
 

@@ -2,13 +2,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, CSSProperties, FormEvent, PointerEvent as ReactPointerEvent } from "react";
 import {
   addDmMessageReaction,
+  addGroupChatMembers,
+  addGroupChatMessageReaction,
   addGlytchMessageReaction,
   acceptFriendRequest,
   banGlytchUser,
   createDmMessage,
+  createGroupChat,
+  createGroupChatMessage,
   deleteDmMessage,
   deleteGlytch,
   deleteDmMessageReaction,
+  deleteGroupChatMessageReaction,
   deleteGlytchMessageReaction,
   deleteGlytchRole,
   createGlytch,
@@ -16,6 +21,8 @@ import {
   createGlytchChannelCategory,
   createGlytchMessage,
   fetchDmMessages,
+  fetchGroupChatMessages,
+  fetchLatestGroupChatMessages,
   fetchLatestDmMessages,
   fetchLatestGlytchMessages,
   fetchGlytchMessages,
@@ -29,6 +36,10 @@ import {
   kickGlytchMember,
   kickVoiceParticipant,
   listDmConversations,
+  listGroupChatMembers,
+  listGroupChatMessageReactions,
+  listGroupChats,
+  listUnreadGroupChatCounts,
   listFriendRequests,
   listGlytchBans,
   listUnreadDmMessages,
@@ -49,6 +60,7 @@ import {
   respondToFriendRequest,
   resolveMessageAttachmentUrl,
   markDmConversationRead,
+  markGroupChatRead,
   assignGlytchRole,
   createGlytchRole,
   setGlytchProfile,
@@ -78,6 +90,8 @@ import {
   type DmMessage,
   type DmMessageReaction,
   type FriendRequest,
+  type GroupChatMember,
+  type GroupChatMessageReaction,
   type Glytch,
   type GlytchChannel,
   type GlytchChannelCategory,
@@ -104,7 +118,7 @@ type ChatDashboardProps = {
   onLogout?: () => void;
 };
 
-type ViewMode = "dm" | "glytch" | "glytch-settings" | "settings";
+type ViewMode = "dm" | "group" | "glytch" | "glytch-settings" | "settings";
 type GlytchActionMode = "none" | "create" | "join";
 type DmPanelMode = "dms" | "friends";
 type SettingsTab = "edit" | "theme" | "showcases" | "preview" | "notifications";
@@ -125,6 +139,14 @@ type DmWithFriend = {
   friendName: string;
   friendAvatarUrl: string;
   sharedBackground: BackgroundGradient | null;
+};
+
+type GroupChatWithMembers = {
+  groupChatId: number;
+  name: string;
+  createdBy: string;
+  createdAt: string;
+  members: GroupChatMember[];
 };
 
 type BackgroundGradient = {
@@ -194,6 +216,7 @@ type ProfileForm = {
   glytchBackgroundFrom: string;
   glytchBackgroundTo: string;
   dmBackgroundByConversation: Record<string, BackgroundGradient>;
+  groupBackgroundByChat: Record<string, BackgroundGradient>;
   glytchBackgroundByChannel: Record<string, BackgroundGradient>;
   showcases: ProfileShowcase[];
   notificationsEnabled: boolean;
@@ -870,7 +893,10 @@ function sortMessageReactions(reactions: UiMessageReaction[]) {
   });
 }
 
-function buildMessageReactionMap(rows: Array<DmMessageReaction | GlytchMessageReaction>, currentUserId: string) {
+function buildMessageReactionMap(
+  rows: Array<DmMessageReaction | GroupChatMessageReaction | GlytchMessageReaction>,
+  currentUserId: string,
+) {
   const grouped = new Map<number, Map<string, UiMessageReaction>>();
 
   for (const row of rows) {
@@ -1062,6 +1088,7 @@ function buildProfileForm(profile: Profile | null): ProfileForm {
   const notifyFriendRequestAccepted =
     typeof theme.notifyFriendRequestAccepted === "boolean" ? theme.notifyFriendRequestAccepted : true;
   const dmBackgroundByConversation = normalizeBackgroundGradientMap(theme.dmBackgroundByConversation);
+  const groupBackgroundByChat = normalizeBackgroundGradientMap(theme.groupBackgroundByChat);
   const glytchBackgroundByChannel = normalizeBackgroundGradientMap(theme.glytchBackgroundByChannel);
   const showcases = normalizeProfileShowcases(theme.showcases);
   const legacyThemeValue = typeof theme.appTheme === "string" ? theme.appTheme : "";
@@ -1089,6 +1116,7 @@ function buildProfileForm(profile: Profile | null): ProfileForm {
     glytchBackgroundTo:
       typeof theme.glytchBackgroundTo === "string" ? theme.glytchBackgroundTo : DEFAULT_GLYTCH_CHAT_BACKGROUND.to,
     dmBackgroundByConversation,
+    groupBackgroundByChat,
     glytchBackgroundByChannel,
     showcases,
     notificationsEnabled,
@@ -1114,6 +1142,7 @@ function buildProfileThemePayload(form: ProfileForm): Record<string, unknown> {
     glytchBackgroundFrom: form.glytchBackgroundFrom,
     glytchBackgroundTo: form.glytchBackgroundTo,
     dmBackgroundByConversation: form.dmBackgroundByConversation,
+    groupBackgroundByChat: form.groupBackgroundByChat,
     glytchBackgroundByChannel: form.glytchBackgroundByChannel,
     showcases: form.showcases.map((showcase) => ({
       id: showcase.id,
@@ -1146,9 +1175,19 @@ export default function ChatDashboard({
   const [requests, setRequests] = useState<FriendRequest[]>([]);
   const [dms, setDms] = useState<DmWithFriend[]>([]);
   const [unreadDmCounts, setUnreadDmCounts] = useState<Record<number, number>>({});
+  const [groupChats, setGroupChats] = useState<GroupChatWithMembers[]>([]);
+  const [unreadGroupCounts, setUnreadGroupCounts] = useState<Record<number, number>>({});
+  const [groupError, setGroupError] = useState("");
+  const [groupNameDraft, setGroupNameDraft] = useState("");
+  const [groupCreateMemberIds, setGroupCreateMemberIds] = useState<string[]>([]);
+  const [groupCreateBusy, setGroupCreateBusy] = useState(false);
+  const [groupAddMemberId, setGroupAddMemberId] = useState("");
+  const [groupAddMemberBusy, setGroupAddMemberBusy] = useState(false);
   const [knownProfiles, setKnownProfiles] = useState<Record<string, Profile>>({});
   const [activeConversationId, setActiveConversationId] = useState<number | null>(null);
   const activeConversationIdRef = useRef<number | null>(null);
+  const [activeGroupChatId, setActiveGroupChatId] = useState<number | null>(null);
+  const activeGroupChatIdRef = useRef<number | null>(null);
   const [viewedProfile, setViewedProfile] = useState<Profile | null>(null);
 
   const [glytchNameDraft, setGlytchNameDraft] = useState("");
@@ -1284,6 +1323,7 @@ export default function ChatDashboard({
   const lastPresenceInteractionAtRef = useRef(Date.now());
   const isUserIdleRef = useRef(false);
   const dmMessagesPollingInFlightRef = useRef(false);
+  const groupMessagesPollingInFlightRef = useRef(false);
   const glytchMessagesPollingInFlightRef = useRef(false);
   const glytchNotificationPollingInFlightRef = useRef(false);
   const messageDisplayRef = useRef<HTMLElement | null>(null);
@@ -1309,6 +1349,8 @@ export default function ChatDashboard({
   const notificationPermissionRequestedRef = useRef(false);
   const dmLatestMessageIdsRef = useRef<Record<number, number>>({});
   const dmMessageNotificationSeededRef = useRef(false);
+  const groupLatestMessageIdsRef = useRef<Record<number, number>>({});
+  const groupMessageNotificationSeededRef = useRef(false);
   const glytchLatestMessageIdsRef = useRef<Record<number, number>>({});
   const glytchMessageNotificationSeededRef = useRef(false);
   const dmCallParticipantCountsRef = useRef<Record<number, number>>({});
@@ -1316,8 +1358,11 @@ export default function ChatDashboard({
   const friendRequestStatusByIdRef = useRef<Record<number, FriendRequest["status"]>>({});
   const friendRequestNotificationSeededRef = useRef(false);
   const dmConversationToMarkReadRef = useRef<number | null>(null);
+  const groupChatToMarkReadRef = useRef<number | null>(null);
   const dmLastLoadedConversationIdRef = useRef<number | null>(null);
   const dmLastLoadedMessageIdRef = useRef(0);
+  const groupLastLoadedChatIdRef = useRef<number | null>(null);
+  const groupLastLoadedMessageIdRef = useRef(0);
   const glytchLastLoadedChannelIdRef = useRef<number | null>(null);
   const glytchLastLoadedMessageIdRef = useRef(0);
   const messageSnapshotKeyByContextRef = useRef<Record<string, string>>({});
@@ -1336,6 +1381,10 @@ export default function ChatDashboard({
   const activeDm = useMemo(
     () => dms.find((dm) => dm.conversationId === activeConversationId) || null,
     [dms, activeConversationId],
+  );
+  const activeGroupChat = useMemo(
+    () => groupChats.find((chat) => chat.groupChatId === activeGroupChatId) || null,
+    [groupChats, activeGroupChatId],
   );
 
   const activeGlytch = useMemo(
@@ -1486,6 +1535,13 @@ export default function ChatDashboard({
         label: activeDm?.friendName || "DM",
       };
     }
+    if (viewMode === "group" && activeGroupChatId) {
+      return {
+        kind: "group" as const,
+        key: String(activeGroupChatId),
+        label: activeGroupChat?.name || "Group Chat",
+      };
+    }
     if (viewMode === "glytch" && activeChannel?.kind === "text" && activeChannelId) {
       return {
         kind: "glytch" as const,
@@ -1494,7 +1550,16 @@ export default function ChatDashboard({
       };
     }
     return null;
-  }, [viewMode, activeConversationId, activeDm?.friendName, activeChannel?.kind, activeChannel?.name, activeChannelId]);
+  }, [
+    viewMode,
+    activeConversationId,
+    activeDm?.friendName,
+    activeGroupChatId,
+    activeGroupChat?.name,
+    activeChannel?.kind,
+    activeChannel?.name,
+    activeChannelId,
+  ]);
   const quickThemeTargetOverride = useMemo(() => {
     if (!quickThemeTarget) return null;
     const targetId = Number.parseInt(quickThemeTarget.key, 10);
@@ -1504,6 +1569,9 @@ export default function ChatDashboard({
       }
       return activeDm?.sharedBackground || null;
     }
+    if (quickThemeTarget.kind === "group") {
+      return profileForm.groupBackgroundByChat[quickThemeTarget.key] || null;
+    }
     if (Number.isFinite(targetId) && targetId > 0 && forcedDefaultGlytchChannelIds[targetId]) {
       return null;
     }
@@ -1511,6 +1579,7 @@ export default function ChatDashboard({
   }, [
     quickThemeTarget,
     activeDm?.sharedBackground,
+    profileForm.groupBackgroundByChat,
     activeChannelSharedBackground,
     forcedDefaultDmConversationIds,
     forcedDefaultGlytchChannelIds,
@@ -1528,7 +1597,8 @@ export default function ChatDashboard({
     [quickThemeLegacyDmOverride, quickThemeTargetOverride],
   );
   const shouldShowQuickThemeControl = Boolean(
-    quickThemeTarget && (quickThemeTarget.kind === "dm" || canManageChannelsInActiveGlytch),
+    quickThemeTarget &&
+      (quickThemeTarget.kind === "dm" || quickThemeTarget.kind === "group" || canManageChannelsInActiveGlytch),
   );
   const selectedPermissionRole = useMemo(
     () => glytchRoles.find((role) => role.id === selectedPermissionRoleId) || null,
@@ -1541,6 +1611,10 @@ export default function ChatDashboard({
   const isInGlytchView = viewMode === "glytch" || viewMode === "glytch-settings";
   const shouldShowGlytchRailIcon = isInGlytchView && Boolean(activeGlytch) && !showGlytchDirectory;
   const shouldHideGlytchMessageArea = viewMode === "glytch" && (showGlytchDirectory || !activeGlytch);
+  const shouldShowGroupChatMessageArea = useMemo(
+    () => viewMode === "group" && Boolean(activeGroupChatId),
+    [viewMode, activeGroupChatId],
+  );
   const shouldShowVoiceControls = viewMode === "dm" || (viewMode === "glytch" && activeChannel?.kind === "voice");
   const shouldRenderHeaderActions = shouldShowVoiceControls || shouldShowQuickThemeControl;
   const effectiveVoiceMuted = voiceMuted || voiceDeafened;
@@ -1839,6 +1913,14 @@ export default function ChatDashboard({
     if (!normalizedGlytchInviteSearch) return dms;
     return dms.filter((dm) => dm.friendName.toLowerCase().includes(normalizedGlytchInviteSearch));
   }, [dms, normalizedGlytchInviteSearch]);
+  const activeGroupMemberIdSet = useMemo(
+    () => new Set((activeGroupChat?.members || []).map((member) => member.user_id)),
+    [activeGroupChat?.members],
+  );
+  const availableFriendsForActiveGroup = useMemo(
+    () => dms.filter((dm) => !activeGroupMemberIdSet.has(dm.friendUserId)),
+    [activeGroupMemberIdSet, dms],
+  );
 
   const selectedPresenceStatus = normalizePresenceStatus(profileForm.presenceStatus);
   const currentUserPresenceStatus = useMemo<UserPresenceStatus>(() => {
@@ -2198,13 +2280,15 @@ export default function ChatDashboard({
     setGifError("");
     setComposerAttachment(null);
     setSelectedGif(null);
-  }, [viewMode, activeConversationId, activeChannelId]);
+  }, [viewMode, activeConversationId, activeGroupChatId, activeChannelId]);
 
   useEffect(() => {
     if (!showGifPicker) return;
     const canCompose =
       viewMode === "dm"
         ? !!activeConversationId
+        : viewMode === "group"
+          ? !!activeGroupChatId
         : viewMode === "glytch"
           ? !!activeChannelId && activeChannel?.kind !== "voice" && activeChannel?.text_post_mode !== "text_only"
           : false;
@@ -2232,7 +2316,17 @@ export default function ChatDashboard({
       cancelled = true;
       window.clearTimeout(timeoutId);
     };
-  }, [showGifPicker, accessToken, gifQueryDraft, viewMode, activeConversationId, activeChannelId, activeChannel?.kind, activeChannel?.text_post_mode]);
+  }, [
+    showGifPicker,
+    accessToken,
+    gifQueryDraft,
+    viewMode,
+    activeConversationId,
+    activeGroupChatId,
+    activeChannelId,
+    activeChannel?.kind,
+    activeChannel?.text_post_mode,
+  ]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -2347,6 +2441,66 @@ export default function ChatDashboard({
     }
   }, [accessToken, currentUserId, forcedDefaultDmConversationIds]);
 
+  const loadGroupSidebarData = useCallback(async () => {
+    const chats = await listGroupChats(accessToken);
+    if (chats.length === 0) {
+      setGroupChats([]);
+      setUnreadGroupCounts({});
+      setActiveGroupChatId(null);
+      return;
+    }
+
+    const memberSnapshots = await Promise.all(
+      chats.map(async (chat) => ({
+        groupChatId: chat.id,
+        members: await listGroupChatMembers(accessToken, chat.id),
+      })),
+    );
+    const membersByChatId = new Map<number, GroupChatMember[]>(
+      memberSnapshots.map((snapshot) => [snapshot.groupChatId, snapshot.members]),
+    );
+    const profileIds = Array.from(new Set(
+      memberSnapshots.flatMap((snapshot) =>
+        snapshot.members.flatMap((member) => [
+          member.user_id,
+          ...(typeof member.added_by === "string" && member.added_by ? [member.added_by] : []),
+        ]),
+      ),
+    ));
+    const profiles = profileIds.length > 0 ? await fetchProfilesByIds(accessToken, profileIds) : [];
+    if (profiles.length > 0) {
+      setKnownProfiles((prev) => ({
+        ...prev,
+        ...Object.fromEntries(profiles.map((profile) => [profile.user_id, profile])),
+      }));
+    }
+
+    const unreadRows = await listUnreadGroupChatCounts(
+      accessToken,
+      chats.map((chat) => chat.id),
+    );
+    const nextUnreadGroupCounts: Record<number, number> = {};
+    unreadRows.forEach((row) => {
+      nextUnreadGroupCounts[row.group_chat_id] = Math.max(0, row.unread_count || 0);
+    });
+
+    const nextGroupChats: GroupChatWithMembers[] = chats.map((chat) => ({
+      groupChatId: chat.id,
+      name: chat.name || "Group Chat",
+      createdBy: chat.created_by,
+      createdAt: chat.created_at,
+      members: membersByChatId.get(chat.id) || [],
+    }));
+
+    setGroupChats(nextGroupChats);
+    setUnreadGroupCounts(nextUnreadGroupCounts);
+
+    const currentGroupChatId = activeGroupChatIdRef.current;
+    if (!nextGroupChats.some((chat) => chat.groupChatId === currentGroupChatId)) {
+      setActiveGroupChatId(nextGroupChats[0]?.groupChatId ?? null);
+    }
+  }, [accessToken]);
+
   const flushDmConversationReadOnLeave = useCallback((conversationId: number) => {
     if (!Number.isFinite(conversationId) || conversationId <= 0) return;
     void markDmConversationRead(accessToken, conversationId)
@@ -2361,6 +2515,18 @@ export default function ChatDashboard({
       })
       .catch(() => undefined);
   }, [accessToken, loadDmSidebarData]);
+
+  const flushGroupChatReadOnLeave = useCallback((groupChatId: number) => {
+    if (!Number.isFinite(groupChatId) || groupChatId <= 0) return;
+    void markGroupChatRead(accessToken, groupChatId)
+      .then(() => {
+        setUnreadGroupCounts((prev) => {
+          if (!prev[groupChatId]) return prev;
+          return { ...prev, [groupChatId]: 0 };
+        });
+      })
+      .catch(() => undefined);
+  }, [accessToken]);
 
   const loadGlytchSidebarData = useCallback(async () => {
     const rows = await listGlytches(accessToken);
@@ -2599,6 +2765,18 @@ export default function ChatDashboard({
       setQuickThemeError("");
       return;
     }
+    if (quickThemeTarget.kind === "group") {
+      const background = profileForm.groupBackgroundByChat[quickThemeTarget.key] || {
+        from: profileForm.dmBackgroundFrom,
+        to: profileForm.dmBackgroundTo,
+      };
+      setQuickThemeModeDraft(background.mode === "image" && background.imageUrl ? "image" : "gradient");
+      setQuickThemeFromDraft(background.from);
+      setQuickThemeToDraft(background.to);
+      setQuickThemeImageDraft(background.imageUrl || "");
+      setQuickThemeError("");
+      return;
+    }
     const isForcedDefaultChannel =
       Boolean(activeChannelId) && Boolean(forcedDefaultGlytchChannelIds[activeChannelId || 0]);
     const background =
@@ -2623,6 +2801,7 @@ export default function ChatDashboard({
     profileForm.dmBackgroundByConversation,
     profileForm.dmBackgroundFrom,
     profileForm.dmBackgroundTo,
+    profileForm.groupBackgroundByChat,
     profileForm.glytchBackgroundFrom,
     profileForm.glytchBackgroundTo,
     quickThemeTarget,
@@ -2638,6 +2817,20 @@ export default function ChatDashboard({
   }, [quickThemeTarget?.kind, quickThemeTarget?.key]);
 
   useEffect(() => {
+    if (!activeGroupChat) {
+      setGroupAddMemberId("");
+      return;
+    }
+    if (availableFriendsForActiveGroup.length === 0) {
+      setGroupAddMemberId("");
+      return;
+    }
+    if (!availableFriendsForActiveGroup.some((dm) => dm.friendUserId === groupAddMemberId)) {
+      setGroupAddMemberId(availableFriendsForActiveGroup[0].friendUserId);
+    }
+  }, [activeGroupChat, availableFriendsForActiveGroup, groupAddMemberId]);
+
+  useEffect(() => {
     if (bannableGlytchMembers.length === 0) {
       setSelectedBanMemberId("");
       return;
@@ -2650,6 +2843,10 @@ export default function ChatDashboard({
   useEffect(() => {
     activeConversationIdRef.current = activeConversationId;
   }, [activeConversationId]);
+
+  useEffect(() => {
+    activeGroupChatIdRef.current = activeGroupChatId;
+  }, [activeGroupChatId]);
 
   useEffect(() => {
     activeGlytchIdRef.current = activeGlytchId;
@@ -2921,6 +3118,30 @@ export default function ChatDashboard({
   }, [isElectronRuntime, loadDmSidebarData, shouldPauseBackgroundPolling]);
 
   useEffect(() => {
+    let mounted = true;
+
+    const load = async () => {
+      try {
+        await loadGroupSidebarData();
+      } catch (err) {
+        if (!mounted) return;
+        setGroupError(err instanceof Error ? err.message : "Could not load group chats.");
+      }
+    };
+
+    void load();
+    const interval = window.setInterval(() => {
+      if (shouldPauseBackgroundPolling()) return;
+      void load();
+    }, isElectronRuntime ? 8_000 : 4_000);
+
+    return () => {
+      mounted = false;
+      window.clearInterval(interval);
+    };
+  }, [isElectronRuntime, loadGroupSidebarData, shouldPauseBackgroundPolling]);
+
+  useEffect(() => {
     if (dms.length === 0) {
       dmLatestMessageIdsRef.current = {};
       dmMessageNotificationSeededRef.current = false;
@@ -3006,6 +3227,100 @@ export default function ChatDashboard({
     dms,
     isElectronRuntime,
     isAppVisibleAndFocused,
+    shouldPauseBackgroundPolling,
+    triggerDesktopNotification,
+    viewMode,
+  ]);
+
+  useEffect(() => {
+    if (groupChats.length === 0) {
+      groupLatestMessageIdsRef.current = {};
+      groupMessageNotificationSeededRef.current = false;
+      return;
+    }
+
+    let mounted = true;
+
+    const pollLatestGroupMessages = async () => {
+      try {
+        const rows = await fetchLatestGroupChatMessages(
+          accessToken,
+          groupChats.map((groupChat) => groupChat.groupChatId),
+        );
+        if (!mounted) return;
+
+        const latestByGroup = new Map<number, (typeof rows)[number]>();
+        rows.forEach((row) => {
+          if (!latestByGroup.has(row.group_chat_id)) {
+            latestByGroup.set(row.group_chat_id, row);
+          }
+        });
+
+        const previousByGroup = groupLatestMessageIdsRef.current;
+        const nextByGroup: Record<number, number> = {};
+
+        for (const groupChat of groupChats) {
+          const previousId = previousByGroup[groupChat.groupChatId] ?? 0;
+          nextByGroup[groupChat.groupChatId] = previousId;
+
+          const latest = latestByGroup.get(groupChat.groupChatId);
+          if (!latest) continue;
+
+          nextByGroup[groupChat.groupChatId] = latest.id;
+          const hasNewIncomingMessage =
+            groupMessageNotificationSeededRef.current &&
+            latest.sender_id !== currentUserId &&
+            latest.id > previousId;
+          if (!hasNewIncomingMessage) continue;
+          if (!dmMessageNotificationsEnabled) continue;
+
+          const viewingThisGroupChat =
+            viewMode === "group" && activeGroupChatId === groupChat.groupChatId && isAppVisibleAndFocused();
+          if (viewingThisGroupChat) continue;
+
+          const senderProfile = knownProfiles[latest.sender_id];
+          const senderName = senderProfile?.username || senderProfile?.display_name || "Someone";
+
+          void triggerDesktopNotification({
+            title: `Group · ${groupChat.name}`,
+            body: `${senderName}: ${dmMessagePreviewText(latest)}`,
+            tag: `group-message-${groupChat.groupChatId}`,
+            icon: senderProfile?.avatar_url || undefined,
+            onClick: () => {
+              setViewMode("group");
+              setActiveGroupChatId(groupChat.groupChatId);
+            },
+          });
+        }
+
+        groupLatestMessageIdsRef.current = nextByGroup;
+        if (!groupMessageNotificationSeededRef.current) {
+          groupMessageNotificationSeededRef.current = true;
+        }
+      } catch {
+        // Keep notification polling silent to avoid interrupting chat usage.
+      }
+    };
+
+    void pollLatestGroupMessages();
+    const interval = window.setInterval(() => {
+      if (shouldPauseBackgroundPolling()) return;
+      void pollLatestGroupMessages();
+    }, isElectronRuntime ? 8_000 : 4_000);
+
+    return () => {
+      mounted = false;
+      window.clearInterval(interval);
+    };
+  }, [
+    accessToken,
+    activeGroupChatId,
+    currentUserId,
+    dmMessageNotificationsEnabled,
+    groupChats,
+    isAppVisibleAndFocused,
+    isElectronRuntime,
+    knownProfiles,
     shouldPauseBackgroundPolling,
     triggerDesktopNotification,
     viewMode,
@@ -3315,6 +3630,10 @@ export default function ChatDashboard({
       dmLastLoadedConversationIdRef.current = null;
       dmLastLoadedMessageIdRef.current = 0;
     }
+    if (viewMode !== "group") {
+      groupLastLoadedChatIdRef.current = null;
+      groupLastLoadedMessageIdRef.current = 0;
+    }
     if (viewMode !== "glytch") {
       glytchLastLoadedChannelIdRef.current = null;
       glytchLastLoadedMessageIdRef.current = 0;
@@ -3333,11 +3652,26 @@ export default function ChatDashboard({
   }, [activeConversationId, flushDmConversationReadOnLeave, viewMode]);
 
   useEffect(() => {
+    const previousGroupChatId = groupChatToMarkReadRef.current;
+    const nextGroupChatId = viewMode === "group" ? activeGroupChatId : null;
+
+    if (previousGroupChatId && previousGroupChatId !== nextGroupChatId) {
+      flushGroupChatReadOnLeave(previousGroupChatId);
+    }
+
+    groupChatToMarkReadRef.current = nextGroupChatId;
+  }, [activeGroupChatId, flushGroupChatReadOnLeave, viewMode]);
+
+  useEffect(() => {
     const nextContextKey =
       viewMode === "dm"
         ? activeConversationId
           ? `dm:${activeConversationId}`
           : null
+        : viewMode === "group"
+          ? activeGroupChatId
+            ? `group:${activeGroupChatId}`
+            : null
         : viewMode === "glytch"
           ? activeChannelId && activeChannel?.kind !== "voice"
             ? `glytch:${activeChannelId}`
@@ -3348,7 +3682,7 @@ export default function ChatDashboard({
     activeMessageContextKeyRef.current = nextContextKey;
     setMessages([]);
     setChatError("");
-  }, [activeChannel?.kind, activeChannelId, activeConversationId, viewMode]);
+  }, [activeChannel?.kind, activeChannelId, activeConversationId, activeGroupChatId, viewMode]);
 
   useEffect(() => {
     if (viewMode !== "dm") return;
@@ -3447,6 +3781,121 @@ export default function ChatDashboard({
     currentProfile?.avatar_url,
     activeDm?.friendName,
     activeDm?.friendAvatarUrl,
+    isElectronRuntime,
+    shouldDeferMessagePolling,
+    viewMode,
+    isMessageListNearBottom,
+    scrollMessageListToBottom,
+  ]);
+
+  useEffect(() => {
+    if (viewMode !== "group") return;
+    if (!activeGroupChatId) {
+      setMessages([]);
+      groupLastLoadedChatIdRef.current = null;
+      groupLastLoadedMessageIdRef.current = 0;
+      return;
+    }
+
+    let mounted = true;
+
+    const loadMessages = async () => {
+      if (groupMessagesPollingInFlightRef.current) return;
+      groupMessagesPollingInFlightRef.current = true;
+      const groupChatId = activeGroupChatId;
+      const isGroupChatSwitch = groupLastLoadedChatIdRef.current !== groupChatId;
+      let shouldAutoScrollAfterLoad = false;
+      let scrollBehavior: ScrollBehavior = "smooth";
+      if (isGroupChatSwitch) {
+        setLoadingMessages(true);
+      }
+      try {
+        const rows = await fetchGroupChatMessages(accessToken, groupChatId);
+        if (!mounted) return;
+
+        const senderIds = Array.from(new Set(rows.map((row) => row.sender_id)));
+        const [profiles, reactionRows] = await Promise.all([
+          fetchProfilesByIds(accessToken, senderIds),
+          listGroupChatMessageReactions(
+            accessToken,
+            rows.map((row) => row.id),
+          ),
+        ]);
+        if (!mounted) return;
+
+        const profileMap = new Map(profiles.map((profile) => [profile.user_id, profile]));
+        const reactionMap = buildMessageReactionMap(reactionRows, currentUserId);
+        const normalized = await Promise.all(
+          rows.map(async (row) => ({
+            id: row.id,
+            text: row.content,
+            attachmentUrl: await resolveMessageAttachmentUrl(accessToken, row.attachment_url || null),
+            attachmentType: row.attachment_type || null,
+            timestamp: new Date(row.created_at),
+            sender: row.sender_id === currentUserId ? ("me" as const) : ("other" as const),
+            senderName:
+              row.sender_id === currentUserId
+                ? currentUserName
+                : profileMap.get(row.sender_id)?.username || profileMap.get(row.sender_id)?.display_name || "Member",
+            senderAvatarUrl:
+              row.sender_id === currentUserId
+                ? currentProfile?.avatar_url || ""
+                : profileMap.get(row.sender_id)?.avatar_url || "",
+            readAt: null,
+            reactions: reactionMap.get(row.id) || [],
+          })),
+        );
+        if (!mounted) return;
+
+        const previousLatestMessageId = isGroupChatSwitch ? 0 : groupLastLoadedMessageIdRef.current;
+        const nextLatestMessageId = normalized[normalized.length - 1]?.id ?? 0;
+        const hasNewerMessages = nextLatestMessageId > previousLatestMessageId;
+        const contextKey = `group:${groupChatId}`;
+        shouldAutoScrollAfterLoad = isGroupChatSwitch || (hasNewerMessages && isMessageListNearBottom());
+        scrollBehavior = isGroupChatSwitch ? "auto" : "smooth";
+        groupLastLoadedChatIdRef.current = groupChatId;
+        groupLastLoadedMessageIdRef.current = nextLatestMessageId;
+        const nextSnapshotKey = buildMessageSnapshotKey(normalized);
+        const previousSnapshotKey = messageSnapshotKeyByContextRef.current[contextKey] || "";
+        const hasMessageSnapshotChanged = nextSnapshotKey !== previousSnapshotKey;
+        messageSnapshotKeyByContextRef.current[contextKey] = nextSnapshotKey;
+
+        if (isGroupChatSwitch || hasMessageSnapshotChanged) {
+          setMessages(normalized);
+        }
+        setChatError("");
+      } catch (err) {
+        if (!mounted) return;
+        setChatError(err instanceof Error ? err.message : "Could not load messages.");
+      } finally {
+        if (mounted) {
+          if (isGroupChatSwitch) {
+            setLoadingMessages(false);
+          }
+          if (shouldAutoScrollAfterLoad) {
+            scrollMessageListToBottom(scrollBehavior);
+          }
+        }
+        groupMessagesPollingInFlightRef.current = false;
+      }
+    };
+
+    void loadMessages();
+    const interval = window.setInterval(() => {
+      if (shouldDeferMessagePolling()) return;
+      void loadMessages();
+    }, isElectronRuntime ? 5_000 : 3_000);
+
+    return () => {
+      mounted = false;
+      window.clearInterval(interval);
+    };
+  }, [
+    accessToken,
+    activeGroupChatId,
+    currentUserId,
+    currentUserName,
+    currentProfile?.avatar_url,
     isElectronRuntime,
     shouldDeferMessagePolling,
     viewMode,
@@ -3917,6 +4366,64 @@ export default function ChatDashboard({
       await loadDmSidebarData();
     } catch (err) {
       setDmError(err instanceof Error ? err.message : "Could not reject request.");
+    }
+  };
+
+  const handleToggleGroupCreateMember = (userId: string, checked: boolean) => {
+    setGroupCreateMemberIds((prev) => {
+      if (checked) {
+        if (prev.includes(userId)) return prev;
+        return [...prev, userId];
+      }
+      return prev.filter((id) => id !== userId);
+    });
+  };
+
+  const handleCreateGroupChat = async (e: FormEvent) => {
+    e.preventDefault();
+    const name = groupNameDraft.trim();
+    if (!name) {
+      setGroupError("Enter a group chat name.");
+      return;
+    }
+
+    setGroupCreateBusy(true);
+    setGroupError("");
+    try {
+      const created = await createGroupChat(accessToken, name, groupCreateMemberIds);
+      setGroupNameDraft("");
+      setGroupCreateMemberIds([]);
+      await loadGroupSidebarData();
+      setActiveGroupChatId(created.group_chat_id);
+      setViewMode("group");
+    } catch (err) {
+      setGroupError(err instanceof Error ? err.message : "Could not create group chat.");
+    } finally {
+      setGroupCreateBusy(false);
+    }
+  };
+
+  const handleAddMemberToActiveGroup = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!activeGroupChatId) {
+      setGroupError("Select a group chat first.");
+      return;
+    }
+    if (!groupAddMemberId) {
+      setGroupError("Select a friend to add.");
+      return;
+    }
+
+    setGroupAddMemberBusy(true);
+    setGroupError("");
+    try {
+      await addGroupChatMembers(accessToken, activeGroupChatId, [groupAddMemberId]);
+      setGroupAddMemberId("");
+      await loadGroupSidebarData();
+    } catch (err) {
+      setGroupError(err instanceof Error ? err.message : "Could not add member.");
+    } finally {
+      setGroupAddMemberBusy(false);
     }
   };
 
@@ -4638,7 +5145,7 @@ export default function ChatDashboard({
     if (!file) return;
 
     if (!quickThemeTarget) {
-      setQuickThemeError("Open a DM or text channel first.");
+      setQuickThemeError("Open a DM, group chat, or text channel first.");
       e.target.value = "";
       return;
     }
@@ -4734,6 +5241,31 @@ export default function ChatDashboard({
           delete next[conversationId];
           return next;
         });
+      } else if (quickThemeTarget.kind === "group") {
+        const groupChatId = Number.parseInt(quickThemeTarget.key, 10);
+        if (!Number.isFinite(groupChatId) || groupChatId <= 0) {
+          throw new Error("Invalid group chat.");
+        }
+        const nextByChat = {
+          ...profileForm.groupBackgroundByChat,
+          [quickThemeTarget.key]: nextOverride,
+        };
+        const updated = await updateMyProfileCustomization(accessToken, currentUserId, {
+          profile_theme: buildProfileThemePayload({
+            ...profileForm,
+            groupBackgroundByChat: nextByChat,
+          }),
+        });
+        const nextProfile = updated[0] || null;
+        if (nextProfile) {
+          setCurrentProfile(nextProfile);
+          setKnownProfiles((prev) => ({ ...prev, [nextProfile.user_id]: nextProfile }));
+          setViewedProfile((prev) => (prev?.user_id === nextProfile.user_id ? nextProfile : prev));
+        }
+        setProfileForm((prev) => ({
+          ...prev,
+          groupBackgroundByChat: nextByChat,
+        }));
       } else {
         const channelId = Number.parseInt(quickThemeTarget.key, 10);
         if (!Number.isFinite(channelId) || channelId <= 0) {
@@ -4802,6 +5334,29 @@ export default function ChatDashboard({
           };
         });
         await setDmConversationTheme(accessToken, conversationId, defaultThemePayload);
+      } else if (quickThemeTarget.kind === "group") {
+        const groupChatId = Number.parseInt(quickThemeTarget.key, 10);
+        if (!Number.isFinite(groupChatId) || groupChatId <= 0) {
+          throw new Error("Invalid group chat.");
+        }
+        const nextByChat = { ...profileForm.groupBackgroundByChat };
+        delete nextByChat[quickThemeTarget.key];
+        const updated = await updateMyProfileCustomization(accessToken, currentUserId, {
+          profile_theme: buildProfileThemePayload({
+            ...profileForm,
+            groupBackgroundByChat: nextByChat,
+          }),
+        });
+        const nextProfile = updated[0] || null;
+        if (nextProfile) {
+          setCurrentProfile(nextProfile);
+          setKnownProfiles((prev) => ({ ...prev, [nextProfile.user_id]: nextProfile }));
+          setViewedProfile((prev) => (prev?.user_id === nextProfile.user_id ? nextProfile : prev));
+        }
+        setProfileForm((prev) => ({
+          ...prev,
+          groupBackgroundByChat: nextByChat,
+        }));
       } else {
         const channelId = Number.parseInt(quickThemeTarget.key, 10);
         if (!Number.isFinite(channelId) || channelId <= 0) {
@@ -5320,6 +5875,12 @@ export default function ChatDashboard({
         } else {
           await deleteDmMessageReaction(accessToken, messageId, currentUserId, normalizedEmoji);
         }
+      } else if (viewMode === "group") {
+        if (shouldAdd) {
+          await addGroupChatMessageReaction(accessToken, messageId, currentUserId, normalizedEmoji);
+        } else {
+          await deleteGroupChatMessageReaction(accessToken, messageId, currentUserId, normalizedEmoji);
+        }
       } else if (viewMode === "glytch") {
         if (shouldAdd) {
           await addGlytchMessageReaction(accessToken, messageId, currentUserId, normalizedEmoji);
@@ -5360,12 +5921,13 @@ export default function ChatDashboard({
       return;
     }
     if (viewMode === "dm" && !activeConversationId) return;
+    if (viewMode === "group" && !activeGroupChatId) return;
     if (viewMode === "glytch" && (!activeChannelId || activeChannel?.kind === "voice")) return;
 
     setChatError("");
 
-    const uploadContext = viewMode === "dm" ? "dm" : "glytch";
-    const uploadContextId = viewMode === "dm" ? activeConversationId! : activeChannelId!;
+    const uploadContext = viewMode === "dm" ? "dm" : viewMode === "group" ? "group" : "glytch";
+    const uploadContextId = viewMode === "dm" ? activeConversationId! : viewMode === "group" ? activeGroupChatId! : activeChannelId!;
     let uploadedAttachmentUrl: string | null = null;
     let uploadedAttachmentType: MessageAttachmentType | null = null;
 
@@ -5426,6 +5988,51 @@ export default function ChatDashboard({
           const latestId = appended[appended.length - 1]?.id ?? 0;
           dmLastLoadedMessageIdRef.current = Math.max(dmLastLoadedMessageIdRef.current, latestId);
         }
+        if (shouldAutoScrollAfterSend) {
+          scrollMessageListToBottom("smooth");
+        }
+        if (messageInputRef.current) {
+          messageInputRef.current.value = "";
+        }
+        setHasDraftText(false);
+        setComposerAttachment(null);
+        setSelectedGif(null);
+        setShowEmojiPicker(false);
+        setShowGifPicker(false);
+        setChatError("");
+      } catch (err) {
+        setChatError(err instanceof Error ? err.message : "Could not send message.");
+      }
+      return;
+    }
+
+    if (viewMode === "group") {
+      if (!activeGroupChatId) return;
+      try {
+        const shouldAutoScrollAfterSend = isMessageListNearBottom();
+        const inserted = await createGroupChatMessage(
+          accessToken,
+          currentUserId,
+          activeGroupChatId,
+          text,
+          uploadedAttachmentUrl,
+          uploadedAttachmentType,
+        );
+        const appended = await Promise.all(
+          inserted.map(async (row) => ({
+            id: row.id,
+            sender: "me" as const,
+            text: row.content,
+            attachmentUrl: await resolveMessageAttachmentUrl(accessToken, row.attachment_url || uploadedAttachmentUrl || null),
+            attachmentType: row.attachment_type || uploadedAttachmentType || null,
+            timestamp: new Date(row.created_at),
+            senderName: currentUserName,
+            senderAvatarUrl: currentProfile?.avatar_url || "",
+            readAt: null,
+            reactions: [],
+          })),
+        );
+        setMessages((prev) => [...prev, ...appended]);
         if (shouldAutoScrollAfterSend) {
           scrollMessageListToBottom("smooth");
         }
@@ -6190,6 +6797,8 @@ export default function ChatDashboard({
   const canComposeInCurrentView =
     viewMode === "dm"
       ? !!activeConversationId
+      : viewMode === "group"
+        ? !!activeGroupChatId
       : viewMode === "glytch"
         ? !!activeChannelId && activeChannel?.kind !== "voice"
         : false;
@@ -6239,6 +6848,22 @@ export default function ChatDashboard({
         "--chat-bg-to": background.to,
       } as CSSProperties;
     }
+    if (viewMode === "group") {
+      const personalOverride = activeGroupChatId
+        ? profileForm.groupBackgroundByChat[String(activeGroupChatId)] || null
+        : null;
+      const background = {
+        from: personalOverride?.from || profileForm.dmBackgroundFrom,
+        to: personalOverride?.to || profileForm.dmBackgroundTo,
+        mode: personalOverride?.mode,
+        imageUrl: personalOverride?.imageUrl,
+      };
+      return {
+        ...resolveChatBackgroundStyle(background),
+        "--chat-bg-from": background.from,
+        "--chat-bg-to": background.to,
+      } as CSSProperties;
+    }
     if (viewMode === "glytch" && activeChannel?.kind === "text") {
       const isForcedDefaultChannel = Boolean(activeChannelId) && Boolean(forcedDefaultGlytchChannelIds[activeChannelId || 0]);
       const background =
@@ -6267,8 +6892,10 @@ export default function ChatDashboard({
     profileForm.dmBackgroundFrom,
     profileForm.dmBackgroundTo,
     profileForm.dmBackgroundByConversation,
+    profileForm.groupBackgroundByChat,
     profileForm.glytchBackgroundFrom,
     profileForm.glytchBackgroundTo,
+    activeGroupChatId,
     viewMode,
   ]);
 
@@ -6682,6 +7309,26 @@ export default function ChatDashboard({
             </span>
             <span>Glytches</span>
           </button>
+          <button
+            className={viewMode === "group" ? "navOption active" : "navOption"}
+            type="button"
+            onClick={() => setViewMode("group")}
+          >
+            <span className="navOptionIcon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" role="presentation">
+                <circle cx="8" cy="9" r="2.8" fill="none" stroke="currentColor" strokeWidth="1.6" />
+                <circle cx="16" cy="9" r="2.8" fill="none" stroke="currentColor" strokeWidth="1.6" />
+                <path
+                  d="M4.5 18.5c.6-2.4 2.1-4.3 3.5-4.3h8c1.4 0 2.9 1.9 3.5 4.3"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.6"
+                  strokeLinecap="round"
+                />
+              </svg>
+            </span>
+            <span>Group Chats</span>
+          </button>
 
           <div className="railIdentity">
             <button
@@ -6860,6 +7507,103 @@ export default function ChatDashboard({
                       );
                     })}
                   </nav>
+                )}
+              </>
+            ) : viewMode === "group" ? (
+              <>
+                {groupError && <p className="chatError">{groupError}</p>}
+
+                <section className="requestSection">
+                  <p className="sectionLabel">Create Group Chat</p>
+                  <form className="stackedForm" onSubmit={handleCreateGroupChat}>
+                    <input
+                      value={groupNameDraft}
+                      onChange={(e) => setGroupNameDraft(e.target.value)}
+                      placeholder="Group chat name"
+                      aria-label="Group chat name"
+                      disabled={groupCreateBusy}
+                    />
+                    <div className="glytchInviteList" aria-label="Select group members">
+                      {dms.length === 0 ? (
+                        <p className="smallMuted">Add friends first to include them in a group chat.</p>
+                      ) : (
+                        dms.map((dm) => (
+                          <label key={dm.friendUserId} className="permissionToggle">
+                            <input
+                              type="checkbox"
+                              checked={groupCreateMemberIds.includes(dm.friendUserId)}
+                              onChange={(e) => handleToggleGroupCreateMember(dm.friendUserId, e.target.checked)}
+                              disabled={groupCreateBusy}
+                            />
+                            <span>{dm.friendName}</span>
+                          </label>
+                        ))
+                      )}
+                    </div>
+                    <button type="submit" disabled={groupCreateBusy}>
+                      {groupCreateBusy ? "Creating..." : "Create Group Chat"}
+                    </button>
+                  </form>
+                </section>
+
+                <nav className="channelList" aria-label="Group chats">
+                  <p className="sectionLabel">Group Chats</p>
+                  {groupChats.length === 0 && <p className="smallMuted">No group chats yet</p>}
+                  {groupChats.map((chat) => {
+                    const unreadCount = unreadGroupCounts[chat.groupChatId] || 0;
+                    const unreadLabel = unreadCount > 99 ? "99+" : String(unreadCount);
+                    const memberCount = chat.members.length;
+                    return (
+                      <button
+                        key={chat.groupChatId}
+                        className={chat.groupChatId === activeGroupChatId ? "channelItem friendItem active" : "channelItem friendItem"}
+                        type="button"
+                        onClick={() => setActiveGroupChatId(chat.groupChatId)}
+                      >
+                        <span>{chat.name}</span>
+                        <span className="smallMuted">{memberCount} member{memberCount === 1 ? "" : "s"}</span>
+                        {unreadCount > 0 && <span className="unreadBubble">{unreadLabel}</span>}
+                      </button>
+                    );
+                  })}
+                </nav>
+
+                {activeGroupChat && (
+                  <section className="requestSection">
+                    <p className="sectionLabel">Members</p>
+                    <p className="smallMuted">
+                      {activeGroupChat.members
+                        .map((member) => {
+                          const profile = knownProfiles[member.user_id];
+                          return profile?.username || profile?.display_name || "User";
+                        })
+                        .join(", ")}
+                    </p>
+                    <form className="requestActions groupMemberAddForm" onSubmit={handleAddMemberToActiveGroup}>
+                      <select
+                        value={groupAddMemberId}
+                        onChange={(e) => setGroupAddMemberId(e.target.value)}
+                        aria-label="Friend to add"
+                        disabled={groupAddMemberBusy || availableFriendsForActiveGroup.length === 0}
+                      >
+                        {availableFriendsForActiveGroup.length === 0 ? (
+                          <option value="">No friends available</option>
+                        ) : (
+                          availableFriendsForActiveGroup.map((dm) => (
+                            <option key={dm.friendUserId} value={dm.friendUserId}>
+                              {dm.friendName}
+                            </option>
+                          ))
+                        )}
+                      </select>
+                      <button
+                        type="submit"
+                        disabled={groupAddMemberBusy || !groupAddMemberId || availableFriendsForActiveGroup.length === 0}
+                      >
+                        {groupAddMemberBusy ? "Adding..." : "Add Member"}
+                      </button>
+                    </form>
+                  </section>
                 )}
               </>
             ) : viewMode === "glytch" || viewMode === "glytch-settings" ? (
@@ -7339,6 +8083,8 @@ export default function ChatDashboard({
                   ? `${activeGlytch.name} / ${activeChannel.kind === "voice" ? "🔊" : "#"}${activeChannel.name}`
                   : "Glytches"}
               </span>
+            ) : viewMode === "group" ? (
+              <span>{activeGroupChat ? `Group Chat / ${activeGroupChat.name}` : "Group Chats"}</span>
             ) : viewMode === "glytch-settings" ? (
               <span>{activeGlytch ? `${activeGlytch.name} / Settings` : "Glytch Settings"}</span>
             ) : (
@@ -7630,6 +8376,8 @@ export default function ChatDashboard({
                           ? "Custom colors are active for this chat."
                           : quickThemeTarget.kind === "dm"
                             ? "Using your default DM colors."
+                            : quickThemeTarget.kind === "group"
+                              ? "Using your default Group Chat colors."
                             : "Using your default Glytch text colors."}
                       </p>
                       <div className="quickThemeModeRow" role="tablist" aria-label="Background type">
@@ -9077,6 +9825,12 @@ export default function ChatDashboard({
               )}
             </div>
           </section>
+        ) : viewMode === "group" && !shouldShowGroupChatMessageArea ? (
+          <section className="glytchSelectionState" aria-label="Group chats only message view">
+            <div className="glytchSelectionPanel">
+              <p className="chatInfo">Select a group chat from the left panel to open messages.</p>
+            </div>
+          </section>
         ) : (
           <div
             ref={chatLayoutRef}
@@ -9495,6 +10249,9 @@ export default function ChatDashboard({
                 {viewMode === "dm" && !activeConversationId && (
                   <p className="chatInfo">Add friends and accept requests to start a private DM.</p>
                 )}
+                {viewMode === "group" && !activeGroupChatId && (
+                  <p className="chatInfo">Create or select a group chat to start messaging.</p>
+                )}
                 {viewMode === "glytch" && !activeChannelId && (
                   <p className="chatInfo">Choose a channel to start chatting.</p>
                 )}
@@ -9513,6 +10270,8 @@ export default function ChatDashboard({
 
                 {(viewMode === "dm"
                   ? !!activeConversationId
+                  : viewMode === "group"
+                    ? !!activeGroupChatId
                   : !!activeChannelId && activeChannel?.kind !== "voice") &&
                   !loadingMessages &&
                   messages.length === 0 &&
@@ -9521,7 +10280,7 @@ export default function ChatDashboard({
                 <div ref={messageEndRef} />
               </section>
 
-              {(viewMode === "dm" || activeChannel?.kind !== "voice") && (
+              {(viewMode === "dm" || viewMode === "group" || activeChannel?.kind !== "voice") && (
                 <>
                   {composerAttachment && (
                     <div className="composerAttachmentPreview">
@@ -9645,6 +10404,10 @@ export default function ChatDashboard({
                           ? activeConversationId
                             ? "Write a direct message"
                             : "Select a DM first"
+                          : viewMode === "group"
+                            ? activeGroupChatId
+                              ? "Write a group message"
+                              : "Select a group chat first"
                           : activeChannelId
                             ? activeChannel?.text_post_mode === "images_only"
                               ? "Images-only channel. Attach an image or GIF."

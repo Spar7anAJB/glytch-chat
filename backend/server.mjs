@@ -478,7 +478,7 @@ async function uploadModeratedMessageMedia(req, res, parsedUrl, pathname) {
   }
 
   const context = parsedUrl.searchParams.get("context");
-  if (context !== "dm" && context !== "glytch") {
+  if (context !== "dm" && context !== "group" && context !== "glytch") {
     sendJson(res, 400, { error: "Invalid upload context." });
     return;
   }
@@ -756,7 +756,7 @@ async function ingestRemoteMessageMedia(req, res, parsedUrl) {
   }
 
   const context = parsedUrl.searchParams.get("context");
-  if (context !== "dm" && context !== "glytch") {
+  if (context !== "dm" && context !== "group" && context !== "glytch") {
     sendJson(res, 400, { error: "Invalid upload context." });
     return;
   }

@@ -45,6 +45,22 @@ export type DmConversation = {
   dm_theme?: Record<string, unknown> | null;
 };
 
+export type GroupChat = {
+  id: number;
+  created_by: string;
+  name: string;
+  created_at: string;
+};
+
+export type GroupChatMember = {
+  group_chat_id: number;
+  user_id: string;
+  added_by?: string | null;
+  role: "owner" | "member";
+  joined_at: string;
+  last_read_message_id: number;
+};
+
 export type DmMessage = {
   id: number;
   conversation_id: number;
@@ -57,6 +73,23 @@ export type DmMessage = {
 };
 
 export type DmMessageReaction = {
+  message_id: number;
+  user_id: string;
+  emoji: string;
+  created_at: string;
+};
+
+export type GroupChatMessage = {
+  id: number;
+  group_chat_id: number;
+  sender_id: string;
+  content: string;
+  attachment_url?: string | null;
+  attachment_type?: MessageAttachmentType | null;
+  created_at: string;
+};
+
+export type GroupChatMessageReaction = {
   message_id: number;
   user_id: string;
   emoji: string;
@@ -492,7 +525,7 @@ function encodePath(path: string) {
 function extractMessageAssetPath(value: string): string | null {
   const trimmed = value.trim();
   if (!trimmed) return null;
-  if (trimmed.startsWith("dm/") || trimmed.startsWith("glytch/")) {
+  if (trimmed.startsWith("dm/") || trimmed.startsWith("group/") || trimmed.startsWith("glytch/")) {
     return trimmed;
   }
 
@@ -846,6 +879,83 @@ export async function listDmConversations(accessToken: string): Promise<DmConver
   }
 }
 
+export async function listGroupChats(accessToken: string): Promise<GroupChat[]> {
+  assertConfig();
+  const query = new URLSearchParams({
+    select: "id,created_by,name,created_at",
+    order: "created_at.asc",
+  });
+
+  const res = await supabaseFetch(`/rest/v1/group_chats?${query.toString()}`, {
+    method: "GET",
+    headers: supabaseHeaders(accessToken),
+  });
+
+  return (await readJsonOrThrow(res)) as GroupChat[];
+}
+
+export async function listGroupChatMembers(accessToken: string, groupChatId: number): Promise<GroupChatMember[]> {
+  assertConfig();
+  const query = new URLSearchParams({
+    select: "group_chat_id,user_id,added_by,role,joined_at,last_read_message_id",
+    group_chat_id: `eq.${groupChatId}`,
+    order: "joined_at.asc",
+  });
+
+  const res = await supabaseFetch(`/rest/v1/group_chat_members?${query.toString()}`, {
+    method: "GET",
+    headers: supabaseHeaders(accessToken),
+  });
+
+  return (await readJsonOrThrow(res)) as GroupChatMember[];
+}
+
+export async function createGroupChat(accessToken: string, name: string, memberIds: string[] = []) {
+  assertConfig();
+  const uniqueIds = Array.from(new Set(memberIds.filter((id) => typeof id === "string" && id.length > 0)));
+  const res = await supabaseFetch(`/rest/v1/rpc/create_group_chat`, {
+    method: "POST",
+    headers: supabaseHeaders(accessToken),
+    body: JSON.stringify({
+      p_name: name.trim() || null,
+      p_member_ids: uniqueIds.length > 0 ? uniqueIds : null,
+    }),
+  });
+
+  const row = (await readJsonOrThrow(res)) as { group_chat_id?: number | string };
+  const parsed = Number(row?.group_chat_id);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error("Group chat was created but no valid id was returned.");
+  }
+  return { group_chat_id: Math.trunc(parsed) };
+}
+
+export async function addGroupChatMembers(accessToken: string, groupChatId: number, memberIds: string[]) {
+  assertConfig();
+  const uniqueIds = Array.from(new Set(memberIds.filter((id) => typeof id === "string" && id.length > 0)));
+  if (!Number.isFinite(groupChatId) || groupChatId <= 0) {
+    throw new Error("Invalid group chat.");
+  }
+  if (uniqueIds.length === 0) {
+    return { inserted_count: 0 };
+  }
+
+  const res = await supabaseFetch(`/rest/v1/rpc/add_group_chat_members`, {
+    method: "POST",
+    headers: supabaseHeaders(accessToken),
+    body: JSON.stringify({
+      p_group_chat_id: groupChatId,
+      p_member_ids: uniqueIds,
+    }),
+  });
+
+  const row = (await readJsonOrThrow(res)) as { inserted_count?: number | string };
+  const parsed = Number(row?.inserted_count ?? 0);
+  return {
+    inserted_count: Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : 0,
+  };
+}
+
 export async function setDmConversationTheme(
   accessToken: string,
   conversationId: number,
@@ -1039,7 +1149,7 @@ export async function uploadMessageAsset(
   accessToken: string,
   userId: string,
   file: File,
-  context: "dm" | "glytch",
+  context: "dm" | "group" | "glytch",
   contextId: number,
 ): Promise<{ url: string; attachmentType: MessageAttachmentType }> {
   assertConfig();
@@ -1047,7 +1157,8 @@ export async function uploadMessageAsset(
     throw new Error("Invalid message context.");
   }
   const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
-  const contextPrefix = context === "dm" ? `dm/${contextId}` : `glytch/${contextId}`;
+  const contextPrefix =
+    context === "dm" ? `dm/${contextId}` : context === "group" ? `group/${contextId}` : `glytch/${contextId}`;
   const objectPath = `${contextPrefix}/${userId}/${Date.now()}-${safeName}`;
   const encodedObjectPath = encodePath(objectPath);
   const fallbackAttachmentType: MessageAttachmentType = file.type === "image/gif" ? "gif" : "image";
@@ -1104,7 +1215,7 @@ export async function uploadMessageAsset(
 
 export async function ingestRemoteMessageAsset(
   accessToken: string,
-  context: "dm" | "glytch",
+  context: "dm" | "group" | "glytch",
   contextId: number,
   sourceUrl: string,
 ): Promise<{ url: string; attachmentType: MessageAttachmentType }> {
@@ -1243,6 +1354,25 @@ export async function fetchDmMessages(accessToken: string, conversationId: numbe
   return rows.reverse();
 }
 
+export async function fetchGroupChatMessages(accessToken: string, groupChatId: number): Promise<GroupChatMessage[]> {
+  assertConfig();
+  const recentLimit = 250;
+  const query = new URLSearchParams({
+    select: "id,group_chat_id,sender_id,content,attachment_url,attachment_type,created_at",
+    group_chat_id: `eq.${groupChatId}`,
+    order: "id.desc",
+    limit: String(recentLimit),
+  });
+
+  const res = await supabaseFetch(`/rest/v1/group_chat_messages?${query.toString()}`, {
+    method: "GET",
+    headers: supabaseHeaders(accessToken),
+  });
+
+  const rows = (await readJsonOrThrow(res)) as GroupChatMessage[];
+  return rows.reverse();
+}
+
 export async function listDmMessageReactions(accessToken: string, messageIds: number[]): Promise<DmMessageReaction[]> {
   const uniqueIds = Array.from(new Set(messageIds.filter((id) => Number.isFinite(id) && id > 0)));
   if (uniqueIds.length === 0) return [];
@@ -1263,6 +1393,29 @@ export async function listDmMessageReactions(accessToken: string, messageIds: nu
   return (await readJsonOrThrow(res)) as DmMessageReaction[];
 }
 
+export async function listGroupChatMessageReactions(
+  accessToken: string,
+  messageIds: number[],
+): Promise<GroupChatMessageReaction[]> {
+  const uniqueIds = Array.from(new Set(messageIds.filter((id) => Number.isFinite(id) && id > 0)));
+  if (uniqueIds.length === 0) return [];
+  assertConfig();
+
+  const query = new URLSearchParams({
+    select: "message_id,user_id,emoji,created_at",
+    message_id: `in.(${uniqueIds.join(",")})`,
+    order: "created_at.asc",
+    limit: "3000",
+  });
+
+  const res = await supabaseFetch(`/rest/v1/group_chat_message_reactions?${query.toString()}`, {
+    method: "GET",
+    headers: supabaseHeaders(accessToken),
+  });
+
+  return (await readJsonOrThrow(res)) as GroupChatMessageReaction[];
+}
+
 export async function addDmMessageReaction(accessToken: string, messageId: number, userId: string, emoji: string) {
   assertConfig();
   const normalizedEmoji = emoji.trim();
@@ -1278,6 +1431,21 @@ export async function addDmMessageReaction(accessToken: string, messageId: numbe
   return (await readJsonOrThrow(res)) as DmMessageReaction[];
 }
 
+export async function addGroupChatMessageReaction(accessToken: string, messageId: number, userId: string, emoji: string) {
+  assertConfig();
+  const normalizedEmoji = emoji.trim();
+  const res = await supabaseFetch(`/rest/v1/group_chat_message_reactions`, {
+    method: "POST",
+    headers: {
+      ...supabaseHeaders(accessToken),
+      Prefer: "resolution=merge-duplicates,return=representation",
+    },
+    body: JSON.stringify([{ message_id: messageId, user_id: userId, emoji: normalizedEmoji }]),
+  });
+
+  return (await readJsonOrThrow(res)) as GroupChatMessageReaction[];
+}
+
 export async function deleteDmMessageReaction(accessToken: string, messageId: number, userId: string, emoji: string) {
   assertConfig();
   const normalizedEmoji = emoji.trim();
@@ -1288,6 +1456,23 @@ export async function deleteDmMessageReaction(accessToken: string, messageId: nu
   });
 
   const res = await supabaseFetch(`/rest/v1/dm_message_reactions?${query.toString()}`, {
+    method: "DELETE",
+    headers: supabaseHeaders(accessToken),
+  });
+
+  await readJsonOrThrow(res);
+}
+
+export async function deleteGroupChatMessageReaction(accessToken: string, messageId: number, userId: string, emoji: string) {
+  assertConfig();
+  const normalizedEmoji = emoji.trim();
+  const query = new URLSearchParams({
+    message_id: `eq.${messageId}`,
+    user_id: `eq.${userId}`,
+    emoji: `eq.${normalizedEmoji}`,
+  });
+
+  const res = await supabaseFetch(`/rest/v1/group_chat_message_reactions?${query.toString()}`, {
     method: "DELETE",
     headers: supabaseHeaders(accessToken),
   });
@@ -1330,6 +1515,35 @@ export async function listUnreadDmMessages(
   return (await readJsonOrThrow(res)) as Pick<DmMessage, "id" | "conversation_id">[];
 }
 
+export async function listUnreadGroupChatCounts(
+  accessToken: string,
+  groupChatIds: number[],
+): Promise<Array<{ group_chat_id: number; unread_count: number }>> {
+  const uniqueIds = Array.from(new Set(groupChatIds.filter((id) => Number.isFinite(id) && id > 0)));
+  if (uniqueIds.length === 0) return [];
+  assertConfig();
+
+  const res = await supabaseFetch(`/rest/v1/rpc/list_group_chat_unread_counts`, {
+    method: "POST",
+    headers: supabaseHeaders(accessToken),
+    body: JSON.stringify({
+      p_group_chat_ids: uniqueIds,
+    }),
+  });
+
+  const rows = (await readJsonOrThrow(res)) as Array<{ group_chat_id?: number; unread_count?: number }>;
+  return rows
+    .map((row) => ({
+      group_chat_id: Number(row.group_chat_id),
+      unread_count: Number(row.unread_count),
+    }))
+    .filter((row) => Number.isFinite(row.group_chat_id) && row.group_chat_id > 0 && Number.isFinite(row.unread_count))
+    .map((row) => ({
+      group_chat_id: Math.trunc(row.group_chat_id),
+      unread_count: Math.max(0, Math.trunc(row.unread_count)),
+    }));
+}
+
 export async function markDmConversationRead(accessToken: string, conversationId: number) {
   assertConfig();
   const res = await supabaseFetch(`/rest/v1/rpc/mark_dm_conversation_read`, {
@@ -1342,6 +1556,20 @@ export async function markDmConversationRead(accessToken: string, conversationId
     updated_count: number;
     deleted_bot_message_count?: number;
     deleted_empty_conversation?: boolean;
+  };
+}
+
+export async function markGroupChatRead(accessToken: string, groupChatId: number) {
+  assertConfig();
+  const res = await supabaseFetch(`/rest/v1/rpc/mark_group_chat_read`, {
+    method: "POST",
+    headers: supabaseHeaders(accessToken),
+    body: JSON.stringify({ p_group_chat_id: groupChatId }),
+  });
+
+  return (await readJsonOrThrow(res)) as {
+    updated?: boolean;
+    last_read_message_id?: number;
   };
 }
 
@@ -1364,6 +1592,30 @@ export async function fetchLatestDmMessages(accessToken: string, conversationIds
   });
 
   return (await readJsonOrThrow(res)) as DmMessage[];
+}
+
+export async function fetchLatestGroupChatMessages(
+  accessToken: string,
+  groupChatIds: number[],
+): Promise<GroupChatMessage[]> {
+  const uniqueIds = Array.from(new Set(groupChatIds.filter((id) => Number.isFinite(id) && id > 0)));
+  if (uniqueIds.length === 0) return [];
+  assertConfig();
+
+  const limit = Math.min(260, Math.max(60, uniqueIds.length * 6));
+  const query = new URLSearchParams({
+    select: "id,group_chat_id,sender_id,content,attachment_url,attachment_type,created_at",
+    group_chat_id: `in.(${uniqueIds.join(",")})`,
+    order: "id.desc",
+    limit: String(limit),
+  });
+
+  const res = await supabaseFetch(`/rest/v1/group_chat_messages?${query.toString()}`, {
+    method: "GET",
+    headers: supabaseHeaders(accessToken),
+  });
+
+  return (await readJsonOrThrow(res)) as GroupChatMessage[];
 }
 
 export async function fetchLatestGlytchMessages(accessToken: string, channelIds: number[]): Promise<GlytchMessage[]> {
@@ -1414,6 +1666,35 @@ export async function createDmMessage(
   });
 
   return (await readJsonOrThrow(res)) as DmMessage[];
+}
+
+export async function createGroupChatMessage(
+  accessToken: string,
+  senderId: string,
+  groupChatId: number,
+  content: string,
+  attachmentUrl: string | null = null,
+  attachmentType: MessageAttachmentType | null = null,
+) {
+  assertConfig();
+  const res = await supabaseFetch(`/rest/v1/group_chat_messages`, {
+    method: "POST",
+    headers: {
+      ...supabaseHeaders(accessToken),
+      Prefer: "return=representation",
+    },
+    body: JSON.stringify([
+      {
+        group_chat_id: groupChatId,
+        sender_id: senderId,
+        content,
+        attachment_url: attachmentUrl,
+        attachment_type: attachmentType,
+      },
+    ]),
+  });
+
+  return (await readJsonOrThrow(res)) as GroupChatMessage[];
 }
 
 export async function createGlytch(accessToken: string, name: string) {
