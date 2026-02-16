@@ -351,6 +351,9 @@ const SHOWCASE_MAX_TEXT_LENGTH = 1000;
 const PRESENCE_HEARTBEAT_MS = 45_000;
 const PRESENCE_AWAY_IDLE_MS = 5 * 60_000;
 const PRESENCE_STALE_MS = 120_000;
+const REMOTE_SCREEN_SHARE_PROMOTE_DELAY_MS = 900;
+const REMOTE_SCREEN_SHARE_MUTE_GRACE_MS = 2500;
+const REMOTE_SCREEN_SHARE_ENDED_GRACE_MS = 800;
 const QUICK_EMOJIS = ["😀", "😂", "😍", "😭", "🔥", "👍", "👏", "🎉", "✨", "❤️"];
 const REACTION_EMOJIS = [
   "👍",
@@ -1466,13 +1469,17 @@ export default function ChatDashboard({
   const [voiceMuted, setVoiceMuted] = useState(false);
   const [voiceDeafened, setVoiceDeafened] = useState(false);
   const [remoteUserVolumes, setRemoteUserVolumes] = useState<Record<string, number>>({});
+  const [dmIncomingCallCounts, setDmIncomingCallCounts] = useState<Record<number, number>>({});
   const [screenShareBusy, setScreenShareBusy] = useState(false);
-  const [screenShareIncludeSystemAudio, setScreenShareIncludeSystemAudio] = useState(false);
+  const screenShareIncludeSystemAudio = true;
+  const [screenShareAudioMuted, setScreenShareAudioMuted] = useState(false);
   const [localVideoShareKind, setLocalVideoShareKind] = useState<LocalVideoShareKind | null>(null);
   const [desktopSourceOptions, setDesktopSourceOptions] = useState<DesktopSourceOption[]>([]);
   const [selectedDesktopSourceId, setSelectedDesktopSourceId] = useState("auto");
   const [localScreenStream, setLocalScreenStream] = useState<MediaStream | null>(null);
   const [remoteScreenShareUserIds, setRemoteScreenShareUserIds] = useState<string[]>([]);
+  const [visibleScreenShareRoomKey, setVisibleScreenShareRoomKey] = useState<string | null>(null);
+  const [activeScreenSharePresenterId, setActiveScreenSharePresenterId] = useState<string | null>(null);
   const [voiceError, setVoiceError] = useState("");
   const [voiceModerationBusyKey, setVoiceModerationBusyKey] = useState<string | null>(null);
   const [joinInviteBusyMessageId, setJoinInviteBusyMessageId] = useState<number | null>(null);
@@ -1510,6 +1517,11 @@ export default function ChatDashboard({
   const pendingCandidatesRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
   const remoteStreamsRef = useRef<Map<string, MediaStream>>(new Map());
   const remoteScreenStreamsRef = useRef<Map<string, MediaStream>>(new Map());
+  const remoteScreenAudioStreamsRef = useRef<Map<string, MediaStream>>(new Map());
+  const remoteScreenAudioElsRef = useRef<Map<string, HTMLAudioElement>>(new Map());
+  const remoteScreenStreamIdsRef = useRef<Map<string, Set<string>>>(new Map());
+  const remoteScreenPromoteTimeoutsRef = useRef<Map<string, number>>(new Map());
+  const remoteScreenDemoteTimeoutsRef = useRef<Map<string, number>>(new Map());
   const remoteAudioElsRef = useRef<Map<string, HTMLAudioElement>>(new Map());
   const speakingAnalyserCleanupRef = useRef<Map<string, () => void>>(new Map());
   const signalSinceIdRef = useRef(0);
@@ -1984,24 +1996,35 @@ export default function ChatDashboard({
 
   const applyRemoteAudioOutput = useCallback(
     (targetUserId?: string) => {
-      const applyToAudio = (userId: string, audioEl: HTMLAudioElement) => {
+      const applyToVoiceAudio = (userId: string, audioEl: HTMLAudioElement) => {
         audioEl.muted = voiceDeafened;
+        audioEl.volume = clampVoiceVolume(remoteUserVolumes[userId] ?? 1);
+      };
+      const applyToScreenShareAudio = (userId: string, audioEl: HTMLAudioElement) => {
+        audioEl.muted = voiceDeafened || screenShareAudioMuted;
         audioEl.volume = clampVoiceVolume(remoteUserVolumes[userId] ?? 1);
       };
 
       if (targetUserId) {
-        const audioEl = remoteAudioElsRef.current.get(targetUserId);
-        if (audioEl) {
-          applyToAudio(targetUserId, audioEl);
+        const voiceAudioEl = remoteAudioElsRef.current.get(targetUserId);
+        if (voiceAudioEl) {
+          applyToVoiceAudio(targetUserId, voiceAudioEl);
+        }
+        const screenAudioEl = remoteScreenAudioElsRef.current.get(targetUserId);
+        if (screenAudioEl) {
+          applyToScreenShareAudio(targetUserId, screenAudioEl);
         }
         return;
       }
 
       remoteAudioElsRef.current.forEach((audioEl, userId) => {
-        applyToAudio(userId, audioEl);
+        applyToVoiceAudio(userId, audioEl);
+      });
+      remoteScreenAudioElsRef.current.forEach((audioEl, userId) => {
+        applyToScreenShareAudio(userId, audioEl);
       });
     },
-    [remoteUserVolumes, voiceDeafened],
+    [remoteUserVolumes, screenShareAudioMuted, voiceDeafened],
   );
 
   const handleSetRemoteUserVolume = useCallback(
@@ -2016,8 +2039,13 @@ export default function ChatDashboard({
         audioEl.volume = nextVolume;
         audioEl.muted = voiceDeafened;
       }
+      const screenAudioEl = remoteScreenAudioElsRef.current.get(userId);
+      if (screenAudioEl) {
+        screenAudioEl.volume = nextVolume;
+        screenAudioEl.muted = voiceDeafened || screenShareAudioMuted;
+      }
     },
-    [voiceDeafened],
+    [screenShareAudioMuted, voiceDeafened],
   );
 
   const playVoiceLeaveSound = () => {
@@ -2076,6 +2104,11 @@ export default function ChatDashboard({
   );
 
   const friendUserIds = useMemo(() => new Set(dms.map((dm) => dm.friendUserId)), [dms]);
+  const totalUnreadDmCount = useMemo(
+    () => Object.values(unreadDmCounts).reduce((sum, count) => sum + Math.max(0, Number(count) || 0), 0),
+    [unreadDmCounts],
+  );
+  const totalUnreadDmLabel = totalUnreadDmCount > 99 ? "99+" : String(totalUnreadDmCount);
   const incomingRequestUserIds = useMemo(() => new Set(pendingIncoming.map((req) => req.sender_id)), [pendingIncoming]);
   const outgoingRequestUserIds = useMemo(() => new Set(pendingOutgoing.map((req) => req.receiver_id)), [pendingOutgoing]);
   const normalizedGlytchInviteSearch = glytchInviteSearch.trim().toLowerCase();
@@ -2235,6 +2268,8 @@ export default function ChatDashboard({
         .map((userId) => {
           const stream = remoteScreenStreamsRef.current.get(userId);
           if (!stream) return null;
+          const hasLiveVideoTrack = stream.getVideoTracks().some((track) => track.readyState !== "ended");
+          if (!hasLiveVideoTrack) return null;
           const profile = userId === currentUserId ? currentProfile : knownProfiles[userId];
           return {
             userId,
@@ -2245,6 +2280,10 @@ export default function ChatDashboard({
         .filter((entry): entry is { userId: string; stream: MediaStream; name: string } => Boolean(entry)),
     [remoteScreenShareUserIds, knownProfiles, currentProfile, currentUserId, displayName],
   );
+  const hasRemoteScreenShares = remoteScreenShares.length > 0;
+  const isAnyScreenShareActive = isScreenSharing || hasRemoteScreenShares;
+  const isRemoteScreenShareViewVisible =
+    Boolean(voiceRoomKey && !isScreenSharing && hasRemoteScreenShares && visibleScreenShareRoomKey === voiceRoomKey);
   const presentingUserIds = useMemo(() => {
     const ids = new Set(remoteScreenShareUserIds);
     if (isScreenSharing) {
@@ -2252,7 +2291,16 @@ export default function ChatDashboard({
     }
     return ids;
   }, [remoteScreenShareUserIds, isScreenSharing, currentUserId]);
-  const shouldShowScreenSharePanel = Boolean(voiceRoomKey && (isScreenSharing || remoteScreenShares.length > 0));
+  const shouldShowScreenSharePanel = Boolean(
+    voiceRoomKey &&
+      (isScreenSharing || (hasRemoteScreenShares && isRemoteScreenShareViewVisible)),
+  );
+  const canDismissRemoteScreenShareView = Boolean(
+    voiceRoomKey && !isScreenSharing && hasRemoteScreenShares && isRemoteScreenShareViewVisible,
+  );
+  const canRestoreRemoteScreenShareView = Boolean(
+    voiceRoomKey && !isScreenSharing && hasRemoteScreenShares && !isRemoteScreenShareViewVisible,
+  );
   const selectedDesktopSourceLabel = useMemo(() => {
     if (selectedDesktopSourceId === "auto") return "Display";
     return desktopSourceOptions.find((source) => source.id === selectedDesktopSourceId)?.name || "Display";
@@ -2261,6 +2309,42 @@ export default function ChatDashboard({
     if (localVideoShareKind === "camera") return "You (camera fallback)";
     return selectedDesktopSourceId === "auto" ? "You (sharing)" : `You (${selectedDesktopSourceLabel})`;
   }, [localVideoShareKind, selectedDesktopSourceId, selectedDesktopSourceLabel]);
+  const screenSharePresenters = useMemo(
+    () => [
+      ...(isScreenSharing && localScreenStream
+        ? [
+            {
+              presenterId: `self:${currentUserId}`,
+              userId: currentUserId,
+              stream: localScreenStream,
+              name: displayName,
+              caption: localScreenShareCaption,
+              isSelf: true,
+            },
+          ]
+        : []),
+      ...remoteScreenShares.map((share) => ({
+        presenterId: share.userId,
+        userId: share.userId,
+        stream: share.stream,
+        name: share.name,
+        caption: share.name,
+        isSelf: false,
+      })),
+    ],
+    [currentUserId, displayName, isScreenSharing, localScreenShareCaption, localScreenStream, remoteScreenShares],
+  );
+  const activeScreenSharePresenter = useMemo(
+    () => {
+      if (screenSharePresenters.length === 0) return null;
+      if (!activeScreenSharePresenterId) return screenSharePresenters[0];
+      return (
+        screenSharePresenters.find((presenter) => presenter.presenterId === activeScreenSharePresenterId) ||
+        screenSharePresenters[0]
+      );
+    },
+    [activeScreenSharePresenterId, screenSharePresenters],
+  );
 
   const attachVideoStream = useCallback((videoEl: HTMLVideoElement | null, stream: MediaStream | null) => {
     if (!videoEl) return;
@@ -2305,6 +2389,40 @@ export default function ChatDashboard({
       void doc.msExitFullscreen();
     }
   }, []);
+
+  useEffect(() => {
+    if (!voiceRoomKey) {
+      setVisibleScreenShareRoomKey(null);
+      return;
+    }
+    if (!hasRemoteScreenShares) {
+      setVisibleScreenShareRoomKey((prev) => (prev === voiceRoomKey ? null : prev));
+    }
+  }, [hasRemoteScreenShares, voiceRoomKey]);
+
+  useEffect(() => {
+    if (screenSharePresenters.length === 0) {
+      setActiveScreenSharePresenterId(null);
+      return;
+    }
+    setActiveScreenSharePresenterId((prev) => {
+      if (prev && screenSharePresenters.some((presenter) => presenter.presenterId === prev)) {
+        return prev;
+      }
+      return screenSharePresenters[0].presenterId;
+    });
+  }, [screenSharePresenters]);
+
+  const handleDismissRemoteScreenShareView = useCallback(() => {
+    if (!voiceRoomKey || isScreenSharing || !hasRemoteScreenShares) return;
+    closeVideoFullscreen();
+    setVisibleScreenShareRoomKey((prev) => (prev === voiceRoomKey ? null : prev));
+  }, [closeVideoFullscreen, hasRemoteScreenShares, isScreenSharing, voiceRoomKey]);
+
+  const handleRestoreRemoteScreenShareView = useCallback(() => {
+    if (!voiceRoomKey || isScreenSharing || !hasRemoteScreenShares) return;
+    setVisibleScreenShareRoomKey(voiceRoomKey);
+  }, [hasRemoteScreenShares, isScreenSharing, voiceRoomKey]);
 
   const openVideoFullscreen = useCallback((containerEl: HTMLElement | null) => {
     if (!containerEl) return;
@@ -3819,6 +3937,7 @@ export default function ChatDashboard({
     if (dms.length === 0) {
       dmCallParticipantCountsRef.current = {};
       dmCallNotificationSeededRef.current = false;
+      setDmIncomingCallCounts({});
       return;
     }
 
@@ -3864,6 +3983,14 @@ export default function ChatDashboard({
         }
 
         dmCallParticipantCountsRef.current = nextCounts;
+        setDmIncomingCallCounts((prev) => {
+          const prevKeys = Object.keys(prev);
+          const nextKeys = Object.keys(nextCounts);
+          if (prevKeys.length === nextKeys.length && prevKeys.every((key) => prev[Number(key)] === nextCounts[Number(key)])) {
+            return prev;
+          }
+          return nextCounts;
+        });
         if (!dmCallNotificationSeededRef.current) {
           dmCallNotificationSeededRef.current = true;
         }
@@ -5053,6 +5180,12 @@ export default function ChatDashboard({
       const nextCallCounts = { ...dmCallParticipantCountsRef.current };
       delete nextCallCounts[conversationId];
       dmCallParticipantCountsRef.current = nextCallCounts;
+      setDmIncomingCallCounts((prev) => {
+        if (!(conversationId in prev)) return prev;
+        const next = { ...prev };
+        delete next[conversationId];
+        return next;
+      });
 
       if (activeConversationIdRef.current === conversationId) {
         setActiveConversationId(nextDms[0]?.conversationId ?? null);
@@ -6591,11 +6724,46 @@ export default function ChatDashboard({
   };
 
   const syncRemoteScreenShareUsers = useCallback(() => {
-    setRemoteScreenShareUserIds(Array.from(remoteScreenStreamsRef.current.keys()));
+    const nextUserIds: string[] = [];
+    for (const [userId, stream] of remoteScreenStreamsRef.current.entries()) {
+      const hasLiveVideoTrack = stream.getVideoTracks().some((track) => track.readyState !== "ended");
+      if (hasLiveVideoTrack) {
+        nextUserIds.push(userId);
+        continue;
+      }
+      remoteScreenStreamsRef.current.delete(userId);
+      remoteScreenStreamIdsRef.current.delete(userId);
+      remoteScreenAudioStreamsRef.current.delete(userId);
+      const screenAudioEl = remoteScreenAudioElsRef.current.get(userId);
+      if (screenAudioEl) {
+        screenAudioEl.pause();
+        screenAudioEl.srcObject = null;
+        remoteScreenAudioElsRef.current.delete(userId);
+      }
+    }
+    setRemoteScreenShareUserIds(nextUserIds);
   }, []);
 
   const removeRemoteScreenShare = useCallback(
     (userId: string) => {
+      const pendingTimeoutId = remoteScreenPromoteTimeoutsRef.current.get(userId);
+      if (typeof pendingTimeoutId === "number") {
+        window.clearTimeout(pendingTimeoutId);
+        remoteScreenPromoteTimeoutsRef.current.delete(userId);
+      }
+      const pendingDemoteTimeoutId = remoteScreenDemoteTimeoutsRef.current.get(userId);
+      if (typeof pendingDemoteTimeoutId === "number") {
+        window.clearTimeout(pendingDemoteTimeoutId);
+        remoteScreenDemoteTimeoutsRef.current.delete(userId);
+      }
+      remoteScreenStreamIdsRef.current.delete(userId);
+      remoteScreenAudioStreamsRef.current.delete(userId);
+      const screenAudioEl = remoteScreenAudioElsRef.current.get(userId);
+      if (screenAudioEl) {
+        screenAudioEl.pause();
+        screenAudioEl.srcObject = null;
+        remoteScreenAudioElsRef.current.delete(userId);
+      }
       const removed = remoteScreenStreamsRef.current.delete(userId);
       if (!removed) return;
       syncRemoteScreenShareUsers();
@@ -6956,6 +7124,14 @@ export default function ChatDashboard({
       audioEl.srcObject = null;
       remoteAudioElsRef.current.delete(userId);
     }
+    const screenAudioEl = remoteScreenAudioElsRef.current.get(userId);
+    if (screenAudioEl) {
+      screenAudioEl.pause();
+      screenAudioEl.srcObject = null;
+      remoteScreenAudioElsRef.current.delete(userId);
+    }
+    remoteScreenAudioStreamsRef.current.delete(userId);
+    remoteScreenStreamIdsRef.current.delete(userId);
 
     const cleanup = speakingAnalyserCleanupRef.current.get(userId);
     if (cleanup) {
@@ -6965,6 +7141,16 @@ export default function ChatDashboard({
 
     if (remoteScreenStreamsRef.current.delete(userId)) {
       syncRemoteScreenShareUsers();
+    }
+    const pendingTimeoutId = remoteScreenPromoteTimeoutsRef.current.get(userId);
+    if (typeof pendingTimeoutId === "number") {
+      window.clearTimeout(pendingTimeoutId);
+      remoteScreenPromoteTimeoutsRef.current.delete(userId);
+    }
+    const pendingDemoteTimeoutId = remoteScreenDemoteTimeoutsRef.current.get(userId);
+    if (typeof pendingDemoteTimeoutId === "number") {
+      window.clearTimeout(pendingDemoteTimeoutId);
+      remoteScreenDemoteTimeoutsRef.current.delete(userId);
     }
 
     pendingCandidatesRef.current.delete(userId);
@@ -6992,7 +7178,23 @@ export default function ChatDashboard({
     queuedNegotiationPeerIdsRef.current.clear();
     cameraFallbackInFlightRef.current = false;
     remoteScreenStreamsRef.current.clear();
+    remoteScreenAudioStreamsRef.current.clear();
+    remoteScreenStreamIdsRef.current.clear();
+    for (const audioEl of remoteScreenAudioElsRef.current.values()) {
+      audioEl.pause();
+      audioEl.srcObject = null;
+    }
+    remoteScreenAudioElsRef.current.clear();
+    for (const timeoutId of remoteScreenPromoteTimeoutsRef.current.values()) {
+      window.clearTimeout(timeoutId);
+    }
+    remoteScreenPromoteTimeoutsRef.current.clear();
+    for (const timeoutId of remoteScreenDemoteTimeoutsRef.current.values()) {
+      window.clearTimeout(timeoutId);
+    }
+    remoteScreenDemoteTimeoutsRef.current.clear();
     setRemoteScreenShareUserIds([]);
+    setScreenShareAudioMuted(false);
     setScreenShareBusy(false);
     signalSinceIdRef.current = 0;
     setSpeakingUserIds([]);
@@ -7058,14 +7260,75 @@ export default function ChatDashboard({
 
     pc.ontrack = (event) => {
       if (event.track.kind === "audio") {
-        let audioStream = remoteStreamsRef.current.get(targetUserId);
-        if (!audioStream) {
-          audioStream = new MediaStream();
-          remoteStreamsRef.current.set(targetUserId, audioStream);
+        const streamIds = event.streams.map((stream) => stream.id).filter((id) => id.length > 0);
+        const knownScreenStreamIds = remoteScreenStreamIdsRef.current.get(targetUserId);
+        const belongsToKnownScreenStream = Boolean(
+          knownScreenStreamIds && streamIds.some((streamId) => knownScreenStreamIds.has(streamId)),
+        );
+        const eventStreamHasVideo = event.streams.some((stream) =>
+          stream.getVideoTracks().some((videoTrack) => videoTrack.readyState !== "ended"),
+        );
+        const userHasActiveScreenShare = remoteScreenStreamsRef.current.has(targetUserId);
+        const voiceLiveTrackCount =
+          remoteStreamsRef.current
+            .get(targetUserId)
+            ?.getAudioTracks()
+            .filter((audioTrack) => audioTrack.readyState !== "ended").length || 0;
+        const isLikelyScreenShareAudio =
+          belongsToKnownScreenStream ||
+          eventStreamHasVideo ||
+          (userHasActiveScreenShare && voiceLiveTrackCount > 0);
+
+        if (isLikelyScreenShareAudio) {
+          let screenAudioStream = remoteScreenAudioStreamsRef.current.get(targetUserId);
+          if (!screenAudioStream) {
+            screenAudioStream = new MediaStream();
+            remoteScreenAudioStreamsRef.current.set(targetUserId, screenAudioStream);
+          }
+          const hasScreenAudioTrack = screenAudioStream
+            .getAudioTracks()
+            .some((audioTrack) => audioTrack.id === event.track.id);
+          if (!hasScreenAudioTrack) {
+            screenAudioStream.addTrack(event.track);
+          }
+          event.track.onended = () => {
+            const trackedScreenAudioStream = remoteScreenAudioStreamsRef.current.get(targetUserId);
+            if (!trackedScreenAudioStream) return;
+            const remainingScreenAudioTracks = trackedScreenAudioStream
+              .getAudioTracks()
+              .filter((audioTrack) => audioTrack.readyState !== "ended");
+            if (remainingScreenAudioTracks.length > 0) return;
+            const trackedScreenAudioEl = remoteScreenAudioElsRef.current.get(targetUserId);
+            if (trackedScreenAudioEl) {
+              trackedScreenAudioEl.pause();
+              trackedScreenAudioEl.srcObject = null;
+              remoteScreenAudioElsRef.current.delete(targetUserId);
+            }
+            remoteScreenAudioStreamsRef.current.delete(targetUserId);
+          };
+
+          let screenAudioEl = remoteScreenAudioElsRef.current.get(targetUserId);
+          if (!screenAudioEl) {
+            screenAudioEl = new Audio();
+            screenAudioEl.autoplay = true;
+            remoteScreenAudioElsRef.current.set(targetUserId, screenAudioEl);
+          }
+          if (screenAudioEl.srcObject !== screenAudioStream) {
+            screenAudioEl.srcObject = screenAudioStream;
+          }
+          applyRemoteAudioOutput(targetUserId);
+          void screenAudioEl.play().catch(() => undefined);
+          return;
         }
-        const hasTrack = audioStream.getAudioTracks().some((audioTrack) => audioTrack.id === event.track.id);
-        if (!hasTrack) {
-          audioStream.addTrack(event.track);
+
+        let voiceAudioStream = remoteStreamsRef.current.get(targetUserId);
+        if (!voiceAudioStream) {
+          voiceAudioStream = new MediaStream();
+          remoteStreamsRef.current.set(targetUserId, voiceAudioStream);
+        }
+        const hasVoiceTrack = voiceAudioStream.getAudioTracks().some((audioTrack) => audioTrack.id === event.track.id);
+        if (!hasVoiceTrack) {
+          voiceAudioStream.addTrack(event.track);
         }
         event.track.onended = () => {
           const trackedStream = remoteStreamsRef.current.get(targetUserId);
@@ -7079,33 +7342,129 @@ export default function ChatDashboard({
           }
         };
 
-        let audio = remoteAudioElsRef.current.get(targetUserId);
-        if (!audio) {
-          audio = new Audio();
-          audio.autoplay = true;
-          remoteAudioElsRef.current.set(targetUserId, audio);
+        let voiceAudioEl = remoteAudioElsRef.current.get(targetUserId);
+        if (!voiceAudioEl) {
+          voiceAudioEl = new Audio();
+          voiceAudioEl.autoplay = true;
+          remoteAudioElsRef.current.set(targetUserId, voiceAudioEl);
         }
-        if (audio.srcObject !== audioStream) {
-          audio.srcObject = audioStream;
+        if (voiceAudioEl.srcObject !== voiceAudioStream) {
+          voiceAudioEl.srcObject = voiceAudioStream;
         }
         applyRemoteAudioOutput(targetUserId);
-        void audio.play().catch(() => undefined);
-        startSpeakingMeter(targetUserId, audioStream);
+        void voiceAudioEl.play().catch(() => undefined);
+        startSpeakingMeter(targetUserId, voiceAudioStream);
         return;
       }
 
       if (event.track.kind === "video") {
-        const videoStream = new MediaStream([event.track]);
-        remoteScreenStreamsRef.current.set(targetUserId, videoStream);
-        syncRemoteScreenShareUsers();
-        videoStream.onremovetrack = () => {
-          if (videoStream.getVideoTracks().length === 0) {
+        const streamIds = event.streams.map((stream) => stream.id).filter((id) => id.length > 0);
+        if (streamIds.length > 0) {
+          const knownStreamIds = remoteScreenStreamIdsRef.current.get(targetUserId) || new Set<string>();
+          streamIds.forEach((streamId) => {
+            knownStreamIds.add(streamId);
+          });
+          remoteScreenStreamIdsRef.current.set(targetUserId, knownStreamIds);
+        }
+        const videoTrack = event.track;
+        const clearPendingPromote = () => {
+          const pendingTimeoutId = remoteScreenPromoteTimeoutsRef.current.get(targetUserId);
+          if (typeof pendingTimeoutId === "number") {
+            window.clearTimeout(pendingTimeoutId);
+            remoteScreenPromoteTimeoutsRef.current.delete(targetUserId);
+          }
+        };
+        const clearPendingDemote = () => {
+          const pendingTimeoutId = remoteScreenDemoteTimeoutsRef.current.get(targetUserId);
+          if (typeof pendingTimeoutId === "number") {
+            window.clearTimeout(pendingTimeoutId);
+            remoteScreenDemoteTimeoutsRef.current.delete(targetUserId);
+          }
+        };
+        const getVideoTrackState = () => {
+          const stream = remoteScreenStreamsRef.current.get(targetUserId);
+          const streamVideoTracks = stream?.getVideoTracks() || [];
+          const peer = peerConnectionsRef.current.get(targetUserId);
+          const receiverVideoTracks = peer
+            ? peer
+                .getReceivers()
+                .map((receiver) => receiver.track)
+                .filter((receiverTrack): receiverTrack is MediaStreamTrack => Boolean(receiverTrack) && receiverTrack.kind === "video")
+            : [];
+          const hasLiveVideoTrack =
+            streamVideoTracks.some((track) => track.readyState !== "ended") ||
+            receiverVideoTracks.some((track) => track.readyState !== "ended");
+          const hasRenderableVideoTrack =
+            streamVideoTracks.some((track) => track.readyState !== "ended" && !track.muted) ||
+            receiverVideoTracks.some((track) => track.readyState !== "ended" && !track.muted);
+          return { hasLiveVideoTrack, hasRenderableVideoTrack };
+        };
+        const removeIfNoLiveVideo = () => {
+          const { hasLiveVideoTrack } = getVideoTrackState();
+          if (!hasLiveVideoTrack) {
             removeRemoteScreenShare(targetUserId);
           }
         };
-        event.track.onended = () => {
-          removeRemoteScreenShare(targetUserId);
+        const scheduleRemoveIfNoLiveVideo = (delayMs: number) => {
+          clearPendingDemote();
+          const timeoutId = window.setTimeout(() => {
+            remoteScreenDemoteTimeoutsRef.current.delete(targetUserId);
+            const { hasLiveVideoTrack } = getVideoTrackState();
+            if (!hasLiveVideoTrack) {
+              removeRemoteScreenShare(targetUserId);
+            }
+          }, delayMs);
+          remoteScreenDemoteTimeoutsRef.current.set(targetUserId, timeoutId);
         };
+        const scheduleEnsureRemoteShareVisible = () => {
+          clearPendingPromote();
+          clearPendingDemote();
+          const promoteDelayMs = remoteScreenStreamsRef.current.has(targetUserId)
+            ? 0
+            : REMOTE_SCREEN_SHARE_PROMOTE_DELAY_MS;
+          const timeoutId = window.setTimeout(() => {
+            remoteScreenPromoteTimeoutsRef.current.delete(targetUserId);
+            if (videoTrack.readyState === "ended") {
+              removeIfNoLiveVideo();
+              return;
+            }
+            const hasExistingShare = remoteScreenStreamsRef.current.has(targetUserId);
+            if (videoTrack.muted && !hasExistingShare) {
+              removeIfNoLiveVideo();
+              return;
+            }
+            const { hasRenderableVideoTrack } = getVideoTrackState();
+            if (!hasRenderableVideoTrack && !hasExistingShare) {
+              return;
+            }
+            const existing = remoteScreenStreamsRef.current.get(targetUserId);
+            const hasThisTrack = existing?.getVideoTracks().some((track) => track.id === videoTrack.id) || false;
+            if (!hasThisTrack) {
+              remoteScreenStreamsRef.current.set(targetUserId, new MediaStream([videoTrack]));
+            }
+            syncRemoteScreenShareUsers();
+          }, promoteDelayMs);
+          remoteScreenPromoteTimeoutsRef.current.set(targetUserId, timeoutId);
+        };
+        videoTrack.onunmute = () => {
+          scheduleEnsureRemoteShareVisible();
+        };
+        videoTrack.onmute = () => {
+          clearPendingPromote();
+          scheduleRemoveIfNoLiveVideo(REMOTE_SCREEN_SHARE_MUTE_GRACE_MS);
+        };
+        videoTrack.onended = () => {
+          clearPendingPromote();
+          scheduleRemoveIfNoLiveVideo(REMOTE_SCREEN_SHARE_ENDED_GRACE_MS);
+        };
+        if (!videoTrack.muted && videoTrack.readyState !== "ended") {
+          scheduleEnsureRemoteShareVisible();
+        } else if (videoTrack.muted) {
+          if (remoteScreenStreamsRef.current.has(targetUserId)) {
+            scheduleEnsureRemoteShareVisible();
+          }
+          scheduleRemoveIfNoLiveVideo(REMOTE_SCREEN_SHARE_MUTE_GRACE_MS);
+        }
       }
     };
 
@@ -7284,6 +7643,21 @@ export default function ChatDashboard({
     : isScreenSharing
       ? "Stop screen share"
       : "Start screen share";
+  const activeDmIncomingCallCount =
+    viewMode === "dm" && activeConversationId ? dmIncomingCallCounts[activeConversationId] || 0 : 0;
+  const shouldShowJoinDmCallAction =
+    viewMode === "dm" && !voiceRoomKey && activeDmIncomingCallCount > 0;
+  const activeDmIncomingCallerLabel = activeDm?.friendName?.trim() || "Friend";
+  const shouldShowDmIncomingCallPreviewPanel =
+    viewMode === "dm" && !voiceRoomKey && shouldShowJoinDmCallAction && Boolean(activeDm);
+  const activeDmIncomingCallerPresenceStatus = activeDm ? resolvePresenceForUser(activeDm.friendUserId) : "offline";
+  const activeDmIncomingCallerPresenceTitle = `Status: ${presenceStatusLabel(activeDmIncomingCallerPresenceStatus)}`;
+  const joinVoiceButtonLabel =
+    viewMode === "dm"
+      ? shouldShowJoinDmCallAction
+        ? `Join ${activeDmIncomingCallerLabel}`
+        : "Start Call"
+      : "Join Voice";
 
   const canComposeInCurrentView =
     viewMode === "dm"
@@ -7783,6 +8157,7 @@ export default function ChatDashboard({
                   strokeLinejoin="round"
                 />
               </svg>
+              {totalUnreadDmCount > 0 && <span className="navUnreadBadge">{totalUnreadDmLabel}</span>}
             </span>
             <span>DMs</span>
           </button>
@@ -8031,6 +8406,7 @@ export default function ChatDashboard({
                             }}
                           >
                             <span>{dm.friendName}</span>
+                            {dm.isPinned && <span className="dmPinnedBadge" title="Pinned DM" aria-hidden="true" />}
                             {unreadCount > 0 && <span className="unreadBubble">{unreadLabel}</span>}
                           </button>
                         </div>
@@ -8767,48 +9143,63 @@ export default function ChatDashboard({
                         </svg>
                       </span>
                     </button>
-                    {(isScreenSharing || isElectronRuntime) && (
+                    {isElectronRuntime && (
                       <div className="screenShareHeaderControls">
-                        {isScreenSharing && (
-                          <label className="screenShareControl toggle">
-                            <input
-                              type="checkbox"
-                              checked={screenShareIncludeSystemAudio}
-                              onChange={(e) => setScreenShareIncludeSystemAudio(e.target.checked)}
-                              disabled={screenShareBusy || isScreenSharing}
-                            />
-                            <span>System Audio</span>
-                          </label>
-                        )}
-                        {isElectronRuntime && (
-                          <>
-                            <label className="screenShareControl source">
-                              <span>Source</span>
-                              <select
-                                value={selectedDesktopSourceId}
-                                onChange={(e) => setSelectedDesktopSourceId(e.target.value)}
-                                disabled={screenShareBusy || isScreenSharing}
-                                aria-label="Screen share source"
-                              >
-                                <option value="auto">Auto pick</option>
-                                {desktopSourceOptions.map((source) => (
-                                  <option key={source.id} value={source.id}>
-                                    {source.kind === "screen" ? "Screen" : "Window"}: {source.name}
-                                  </option>
-                                ))}
-                              </select>
-                            </label>
-                            <button
-                              type="button"
-                              className="voiceButton compact"
-                              onClick={() => void refreshDesktopSourceOptions()}
-                              disabled={screenShareBusy || isScreenSharing}
-                            >
-                              Refresh Sources
-                            </button>
-                          </>
-                        )}
+                        <label className="screenShareControl source">
+                          <span>Source</span>
+                          <select
+                            value={selectedDesktopSourceId}
+                            onChange={(e) => setSelectedDesktopSourceId(e.target.value)}
+                            disabled={screenShareBusy || isScreenSharing}
+                            aria-label="Screen share source"
+                          >
+                            <option value="auto">Auto pick</option>
+                            {desktopSourceOptions.map((source) => (
+                              <option key={source.id} value={source.id}>
+                                {source.kind === "screen" ? "Screen" : "Window"}: {source.name}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <button
+                          type="button"
+                          className="voiceButton compact"
+                          onClick={() => void refreshDesktopSourceOptions()}
+                          disabled={screenShareBusy || isScreenSharing}
+                        >
+                          Refresh Sources
+                        </button>
                       </div>
+                    )}
+                    {isAnyScreenShareActive && canRestoreRemoteScreenShareView && (
+                      <button
+                        type="button"
+                        className="voiceButton iconOnly"
+                        onClick={handleRestoreRemoteScreenShareView}
+                        aria-label="View screen share"
+                        title="View screen share"
+                      >
+                        <span className="voiceButtonIcon" aria-hidden="true">
+                          <svg viewBox="0 0 24 24" role="presentation">
+                            <path
+                              d="M2.5 12s3.5-5.5 9.5-5.5 9.5 5.5 9.5 5.5-3.5 5.5-9.5 5.5-9.5-5.5-9.5-5.5Z"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="1.8"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                            <circle
+                              cx="12"
+                              cy="12"
+                              r="2.7"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="1.8"
+                            />
+                          </svg>
+                        </span>
+                      </button>
                     )}
                     <button
                       type="button"
@@ -8899,8 +9290,13 @@ export default function ChatDashboard({
                     </button>
                   </>
                 ) : (
-                  <button type="button" className="voiceButton" onClick={() => void handleJoinVoice()}>
-                    {viewMode === "dm" ? "Start Call" : "Join Voice"}
+                  <button
+                    type="button"
+                    className={shouldShowJoinDmCallAction ? "voiceButton active" : "voiceButton"}
+                    onClick={() => void handleJoinVoice()}
+                    title={shouldShowJoinDmCallAction ? `${activeDmIncomingCallerLabel} is in this call` : "Start Call"}
+                  >
+                    {joinVoiceButtonLabel}
                   </button>
                 ))}
               {shouldShowQuickThemeControl && quickThemeTarget && (
@@ -10411,83 +10807,170 @@ export default function ChatDashboard({
             <div ref={chatStreamColumnRef} className="chatStreamColumn">
               {shouldShowScreenSharePanel && (
                 <article className="voicePanel screenSharePanel" aria-label="Screen share">
-                  <p className="sectionLabel">Screen Share</p>
-                  <div className="screenShareGrid">
-                    {isScreenSharing && localScreenStream && (
-                      <figure
-                        className="screenShareTile self"
-                        role="button"
-                        tabIndex={0}
-                        onClick={(e) => openVideoFullscreen(e.currentTarget)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" || e.key === " ") {
-                            e.preventDefault();
-                            openVideoFullscreen(e.currentTarget);
-                          }
-                        }}
-                        title="Open shared screen fullscreen"
-                      >
+                  <div className="screenSharePanelHeader">
+                    <p className="sectionLabel">Screen Share</p>
+                    <div className="screenSharePanelActions">
+                      {hasRemoteScreenShares && (
                         <button
                           type="button"
-                          className="screenShareExitFullscreenButton"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            closeVideoFullscreen();
-                          }}
+                          className={screenShareAudioMuted ? "voiceButton iconOnly active" : "voiceButton iconOnly"}
+                          onClick={() => setScreenShareAudioMuted((prev) => !prev)}
+                          aria-label={screenShareAudioMuted ? "Unmute screen share audio" : "Mute screen share audio"}
+                          title={screenShareAudioMuted ? "Unmute screen share audio" : "Mute screen share audio"}
                         >
-                          Exit Fullscreen
+                          <span className="voiceButtonIcon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" role="presentation">
+                              <path
+                                d="M5 10v4h4l5 4V6l-5 4H5Z"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="1.8"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              />
+                              {!screenShareAudioMuted && (
+                                <>
+                                  <path
+                                    d="M16 9a4 4 0 0 1 0 6"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    strokeWidth="1.8"
+                                    strokeLinecap="round"
+                                  />
+                                  <path
+                                    d="M18.5 7a7 7 0 0 1 0 10"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    strokeWidth="1.8"
+                                    strokeLinecap="round"
+                                  />
+                                </>
+                              )}
+                              {screenShareAudioMuted && (
+                                <path
+                                  d="M4 4l16 16"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="2"
+                                  strokeLinecap="round"
+                                />
+                              )}
+                            </svg>
+                          </span>
                         </button>
-                        <video
-                          ref={(videoEl) => attachVideoStream(videoEl, localScreenStream)}
-                          autoPlay
-                          playsInline
-                          muted
-                        />
-                        <figcaption>{localScreenShareCaption}</figcaption>
-                      </figure>
-                    )}
-                    {remoteScreenShares.map((share) => (
-                      <figure
-                        key={share.userId}
-                        className="screenShareTile"
-                        role="button"
-                        tabIndex={0}
-                        onClick={(e) => openVideoFullscreen(e.currentTarget)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" || e.key === " ") {
-                            e.preventDefault();
-                            openVideoFullscreen(e.currentTarget);
-                          }
-                        }}
-                        title="Open shared screen fullscreen"
-                      >
+                      )}
+                      {isAnyScreenShareActive && canDismissRemoteScreenShareView && (
                         <button
                           type="button"
-                          className="screenShareExitFullscreenButton"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            closeVideoFullscreen();
-                          }}
+                          className="voiceButton iconOnly screenShareDismissButton"
+                          onClick={handleDismissRemoteScreenShareView}
+                          aria-label="Hide screen share"
+                          title="Hide screen share"
                         >
-                          Exit Fullscreen
+                          <span className="voiceButtonIcon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" role="presentation">
+                              <path
+                                d="M3.5 4.5h9v15h-9z"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="1.8"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              />
+                              <path
+                                d="M13 12h7"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="1.8"
+                                strokeLinecap="round"
+                              />
+                              <path
+                                d="M17 8l4 4-4 4"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="1.8"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              />
+                            </svg>
+                          </span>
                         </button>
-                        <video
-                          ref={(videoEl) => attachVideoStream(videoEl, share.stream)}
-                          autoPlay
-                          playsInline
-                        />
-                        <figcaption>{share.name}</figcaption>
-                      </figure>
-                    ))}
+                      )}
+                    </div>
+                  </div>
+                  <div className="screenShareBody">
+                    <div className="screenSharePresenterList" role="list" aria-label="Users sharing screens">
+                      {screenSharePresenters.map((presenter) => {
+                        const isActive = presenter.presenterId === activeScreenSharePresenter?.presenterId;
+                        return (
+                          <button
+                            key={presenter.presenterId}
+                            type="button"
+                            role="listitem"
+                            className={isActive ? "screenSharePresenterButton active" : "screenSharePresenterButton"}
+                            onClick={() => setActiveScreenSharePresenterId(presenter.presenterId)}
+                            aria-pressed={isActive}
+                            title={`View ${presenter.name}'s screen share`}
+                          >
+                            <span className="screenSharePresenterAvatar" aria-hidden="true">
+                              {initialsFromName(presenter.name)}
+                            </span>
+                            <span className="screenSharePresenterMeta">
+                              <span className="screenSharePresenterName">{presenter.name}</span>
+                              <span className="screenSharePresenterState">{presenter.isSelf ? "You" : "Live"}</span>
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div className="screenShareViewer">
+                      {activeScreenSharePresenter ? (
+                        <figure
+                          className={activeScreenSharePresenter.isSelf ? "screenShareTile self" : "screenShareTile"}
+                          role="button"
+                          tabIndex={0}
+                          onClick={(e) => openVideoFullscreen(e.currentTarget)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault();
+                              openVideoFullscreen(e.currentTarget);
+                            }
+                          }}
+                          title="Open shared screen fullscreen"
+                        >
+                          <button
+                            type="button"
+                            className="screenShareExitFullscreenButton"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              closeVideoFullscreen();
+                            }}
+                          >
+                            Exit Fullscreen
+                          </button>
+                          <video
+                            ref={(videoEl) => attachVideoStream(videoEl, activeScreenSharePresenter.stream)}
+                            autoPlay
+                            playsInline
+                            muted={activeScreenSharePresenter.isSelf}
+                          />
+                          <figcaption>{activeScreenSharePresenter.caption}</figcaption>
+                        </figure>
+                      ) : (
+                        <p className="smallMuted">No active screen shares right now.</p>
+                      )}
+                    </div>
                   </div>
                 </article>
               )}
-              {voiceRoomKey && (
+              {(voiceRoomKey || shouldShowDmIncomingCallPreviewPanel) && (
                 <article className="voicePanel dmVoicePanelTop" aria-label="Voice participants">
                   <p className="sectionLabel">Voice Chat</p>
-                  {voiceParticipants.length === 0 ? (
-                    <p className="smallMuted">No one is in voice right now.</p>
-                  ) : viewMode === "dm" ? (
+                  {voiceRoomKey ? (
+                    <>
+                      {voiceParticipants.length === 0 ? (
+                        <p className="smallMuted">No one is in voice right now.</p>
+                      ) : viewMode === "dm" ? (
                     <div className="voiceParticipants avatarOnly">
                       {voiceParticipants.map((participant) => {
                         const participantIsMe = participant.userId === currentUserId;
@@ -10807,6 +11290,28 @@ export default function ChatDashboard({
                         );
                       })}
                     </div>
+                      )}
+                    </>
+                  ) : activeDm ? (
+                    <div className="voiceParticipants avatarOnly">
+                      <button
+                        type="button"
+                        className="voiceAvatarOnlyButton"
+                        onClick={() => void openProfileViewer(activeDm.friendUserId)}
+                        aria-label={`View ${activeDm.friendName} profile`}
+                      >
+                        <span className="friendAvatar withPresence voiceAvatarOnly" title={activeDmIncomingCallerPresenceTitle}>
+                          {activeDm.friendAvatarUrl ? (
+                            <img src={activeDm.friendAvatarUrl} alt={`${activeDm.friendName} avatar`} />
+                          ) : (
+                            <span>{initialsFromName(activeDm.friendName)}</span>
+                          )}
+                          <span className={`presenceDot ${activeDmIncomingCallerPresenceStatus}`} aria-hidden="true" />
+                        </span>
+                      </button>
+                    </div>
+                  ) : (
+                    <p className="smallMuted">No one is in voice right now.</p>
                   )}
                 </article>
               )}

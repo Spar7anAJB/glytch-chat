@@ -546,11 +546,34 @@ textarea:focus-visible {
   justify-content: center;
   color: currentColor;
   flex: 0 0 22px;
+  position: relative;
+  overflow: visible;
 }
 
 .navOptionIcon svg {
   width: 100%;
   height: 100%;
+}
+
+.navUnreadBadge {
+  position: absolute;
+  top: -7px;
+  right: -10px;
+  min-width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #d62839;
+  color: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  box-shadow: 0 6px 14px color-mix(in srgb, #000000, transparent 78%);
+  font-size: 0.64rem;
+  font-weight: 800;
+  line-height: 1;
+  pointer-events: none;
 }
 
 .navGlytchIconButton {
@@ -1352,6 +1375,21 @@ textarea:focus-visible {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.dmPinnedBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+}
+
+.dmPinnedBadge::before {
+  content: "\1F4CC";
+  font-size: 0.7rem;
+  line-height: 1;
 }
 
 .dmSidebarContextMenu {
@@ -2634,10 +2672,128 @@ textarea:focus-visible {
   flex: 0 0 auto;
 }
 
-.screenShareGrid {
-  display: grid;
+.screenSharePanelHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 8px;
-  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+}
+
+.screenSharePanelHeader .sectionLabel {
+  margin: 0;
+}
+
+.screenSharePanelActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.screenShareDismissButton {
+  flex: 0 0 auto;
+}
+
+.screenShareBody {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(190px, 230px) minmax(0, 1fr);
+  align-items: stretch;
+}
+
+.screenSharePresenterList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 280px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.screenSharePresenterButton {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: 1px solid color-mix(in srgb, var(--card-border), transparent 10%);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel), transparent 12%);
+  color: var(--text);
+  padding: 8px;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.16s ease, background-color 0.16s ease, transform 0.16s ease;
+}
+
+.screenSharePresenterButton:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--accent), var(--card-border) 45%);
+  background: color-mix(in srgb, var(--accent), var(--panel) 86%);
+}
+
+.screenSharePresenterButton.active {
+  border-color: color-mix(in srgb, var(--accent), #fff 20%);
+  background: color-mix(in srgb, var(--accent), var(--panel) 76%);
+}
+
+.screenSharePresenterAvatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--bg), var(--panel) 30%);
+  border: 1px solid color-mix(in srgb, var(--card-border), transparent 10%);
+  font-size: 0.7rem;
+  font-weight: 800;
+  color: var(--text);
+  flex: 0 0 auto;
+}
+
+.screenSharePresenterMeta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.15;
+}
+
+.screenSharePresenterName {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.screenSharePresenterState {
+  font-size: 0.67rem;
+  font-weight: 700;
+  color: color-mix(in srgb, var(--text), transparent 30%);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.screenShareViewer {
+  min-height: 0;
+}
+
+@media (max-width: 900px) {
+  .screenShareBody {
+    grid-template-columns: 1fr;
+  }
+
+  .screenSharePresenterList {
+    flex-direction: row;
+    max-height: none;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding-bottom: 2px;
+  }
+
+  .screenSharePresenterButton {
+    min-width: 170px;
+  }
 }
 
 .screenShareTile {
