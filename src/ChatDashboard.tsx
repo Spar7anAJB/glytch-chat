@@ -2094,6 +2094,7 @@ export default function ChatDashboard({
   const [glytchUnbanRequestsUi, setGlytchUnbanRequestsUi] = useState<UiGlytchUnbanRequest[]>([]);
   const [glytchBotSettings, setGlytchBotSettings] = useState<GlytchBotSettings | null>(null);
   const [glytchBotBlockedWordsDraft, setGlytchBotBlockedWordsDraft] = useState("");
+  const [glytchBotWebhookDraft, setGlytchBotWebhookDraft] = useState("");
   const [glytchBotSettingsBusy, setGlytchBotSettingsBusy] = useState(false);
   const [glytchBotSettingsError, setGlytchBotSettingsError] = useState("");
   const [glytchBotSettingsNotice, setGlytchBotSettingsNotice] = useState("");
@@ -4001,6 +4002,7 @@ export default function ChatDashboard({
       const settings = await getGlytchBotSettings(accessToken, glytchId);
       setGlytchBotSettings(settings);
       setGlytchBotBlockedWordsDraft((settings.blocked_words || []).join(", "));
+      setGlytchBotWebhookDraft(settings.third_party_bot_webhook_url || "");
       setGlytchBotSettingsError("");
     } catch (err) {
       setGlytchBotSettingsError(err instanceof Error ? err.message : "Could not load Glytch bot settings.");
@@ -4395,6 +4397,7 @@ export default function ChatDashboard({
       setGlytchUnbanRequestsUi([]);
       setGlytchBotSettings(null);
       setGlytchBotBlockedWordsDraft("");
+      setGlytchBotWebhookDraft("");
       setGlytchBotSettingsError("");
       setGlytchBotSettingsNotice("");
       setGlytchBotSettingsBusy(false);
@@ -6719,6 +6722,11 @@ export default function ChatDashboard({
     }
 
     const blockedWords = normalizeBlockedWordsDraft(glytchBotBlockedWordsDraft);
+    const webhookUrl = glytchBotWebhookDraft.trim();
+    if (glytchBotSettings.third_party_bots_enabled && webhookUrl && !/^https?:\/\//i.test(webhookUrl)) {
+      setGlytchBotSettingsError("Third-party bot webhook URL must start with http:// or https://");
+      return;
+    }
     setGlytchBotSettingsBusy(true);
     setGlytchBotSettingsError("");
     setGlytchBotSettingsNotice("");
@@ -6731,9 +6739,12 @@ export default function ChatDashboard({
         blocked_words: blockedWords,
         dm_on_kick_or_ban: glytchBotSettings.dm_on_kick_or_ban,
         dm_on_message_block: glytchBotSettings.dm_on_message_block,
+        third_party_bots_enabled: glytchBotSettings.third_party_bots_enabled,
+        third_party_bot_webhook_url: glytchBotSettings.third_party_bots_enabled ? webhookUrl || null : null,
       });
       setGlytchBotSettings(updated);
       setGlytchBotBlockedWordsDraft((updated.blocked_words || []).join(", "));
+      setGlytchBotWebhookDraft(updated.third_party_bot_webhook_url || "");
       setGlytchBotSettingsNotice("Glytch bot settings saved.");
     } catch (err) {
       setGlytchBotSettingsError(err instanceof Error ? err.message : "Could not save Glytch bot settings.");
@@ -9971,6 +9982,7 @@ export default function ChatDashboard({
     setJoinUnbanRequestNotice("");
     setGlytchBotSettings(null);
     setGlytchBotBlockedWordsDraft("");
+    setGlytchBotWebhookDraft("");
     setGlytchBotSettingsError("");
     setGlytchBotSettingsNotice("");
     setShowQuickThemeEditor(false);
@@ -12258,11 +12270,13 @@ export default function ChatDashboard({
                   style={{ borderColor: profileForm.accentColor }}
                   title={`Status: ${currentUserPresenceLabel}`}
                 >
-                  {profileForm.avatarUrl ? (
-                    <img src={profileForm.avatarUrl} alt="Avatar" />
-                  ) : (
-                    <span>{initialsFromName(displayName)}</span>
-                  )}
+                  <span className="profileAvatarMedia">
+                    {profileForm.avatarUrl ? (
+                      <img src={profileForm.avatarUrl} alt="Avatar" />
+                    ) : (
+                      <span>{initialsFromName(displayName)}</span>
+                    )}
+                  </span>
                   {renderAvatarDecoration(profileForm.avatarDecoration, {
                     color: profileForm.avatarDecorationColor,
                     background: profileForm.avatarDecorationBackground,
@@ -12959,6 +12973,30 @@ export default function ChatDashboard({
                       />
                       <span>DM users when a message is blocked</span>
                     </label>
+                    <label className="permissionToggle">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(glytchBotSettings?.third_party_bots_enabled)}
+                        onChange={(e) =>
+                          setGlytchBotSettings((prev) =>
+                            prev ? { ...prev, third_party_bots_enabled: e.target.checked } : prev,
+                          )
+                        }
+                        disabled={!glytchBotSettings || glytchBotSettingsBusy}
+                      />
+                      <span>Enable third-party bot integrations</span>
+                    </label>
+                    <input
+                      type="url"
+                      value={glytchBotWebhookDraft}
+                      onChange={(e) => setGlytchBotWebhookDraft(e.target.value)}
+                      placeholder="Third-party bot webhook URL (https://...)"
+                      aria-label="Third-party bot webhook URL"
+                      disabled={!glytchBotSettings || !glytchBotSettings.third_party_bots_enabled || glytchBotSettingsBusy}
+                    />
+                    <p className="smallMuted">
+                      Configure a webhook URL for third-party bot services connected to this Glytch.
+                    </p>
                     <button type="submit" disabled={!glytchBotSettings || glytchBotSettingsBusy}>
                       {glytchBotSettingsBusy ? "Saving..." : "Save Glytch Bot Settings"}
                     </button>
@@ -14243,11 +14281,13 @@ export default function ChatDashboard({
                 style={{ borderColor: viewedAccent }}
                 title={`Status: ${viewedPresenceLabel}`}
               >
-                {viewedProfile.avatar_url ? (
-                  <img src={viewedProfile.avatar_url} alt={`${viewedDisplayName} avatar`} />
-                ) : (
-                  <span>{initialsFromName(viewedDisplayName)}</span>
-                )}
+                <span className="profileAvatarMedia">
+                  {viewedProfile.avatar_url ? (
+                    <img src={viewedProfile.avatar_url} alt={`${viewedDisplayName} avatar`} />
+                  ) : (
+                    <span>{initialsFromName(viewedDisplayName)}</span>
+                  )}
+                </span>
                 {renderAvatarDecoration(viewedAvatarDecoration, {
                   color: viewedAvatarDecorationColor,
                   background: viewedAvatarDecorationBackground,

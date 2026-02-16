@@ -527,6 +527,7 @@ textarea:focus-visible {
 .avatarButton {
   width: 44px;
   height: 44px;
+  aspect-ratio: 1 / 1;
   border-radius: 50%;
   border: 1px solid color-mix(in srgb, var(--panel-border), transparent 12%);
   background: linear-gradient(145deg, color-mix(in srgb, var(--accent), #fff 7%), var(--accent-strong));
@@ -748,10 +749,6 @@ textarea:focus-visible {
   object-position: center;
   border-radius: inherit;
   display: block;
-}
-
-.avatarButton.withPresence img {
-  clip-path: circle(50% at 50% 50%);
 }
 
 .settingsLink {
@@ -4400,6 +4397,11 @@ textarea:focus-visible {
 .profileAvatarLarge {
   width: 72px;
   height: 72px;
+  min-width: 72px;
+  min-height: 72px;
+  aspect-ratio: 1 / 1;
+  flex: 0 0 72px;
+  align-self: flex-start;
   border-radius: 50%;
   border: 3px solid var(--accent);
   margin-top: -36px;
@@ -4421,10 +4423,16 @@ textarea:focus-visible {
   object-fit: cover;
   object-position: center;
   border-radius: inherit;
+  display: block;
 }
 
-.profileAvatarLarge.withPresence img {
-  clip-path: circle(50% at 50% 50%);
+.profileAvatarMedia {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
 }
 
 .profilePresenceDot {

@@ -230,6 +230,8 @@ export type GlytchBotSettings = {
   blocked_words: string[];
   dm_on_kick_or_ban: boolean;
   dm_on_message_block: boolean;
+  third_party_bots_enabled: boolean;
+  third_party_bot_webhook_url?: string | null;
   updated_by?: string | null;
   updated_at?: string;
 };
@@ -2515,6 +2517,8 @@ function defaultGlytchBotSettings(glytchId: number): GlytchBotSettings {
     blocked_words: [],
     dm_on_kick_or_ban: true,
     dm_on_message_block: true,
+    third_party_bots_enabled: false,
+    third_party_bot_webhook_url: null,
     updated_by: null,
   };
 }
@@ -2553,6 +2557,7 @@ export async function updateGlytchBotSettings(
   settings: Partial<Omit<GlytchBotSettings, "glytch_id" | "updated_by" | "updated_at">>,
 ): Promise<GlytchBotSettings> {
   assertConfig();
+  const shouldApplyThirdPartyWebhook = Object.prototype.hasOwnProperty.call(settings, "third_party_bot_webhook_url");
   try {
     const res = await supabaseFetch(`/rest/v1/rpc/set_glytch_bot_settings`, {
       method: "POST",
@@ -2566,6 +2571,9 @@ export async function updateGlytchBotSettings(
         p_blocked_words: settings.blocked_words ?? null,
         p_dm_on_kick_or_ban: settings.dm_on_kick_or_ban ?? null,
         p_dm_on_message_block: settings.dm_on_message_block ?? null,
+        p_third_party_bots_enabled: settings.third_party_bots_enabled ?? null,
+        p_third_party_bot_webhook_url: shouldApplyThirdPartyWebhook ? settings.third_party_bot_webhook_url ?? null : null,
+        p_apply_third_party_bot_webhook_url: shouldApplyThirdPartyWebhook,
       }),
     });
 
