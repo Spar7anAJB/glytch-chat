@@ -22,27 +22,11 @@ language sql
 security definer
 set search_path = public
 as $$
-  with base_params as (
+  with params as (
     select
-      trim(coalesce(p_query, '')) as raw_query,
+      lower(trim(coalesce(p_query, ''))) as query,
+      nullif(regexp_replace(trim(coalesce(p_query, '')), '[^0-9]', '', 'g'), '') as id_query,
       greatest(1, least(coalesce(p_limit, 30), 80)) as limit_count
-  ),
-  params as (
-    select
-      case
-        when raw_query = '' then ''
-        when position('#' in raw_query) > 0 then lower(trim(split_part(raw_query, '#', 1)))
-        when raw_query ~ '^[0-9]+$' then ''
-        else lower(raw_query)
-      end as name_query,
-      case
-        when raw_query = '' then null
-        when position('#' in raw_query) > 0 then nullif(regexp_replace(split_part(raw_query, '#', 2), '[^0-9]', '', 'g'), '')
-        when raw_query ~ '^[0-9]+$' then raw_query
-        else null
-      end as id_query,
-      limit_count
-    from base_params
   )
   select
     g.id,
@@ -72,11 +56,11 @@ as $$
   ) joined on true
   where g.is_public = true
     and (
-      p.name_query = ''
-      or lower(g.name) like '%' || p.name_query || '%'
-      or lower(coalesce(g.bio, '')) like '%' || p.name_query || '%'
+      p.query = ''
+      or lower(g.name) like '%' || p.query || '%'
+      or lower(coalesce(g.bio, '')) like '%' || p.query || '%'
+      or (p.id_query is not null and cast(g.id as text) like '%' || p.id_query || '%')
     )
-    and (p.id_query is null or cast(g.id as text) = p.id_query)
   order by coalesce(joined.is_joined, false) desc, coalesce(member_stats.member_count, 0) desc, g.created_at desc
   limit (select limit_count from params);
 $$;
