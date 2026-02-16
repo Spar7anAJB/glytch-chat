@@ -10163,11 +10163,13 @@ export default function ChatDashboard({
               title={`Status: ${currentUserPresenceLabel}`}
               onClick={() => openSettingsView("profile", "edit")}
             >
-              {sidebarAvatar ? (
-                <img src={sidebarAvatar} alt="Profile" />
-              ) : (
-                <span>{initialsFromName(displayName)}</span>
-              )}
+              <span className="avatarButtonMedia">
+                {sidebarAvatar ? (
+                  <img src={sidebarAvatar} alt="Profile" />
+                ) : (
+                  <span>{initialsFromName(displayName)}</span>
+                )}
+              </span>
               {renderAvatarDecoration(profileForm.avatarDecoration, {
                 color: profileForm.avatarDecorationColor,
                 background: profileForm.avatarDecorationBackground,
@@ -10183,11 +10185,13 @@ export default function ChatDashboard({
                 title={`Status: ${currentUserPresenceLabel}`}
                 onClick={() => openSettingsView("profile", "edit")}
               >
-                {sidebarAvatar ? (
-                  <img src={sidebarAvatar} alt="Profile" />
-                ) : (
-                  <span>{initialsFromName(displayName)}</span>
-                )}
+                <span className="avatarButtonMedia">
+                  {sidebarAvatar ? (
+                    <img src={sidebarAvatar} alt="Profile" />
+                  ) : (
+                    <span>{initialsFromName(displayName)}</span>
+                  )}
+                </span>
                 {renderAvatarDecoration(profileForm.avatarDecoration, {
                   color: profileForm.avatarDecorationColor,
                   background: profileForm.avatarDecorationBackground,
@@ -11578,7 +11582,9 @@ export default function ChatDashboard({
                         aria-pressed={selected}
                       >
                         <span className="avatarButton withPresence profileAppearanceAvatarPreview" aria-hidden="true">
-                          {profileForm.avatarUrl ? <img src={profileForm.avatarUrl} alt="" /> : <span>{initialsFromName(displayName)}</span>}
+                          <span className="avatarButtonMedia">
+                            {profileForm.avatarUrl ? <img src={profileForm.avatarUrl} alt="" /> : <span>{initialsFromName(displayName)}</span>}
+                          </span>
                           {renderAvatarDecoration(decorationValue, {
                             color: profileForm.avatarDecorationColor,
                             background: profileForm.avatarDecorationBackground,

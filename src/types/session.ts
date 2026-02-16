@@ -4,7 +4,11 @@ export type SessionUser = {
   email: string;
   accessToken: string;
   refreshToken: string;
+  singleSessionId: string;
   expiresAt: number | null;
 };
 
-export type SessionUserPersisted = Omit<SessionUser, "expiresAt"> & { expiresAt?: number | null };
+export type SessionUserPersisted = Omit<SessionUser, "expiresAt" | "singleSessionId"> & {
+  expiresAt?: number | null;
+  singleSessionId?: string;
+};

@@ -4,6 +4,14 @@ import type { SessionUser, SessionUserPersisted } from "../types/session";
 export const SESSION_KEY = "glytch_supabase_session";
 export type SessionPersistence = "session" | "local";
 
+export function generateSingleSessionId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
 function readStoredSession(): { raw: string; persistence: SessionPersistence } | null {
   const sessionRaw = sessionStorage.getItem(SESSION_KEY);
   if (sessionRaw) {
@@ -19,8 +27,14 @@ function readStoredSession(): { raw: string; persistence: SessionPersistence } |
 }
 
 export function withSessionExpiry(session: SessionUserPersisted): SessionUser {
+  const normalizedSingleSessionId =
+    typeof session.singleSessionId === "string" && session.singleSessionId.trim().length > 0
+      ? session.singleSessionId
+      : generateSingleSessionId();
+
   return {
     ...session,
+    singleSessionId: normalizedSingleSessionId,
     expiresAt: typeof session.expiresAt === "number" ? session.expiresAt : parseJwtExpiry(session.accessToken),
   };
 }
@@ -33,7 +47,8 @@ export function hasSessionShape(value: unknown): value is SessionUserPersisted {
     typeof row.username === "string" &&
     typeof row.email === "string" &&
     typeof row.accessToken === "string" &&
-    typeof row.refreshToken === "string"
+    typeof row.refreshToken === "string" &&
+    (typeof row.singleSessionId === "undefined" || typeof row.singleSessionId === "string")
   );
 }
 

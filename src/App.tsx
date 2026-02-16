@@ -2,10 +2,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import ChatDashboard from "./ChatDashboard";
 import {
+  claimSingleSessionLock,
   getCurrentUser,
   getMyProfile,
   isUsernameAvailable,
   refreshSession,
+  releaseSingleSessionLock,
   signIn,
   signUp,
   upsertMyProfile,
@@ -17,6 +19,7 @@ import { useHashRoute } from "./routing/useHashRoute";
 import { fallbackUsername, isValidUsername, normalizeUsername } from "./lib/auth";
 import {
   clearSessionStorage,
+  generateSingleSessionId,
   getStoredSessionPersistence,
   loadSession,
   saveSession,
@@ -32,6 +35,16 @@ const ACCESS_TOKEN_MIN_REFRESH_DELAY_MS = 15_000;
 const ACCESS_TOKEN_FALLBACK_REFRESH_DELAY_MS = 25 * 60 * 1000;
 const RESUME_REFRESH_THROTTLE_MS = 15_000;
 const REMEMBER_ME_PREF_KEY = "glytch_remember_me";
+const SINGLE_SESSION_CONFLICT_MESSAGE = "This account is already active in another session.";
+
+function isSingleSessionConflictMessage(rawMessage: string) {
+  const message = rawMessage.toLowerCase();
+  return (
+    message.includes("already active in another session") ||
+    message.includes("another active session") ||
+    message.includes("single session")
+  );
+}
 
 const EMPTY_AUTH_FORM: AuthFormState = {
   username: "",
@@ -66,6 +79,12 @@ function App() {
     setCurrentUser(null);
   }, []);
 
+  const clearSessionForSingleSessionConflict = useCallback(() => {
+    clearSession();
+    setError(SINGLE_SESSION_CONFLICT_MESSAGE);
+    navigate("/auth", true);
+  }, [clearSession, navigate]);
+
   useEffect(() => {
     currentUserRef.current = currentUser;
   }, [currentUser]);
@@ -87,13 +106,17 @@ function App() {
       resolvedUsername,
     );
 
-    return withSessionExpiry({
+    const next = withSessionExpiry({
       id: refreshed.user.id,
       email: refreshed.user.email,
       username: resolvedUsername,
       accessToken: refreshed.access_token,
       refreshToken: refreshed.refresh_token,
+      singleSessionId: existing.singleSessionId,
     });
+
+    await claimSingleSessionLock(next.accessToken, next.singleSessionId);
+    return next;
   }, []);
 
   const refreshCurrentSession = useCallback(
@@ -122,9 +145,14 @@ function App() {
             message.includes("invalid grant") ||
             message.includes("session not found") ||
             message.includes("jwt expired") ||
-            message.includes("invalid jwt");
+            message.includes("invalid jwt") ||
+            isSingleSessionConflictMessage(message);
           if (shouldLogout) {
-            clearSession();
+            if (isSingleSessionConflictMessage(message)) {
+              clearSessionForSingleSessionConflict();
+            } else {
+              clearSession();
+            }
             return null;
           }
           return existing;
@@ -136,7 +164,7 @@ function App() {
       refreshInFlightRef.current = refreshPromise;
       return refreshPromise;
     },
-    [applyRefreshedSession, clearSession],
+    [applyRefreshedSession, clearSession, clearSessionForSingleSessionConflict],
   );
 
   useEffect(() => {
@@ -172,6 +200,10 @@ function App() {
           username: resolvedUsername,
         });
 
+        if (maybeRefreshed === existing) {
+          await claimSingleSessionLock(next.accessToken, next.singleSessionId);
+        }
+
         saveSession(next, sessionPersistenceRef.current);
         if (!cancelled) {
           setCurrentUser(next);
@@ -186,16 +218,25 @@ function App() {
               setCurrentUser(next);
             }
             return;
-          } catch {
+          } catch (retryErr) {
             if (!cancelled) {
-              clearSession();
+              const retryMessage = retryErr instanceof Error ? retryErr.message : "";
+              if (isSingleSessionConflictMessage(retryMessage)) {
+                clearSessionForSingleSessionConflict();
+              } else {
+                clearSession();
+              }
             }
             return;
           }
         }
 
         if (!cancelled) {
-          clearSession();
+          if (isSingleSessionConflictMessage(msg)) {
+            clearSessionForSingleSessionConflict();
+          } else {
+            clearSession();
+          }
         }
       }
     };
@@ -204,7 +245,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [applyRefreshedSession, clearSession]);
+  }, [applyRefreshedSession, clearSession, clearSessionForSingleSessionConflict]);
 
   useEffect(() => {
     if (!currentUser) return;
@@ -254,6 +295,12 @@ function App() {
     if (route !== "/auth") return;
     navigate("/app", true);
   }, [currentUser, route, navigate]);
+
+  useEffect(() => {
+    if (!window.electronAPI?.isElectron) return;
+    if (route !== "/") return;
+    navigate("/auth", true);
+  }, [route, navigate]);
 
   const updateAuthField = useCallback((field: keyof AuthFormState, value: string) => {
     setForm((existing) => ({
@@ -319,12 +366,16 @@ function App() {
           normalizedUsername,
         );
 
+        const singleSessionId = generateSingleSessionId();
+        await claimSingleSessionLock(result.session.access_token, singleSessionId);
+
         const sessionUser = withSessionExpiry({
           id: result.session.user.id,
           email: result.session.user.email,
           username: normalizedUsername,
           accessToken: result.session.access_token,
           refreshToken: result.session.refresh_token,
+          singleSessionId,
         });
 
         sessionPersistenceRef.current = "session";
@@ -357,12 +408,16 @@ function App() {
         resolvedUsername,
       );
 
+      const singleSessionId = generateSingleSessionId();
+      await claimSingleSessionLock(session.access_token, singleSessionId);
+
       const sessionUser = withSessionExpiry({
         id: session.user.id,
         email: session.user.email,
         username: resolvedUsername,
         accessToken: session.access_token,
         refreshToken: session.refresh_token,
+        singleSessionId,
       });
 
       const persistence: SessionPersistence = rememberMe ? "local" : "session";
@@ -379,6 +434,11 @@ function App() {
   };
 
   const logout = () => {
+    const existing = currentUserRef.current;
+    if (existing) {
+      void releaseSingleSessionLock(existing.accessToken, existing.singleSessionId).catch(() => {});
+    }
+
     clearSession();
     setForm((existing) => ({
       ...existing,
@@ -386,7 +446,7 @@ function App() {
       confirmPassword: "",
     }));
     setError("");
-    navigate("/");
+    navigate(window.electronAPI?.isElectron ? "/auth" : "/");
   };
 
   if (route === "/") {
@@ -419,7 +479,7 @@ function App() {
         onSubmit={handleAuthSubmit}
         onBack={() => {
           setError("");
-          navigate("/");
+          navigate(window.electronAPI?.isElectron ? "/auth" : "/");
         }}
       />
     );

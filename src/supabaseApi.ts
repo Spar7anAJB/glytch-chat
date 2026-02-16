@@ -801,6 +801,38 @@ export async function signIn(email: string, password: string) {
   return (await readJsonOrThrow(res)) as AuthSession;
 }
 
+export async function claimSingleSessionLock(accessToken: string, sessionId: string) {
+  assertConfig();
+  const normalizedSessionId = sessionId.trim();
+  if (!normalizedSessionId) {
+    throw new Error("Session key is required.");
+  }
+
+  const res = await supabaseFetch(`/rest/v1/rpc/claim_single_session_login`, {
+    method: "POST",
+    headers: supabaseHeaders(accessToken),
+    body: JSON.stringify({ p_session_id: normalizedSessionId }),
+  });
+
+  await readJsonOrThrow(res);
+  return true;
+}
+
+export async function releaseSingleSessionLock(accessToken: string, sessionId?: string | null) {
+  assertConfig();
+  const normalizedSessionId =
+    typeof sessionId === "string" && sessionId.trim().length > 0 ? sessionId.trim() : null;
+
+  const res = await supabaseFetch(`/rest/v1/rpc/release_single_session_login`, {
+    method: "POST",
+    headers: supabaseHeaders(accessToken),
+    body: JSON.stringify({ p_session_id: normalizedSessionId }),
+  });
+
+  await readJsonOrThrow(res);
+  return true;
+}
+
 export async function refreshSession(refreshToken: string) {
   assertConfig();
   const res = await supabaseFetch(`/auth/v1/token?grant_type=refresh_token`, {

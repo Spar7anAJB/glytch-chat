@@ -9,9 +9,16 @@ const __dirname = path.dirname(__filename);
 const devServerUrl = process.env.ELECTRON_DEV_SERVER_URL;
 const isDev = Boolean(devServerUrl);
 const shouldOpenDevTools = isDev && process.env.ELECTRON_OPEN_DEVTOOLS === "1";
+const appName = "Glytch Chat";
+const initialHashRoute = "/auth";
 const logoPath = isDev
   ? path.join(__dirname, "..", "public", "logo.png")
   : path.join(__dirname, "..", "dist", "logo.png");
+
+app.setName(appName);
+if (process.platform === "win32") {
+  app.setAppUserModelId("com.glytch.chat");
+}
 
 function applyRuntimeAppIcon() {
   if (!fs.existsSync(logoPath)) return;
@@ -63,6 +70,7 @@ function createWindow() {
     height: 840,
     minWidth: 980,
     minHeight: 640,
+    title: appName,
     icon: fs.existsSync(logoPath) ? logoPath : undefined,
     backgroundColor: "#edf2fb",
     webPreferences: {
@@ -91,14 +99,16 @@ function createWindow() {
   });
 
   if (isDev) {
-    void win.loadURL(devServerUrl);
+    void win.loadURL(`${devServerUrl}#${initialHashRoute}`);
     if (shouldOpenDevTools) {
       win.webContents.openDevTools({ mode: "detach" });
     }
     return;
   }
 
-  void win.loadFile(path.join(__dirname, "..", "dist", "index.html"));
+  void win.loadFile(path.join(__dirname, "..", "dist", "index.html"), {
+    hash: initialHashRoute,
+  });
 }
 
 app.whenReady().then(() => {

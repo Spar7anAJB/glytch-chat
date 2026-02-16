@@ -276,13 +276,13 @@ textarea:focus-visible {
 }
 
 .authProjectLogo {
-  width: 78px;
-  height: 78px;
+  width: clamp(96px, 14vw, 126px);
+  height: clamp(96px, 14vw, 126px);
   object-fit: cover;
-  border-radius: 18px;
+  border-radius: 24px;
   border: 1px solid color-mix(in srgb, var(--accent), transparent 34%);
   display: block;
-  margin: 12px auto 8px;
+  margin: 14px auto 10px;
   box-shadow: 0 0 12px color-mix(in srgb, var(--accent), transparent 74%);
 }
 
@@ -554,6 +554,20 @@ textarea:focus-visible {
 .avatarButton.withPresence {
   position: relative;
   overflow: visible;
+}
+
+.avatarButtonMedia {
+  width: 100%;
+  height: 100%;
+  aspect-ratio: 1 / 1;
+  border-radius: inherit;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+}
+
+.avatarButtonMedia > span {
+  line-height: 1;
 }
 
 .avatarDecorationLayer {

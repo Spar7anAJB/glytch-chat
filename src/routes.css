@@ -47,9 +47,9 @@
 }
 
 .landingBrandLogo {
-  width: clamp(44px, 7vw, 64px);
-  height: clamp(44px, 7vw, 64px);
-  border-radius: 14px;
+  width: clamp(62px, 9vw, 92px);
+  height: clamp(62px, 9vw, 92px);
+  border-radius: 20px;
   border: 1px solid rgba(0, 255, 255, 0.42);
   object-fit: cover;
   box-shadow: 0 10px 18px rgba(0, 0, 0, 0.35);
@@ -150,13 +150,13 @@
 }
 
 .guardLogo {
-  width: 58px;
-  height: 58px;
-  border-radius: 14px;
+  width: 84px;
+  height: 84px;
+  border-radius: 20px;
   border: 1px solid rgba(0, 255, 255, 0.42);
   object-fit: cover;
   display: block;
-  margin: 0 0 0.9rem;
+  margin: 0 0 1rem;
   box-shadow: 0 10px 18px rgba(0, 0, 0, 0.35);
 }
 
