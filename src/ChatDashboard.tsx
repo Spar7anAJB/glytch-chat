@@ -7,6 +7,7 @@ import {
   addGlytchMessageReaction,
   acceptFriendRequest,
   banGlytchUser,
+  createProfileComment,
   createDmMessage,
   createGroupChat,
   createGroupChatMessage,
@@ -15,6 +16,7 @@ import {
   deleteDmMessageReaction,
   deleteGroupChatMessageReaction,
   deleteGlytchMessageReaction,
+  deleteProfileComment,
   deleteGlytchRole,
   createGlytch,
   createGlytchChannel,
@@ -40,6 +42,7 @@ import {
   listGroupChatMembers,
   listGroupChatMessageReactions,
   listGroupChats,
+  listProfileComments,
   listUnreadGroupChatCounts,
   listFriendRequests,
   listGlytchBans,
@@ -108,6 +111,7 @@ import {
   type GlytchRole,
   type MessageAttachmentType,
   type Profile,
+  type ProfileComment,
   type UserPresenceStatus,
   type GifResult,
   type VoiceParticipant,
@@ -124,11 +128,13 @@ type ChatDashboardProps = {
 type ViewMode = "dm" | "group" | "glytch" | "glytch-settings" | "settings";
 type GlytchActionMode = "none" | "create" | "join";
 type DmPanelMode = "dms" | "friends";
+type SettingsSection = "profile" | "system";
 type SettingsTab = "edit" | "theme" | "showcases" | "preview" | "notifications";
 type AppFontPreset = "cyber" | "clean" | "display" | "compact" | "modern" | "mono" | "serif";
 type AvatarDecoration = "none" | "sparkle" | "crown" | "heart" | "bolt" | "moon" | "leaf" | "star";
 type ProfileShowcaseLayout = "grid" | "stack";
 type ProfileShowcaseCardStyle = "gradient" | "glass" | "solid";
+type ProfileCommentsVisibility = "public" | "friends" | "private" | "off";
 type GlytchSettingsTab = "profile" | "roles" | "moderation" | "bot" | "channels";
 type RoleSettingsMode = "new-role" | "permissions";
 type GlytchRolePermissionKey =
@@ -259,6 +265,7 @@ type ProfileForm = {
   showcaseAccentColor: string;
   showcaseLayout: ProfileShowcaseLayout;
   showcaseCardStyle: ProfileShowcaseCardStyle;
+  profileCommentsVisibility: ProfileCommentsVisibility;
   avatarDecoration: AvatarDecoration;
   avatarDecorationColor: string;
   avatarDecorationBackground: string;
@@ -276,6 +283,16 @@ type ProfileForm = {
   notifyGlytchMessages: boolean;
   notifyFriendRequests: boolean;
   notifyFriendRequestAccepted: boolean;
+};
+
+type ProfileCommentWithAuthor = {
+  id: number;
+  profileUserId: string;
+  authorUserId: string;
+  content: string;
+  createdAt: string;
+  authorName: string;
+  authorAvatarUrl: string;
 };
 
 type UiVoiceParticipant = {
@@ -352,17 +369,18 @@ const GLYTCH_MESSAGE_COLUMN_MIN_WIDTH = 420;
 const MAX_MESSAGE_ATTACHMENT_BYTES = 8 * 1024 * 1024;
 const MAX_THEME_IMAGE_BYTES = 8 * 1024 * 1024;
 const MAX_GIF_RESULTS = 20;
-const SHOWCASE_MAX_MODULES = 24;
+const SHOWCASE_MAX_MODULES = 6;
 const SHOWCASE_MAX_ENTRIES = 32;
 const MAX_RENDERED_MESSAGES = 120;
+const PROFILE_COMMENT_MAX_LENGTH = 400;
 const DEFAULT_DM_CHAT_BACKGROUND: BackgroundGradient = {
-  from: "#1b1030",
-  to: "#0b0918",
+  from: "#122341",
+  to: "#0a162b",
   mode: "gradient",
 };
 const DEFAULT_GLYTCH_CHAT_BACKGROUND: BackgroundGradient = {
-  from: "#200d38",
-  to: "#0c0a1d",
+  from: "#152b4b",
+  to: "#0c1a31",
   mode: "gradient",
 };
 const SHOWCASE_MAX_TITLE_LENGTH = 60;
@@ -371,7 +389,7 @@ const DEFAULT_PROFILE_NAME_COLOR = "#f3f4ff";
 const DEFAULT_PROFILE_BODY_COLOR = "#e5def2";
 const DEFAULT_SHOWCASE_ACCENT_COLOR = "#78dcff";
 const DEFAULT_AVATAR_DECORATION_COLOR = "#ffffff";
-const DEFAULT_AVATAR_DECORATION_BG = "#ff2ec2";
+const DEFAULT_AVATAR_DECORATION_BG = "#4e8cff";
 const PRESENCE_HEARTBEAT_MS = 45_000;
 const PRESENCE_AWAY_IDLE_MS = 5 * 60_000;
 const PRESENCE_STALE_MS = 120_000;
@@ -508,21 +526,21 @@ const SHOWCASE_KIND_EMPTY_COPY: Record<ShowcaseKind, string> = {
 const APP_THEME_PALETTES: Record<AppThemeMode, Record<AppThemePreset, AppThemePalette>> = {
   dark: {
     default: {
-      bg: "#0a0a0a",
-      panel: "#170f25",
-      panelBorder: "#47246f",
-      text: "#e5e5e5",
-      muted: "#b79ed0",
-      accent: "#ff2ec2",
-      accentStrong: "#00ffff",
-      card: "#23113a",
-      cardBorder: "#6a00f4",
-      bubbleBot: "#2a1642",
-      bubbleMe: "#45185e",
-      hot: "#ff2ec2",
-      orange: "#1e90ff",
-      warn: "#2b1846",
-      violet: "#6a00f4",
+      bg: "#060b16",
+      panel: "#111d31",
+      panelBorder: "#27476f",
+      text: "#e4efff",
+      muted: "#9ab0d1",
+      accent: "#4a8dff",
+      accentStrong: "#73c6ff",
+      card: "#162741",
+      cardBorder: "#2f5e91",
+      bubbleBot: "#1a2f4e",
+      bubbleMe: "#22406a",
+      hot: "#73c6ff",
+      orange: "#58a4ff",
+      warn: "#19304f",
+      violet: "#203a5f",
     },
     simplistic: {
       bg: "#050914",
@@ -595,21 +613,21 @@ const APP_THEME_PALETTES: Record<AppThemeMode, Record<AppThemePreset, AppThemePa
   },
   light: {
     default: {
-      bg: "#f8efff",
-      panel: "#efe0fb",
-      panelBorder: "#c189ea",
-      text: "#2d1344",
-      muted: "#6f4b91",
-      accent: "#ff2ec2",
-      accentStrong: "#00c8d8",
-      card: "#e8d2fb",
-      cardBorder: "#a85edc",
-      bubbleBot: "#ead9fb",
-      bubbleMe: "#ffd5f0",
-      hot: "#ff2ec2",
-      orange: "#1e90ff",
-      warn: "#e2c9f7",
-      violet: "#d7b0f3",
+      bg: "#eef4ff",
+      panel: "#deebff",
+      panelBorder: "#9fbbe2",
+      text: "#1e3554",
+      muted: "#5a769a",
+      accent: "#4a8dff",
+      accentStrong: "#78bdff",
+      card: "#d4e3fb",
+      cardBorder: "#8eafd8",
+      bubbleBot: "#dce9ff",
+      bubbleMe: "#c8defe",
+      hot: "#4a8dff",
+      orange: "#4f9eff",
+      warn: "#c6dbfa",
+      violet: "#b7d1f3",
     },
     simplistic: {
       bg: "#edf2fb",
@@ -743,6 +761,8 @@ const AVATAR_DECORATION_GLYPHS: Record<Exclude<AvatarDecoration, "none">, string
   leaf: "❧",
   star: "★",
 };
+const PROFILE_SETTINGS_TABS: SettingsTab[] = ["edit", "showcases", "preview"];
+const SYSTEM_SETTINGS_TABS: SettingsTab[] = ["theme", "notifications"];
 
 const ROLE_PERMISSION_OPTIONS: Array<{ key: GlytchRolePermissionKey; label: string; fallbackKeys: string[] }> = [
   { key: "ban_members", label: "Can Ban Members", fallbackKeys: ["manage_members"] },
@@ -798,12 +818,17 @@ function getFriendId(conversation: DmConversation, me: string) {
   return conversation.user_a === me ? conversation.user_b : conversation.user_a;
 }
 
-function sortDmsByPinned(items: DmWithFriend[]): DmWithFriend[] {
+function sortDmsByPinned(items: DmWithFriend[], latestMessageIds: Record<number, number> = {}): DmWithFriend[] {
   return items
     .map((item, index) => ({ item, index }))
     .sort((a, b) => {
       if (a.item.isPinned !== b.item.isPinned) {
         return a.item.isPinned ? -1 : 1;
+      }
+      const aLatest = latestMessageIds[a.item.conversationId] || 0;
+      const bLatest = latestMessageIds[b.item.conversationId] || 0;
+      if (aLatest !== bLatest) {
+        return bLatest - aLatest;
       }
       return a.index - b.index;
     })
@@ -880,6 +905,13 @@ function normalizeProfileShowcaseCardStyle(raw: unknown): ProfileShowcaseCardSty
     return raw;
   }
   return "gradient";
+}
+
+function normalizeProfileCommentsVisibility(raw: unknown): ProfileCommentsVisibility {
+  if (raw === "friends" || raw === "private" || raw === "off") {
+    return raw;
+  }
+  return "public";
 }
 
 function textPostModeLabel(mode: TextPostMode): string {
@@ -1135,6 +1167,17 @@ function renderAvatarDecoration(
   const glyph = AVATAR_DECORATION_GLYPHS[decoration] || "✦";
   return (
     <span className={`avatarDecorationLayer ${decoration} ${sizeClass}`.trim()} style={style} aria-hidden="true">
+      {decoration === "crown" && <span className="avatarDecorationAura crownAura" />}
+      {decoration === "heart" && <span className="avatarDecorationPulse heartPulse" />}
+      {decoration === "bolt" && <span className="avatarDecorationTrail boltTrail" />}
+      {decoration === "moon" && <span className="avatarDecorationOrbit moonOrbit" />}
+      {decoration === "leaf" && (
+        <>
+          <span className="avatarDecorationFloat leafFloat l1">❧</span>
+          <span className="avatarDecorationFloat leafFloat l2">❧</span>
+        </>
+      )}
+      {decoration === "star" && <span className="avatarDecorationHalo starHalo" />}
       <span className="avatarDecorationGlyph">{glyph}</span>
     </span>
   );
@@ -1535,6 +1578,7 @@ function buildProfileForm(profile: Profile | null): ProfileForm {
     typeof theme.showcaseAccentColor === "string" ? theme.showcaseAccentColor : DEFAULT_SHOWCASE_ACCENT_COLOR;
   const showcaseLayout = normalizeProfileShowcaseLayout(theme.showcaseLayout);
   const showcaseCardStyle = normalizeProfileShowcaseCardStyle(theme.showcaseCardStyle);
+  const profileCommentsVisibility = normalizeProfileCommentsVisibility(theme.profileCommentsVisibility);
   const avatarDecoration = normalizeAvatarDecoration(theme.avatarDecoration);
   const avatarDecorationColor =
     typeof theme.avatarDecorationColor === "string" ? theme.avatarDecorationColor : DEFAULT_AVATAR_DECORATION_COLOR;
@@ -1547,10 +1591,10 @@ function buildProfileForm(profile: Profile | null): ProfileForm {
     bannerUrl: profile?.banner_url || "",
     bio: profile?.bio || "",
     presenceStatus: initialPresenceStatus,
-    speakingRingColor: typeof theme.speakingRingColor === "string" ? theme.speakingRingColor : "#00ffff",
-    accentColor: typeof theme.accentColor === "string" ? theme.accentColor : "#ff2ec2",
-    backgroundFrom: typeof theme.backgroundFrom === "string" ? theme.backgroundFrom : "#1a1130",
-    backgroundTo: typeof theme.backgroundTo === "string" ? theme.backgroundTo : "#0b0a16",
+    speakingRingColor: typeof theme.speakingRingColor === "string" ? theme.speakingRingColor : "#63b7ff",
+    accentColor: typeof theme.accentColor === "string" ? theme.accentColor : "#4e8cff",
+    backgroundFrom: typeof theme.backgroundFrom === "string" ? theme.backgroundFrom : "#101b2f",
+    backgroundTo: typeof theme.backgroundTo === "string" ? theme.backgroundTo : "#0a111f",
     cardStyle: theme.cardStyle === "solid" ? "solid" : "glass",
     appThemeMode,
     appTheme,
@@ -1561,6 +1605,7 @@ function buildProfileForm(profile: Profile | null): ProfileForm {
     showcaseAccentColor,
     showcaseLayout,
     showcaseCardStyle,
+    profileCommentsVisibility,
     avatarDecoration,
     avatarDecorationColor,
     avatarDecorationBackground,
@@ -1601,6 +1646,7 @@ function buildProfileThemePayload(form: ProfileForm): Record<string, unknown> {
     showcaseAccentColor: form.showcaseAccentColor,
     showcaseLayout: form.showcaseLayout,
     showcaseCardStyle: form.showcaseCardStyle,
+    profileCommentsVisibility: form.profileCommentsVisibility,
     avatarDecoration: form.avatarDecoration,
     avatarDecorationColor: form.avatarDecorationColor,
     avatarDecorationBackground: form.avatarDecorationBackground,
@@ -1734,6 +1780,8 @@ export default function ChatDashboard({
   const [dmError, setDmError] = useState("");
   const [requests, setRequests] = useState<FriendRequest[]>([]);
   const [dms, setDms] = useState<DmWithFriend[]>([]);
+  const [dmSearchDraft, setDmSearchDraft] = useState("");
+  const [dmLatestMessageIds, setDmLatestMessageIds] = useState<Record<number, number>>({});
   const [unreadDmCounts, setUnreadDmCounts] = useState<Record<number, number>>({});
   const [dmNavContextMenu, setDmNavContextMenu] = useState<DmNavContextMenuState | null>(null);
   const [dmSidebarContextMenu, setDmSidebarContextMenu] = useState<DmSidebarContextMenuState | null>(null);
@@ -1752,6 +1800,12 @@ export default function ChatDashboard({
   const [activeGroupChatId, setActiveGroupChatId] = useState<number | null>(null);
   const activeGroupChatIdRef = useRef<number | null>(null);
   const [viewedProfile, setViewedProfile] = useState<Profile | null>(null);
+  const [viewedProfileComments, setViewedProfileComments] = useState<ProfileCommentWithAuthor[]>([]);
+  const [viewedProfileCommentsLoading, setViewedProfileCommentsLoading] = useState(false);
+  const [viewedProfileCommentsError, setViewedProfileCommentsError] = useState("");
+  const [viewedProfileCommentDraft, setViewedProfileCommentDraft] = useState("");
+  const [viewedProfileCommentBusy, setViewedProfileCommentBusy] = useState(false);
+  const [viewedProfileCommentDeleteId, setViewedProfileCommentDeleteId] = useState<number | null>(null);
 
   const [glytchNameDraft, setGlytchNameDraft] = useState("");
   const [inviteCodeDraft, setInviteCodeDraft] = useState("");
@@ -1830,6 +1884,7 @@ export default function ChatDashboard({
   const [glytchSettingsTab, setGlytchSettingsTab] = useState<GlytchSettingsTab>("profile");
   const [rolesLoadedForGlytchId, setRolesLoadedForGlytchId] = useState<number | null>(null);
 
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("profile");
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("edit");
   const [currentProfile, setCurrentProfile] = useState<Profile | null>(null);
   const [profileForm, setProfileForm] = useState<ProfileForm>(buildProfileForm(null));
@@ -1969,6 +2024,12 @@ export default function ChatDashboard({
     () => dms.find((dm) => dm.conversationId === activeConversationId) || null,
     [dms, activeConversationId],
   );
+  const sortedDms = useMemo(() => sortDmsByPinned(dms, dmLatestMessageIds), [dmLatestMessageIds, dms]);
+  const filteredDms = useMemo(() => {
+    const query = dmSearchDraft.trim().toLowerCase();
+    if (!query) return sortedDms;
+    return sortedDms.filter((dm) => dm.friendName.toLowerCase().includes(query));
+  }, [dmSearchDraft, sortedDms]);
   const activeGroupChat = useMemo(
     () => groupChats.find((chat) => chat.groupChatId === activeGroupChatId) || null,
     [groupChats, activeGroupChatId],
@@ -2216,6 +2277,13 @@ export default function ChatDashboard({
   );
   const currentUserForceMuted = Boolean(currentUserVoiceParticipant?.moderatorForcedMuted);
   const currentUserForceDeafened = Boolean(currentUserVoiceParticipant?.moderatorForcedDeafened);
+
+  useEffect(() => {
+    const allowedTabs = settingsSection === "profile" ? PROFILE_SETTINGS_TABS : SYSTEM_SETTINGS_TABS;
+    if (!allowedTabs.includes(settingsTab)) {
+      setSettingsTab(allowedTabs[0]);
+    }
+  }, [settingsSection, settingsTab]);
 
   const selectedVoiceRoomKey = useMemo(() => {
     if (viewMode === "dm") {
@@ -3373,13 +3441,14 @@ export default function ChatDashboard({
     const conversationIds = conversations.map((conv) => conv.id);
     const friendIds = conversations.map((conv) => getFriendId(conv, currentUserId));
     const requestUserIds = requestRows.flatMap((req) => [req.sender_id, req.receiver_id]);
-    const [profiles, unreadRows, conversationUserStateRows] = await Promise.all([
+    const [profiles, unreadRows, conversationUserStateRows, latestDmRows] = await Promise.all([
       fetchProfilesByIds(
         accessToken,
         Array.from(new Set([...friendIds, ...requestUserIds])),
       ),
       listUnreadDmMessages(accessToken, currentUserId, conversationIds),
       listDmConversationUserStates(accessToken, currentUserId, conversationIds),
+      fetchLatestDmMessages(accessToken, conversationIds),
     ]);
     const profileMap = new Map<string, Profile>(profiles.map((p) => [p.user_id, p]));
     const stateMap = new Map<number, { isPinned: boolean }>(
@@ -3417,7 +3486,30 @@ export default function ChatDashboard({
       };
     });
 
-    const sortedDms = sortDmsByPinned(nextDms);
+    const nextLatestByConversation: Record<number, number> = {};
+    latestDmRows.forEach((row) => {
+      const existing = nextLatestByConversation[row.conversation_id] || 0;
+      if (row.id > existing) {
+        nextLatestByConversation[row.conversation_id] = row.id;
+      }
+    });
+    dmLatestMessageIdsRef.current = nextLatestByConversation;
+    setDmLatestMessageIds((prev) => {
+      const prevKeys = Object.keys(prev);
+      const nextKeys = Object.keys(nextLatestByConversation);
+      if (prevKeys.length !== nextKeys.length) {
+        return nextLatestByConversation;
+      }
+      for (const key of nextKeys) {
+        const parsedKey = Number.parseInt(key, 10);
+        if ((prev[parsedKey] || 0) !== (nextLatestByConversation[parsedKey] || 0)) {
+          return nextLatestByConversation;
+        }
+      }
+      return prev;
+    });
+
+    const sortedDms = sortDmsByPinned(nextDms, nextLatestByConversation);
     setDms(sortedDms);
     const nextUnreadCounts: Record<number, number> = {};
     unreadRows.forEach((row) => {
@@ -4128,6 +4220,7 @@ export default function ChatDashboard({
   useEffect(() => {
     if (dms.length === 0) {
       dmLatestMessageIdsRef.current = {};
+      setDmLatestMessageIds({});
       dmMessageNotificationSeededRef.current = false;
       return;
     }
@@ -4185,6 +4278,20 @@ export default function ChatDashboard({
         }
 
         dmLatestMessageIdsRef.current = nextByConversation;
+        setDmLatestMessageIds((prev) => {
+          const prevKeys = Object.keys(prev);
+          const nextKeys = Object.keys(nextByConversation);
+          if (prevKeys.length !== nextKeys.length) {
+            return nextByConversation;
+          }
+          for (const key of nextKeys) {
+            const parsedKey = Number.parseInt(key, 10);
+            if ((prev[parsedKey] || 0) !== (nextByConversation[parsedKey] || 0)) {
+              return nextByConversation;
+            }
+          }
+          return prev;
+        });
         if (!dmMessageNotificationSeededRef.current) {
           dmMessageNotificationSeededRef.current = true;
         }
@@ -5824,6 +5931,7 @@ export default function ChatDashboard({
                 }
               : dm,
           ),
+          dmLatestMessageIds,
         ),
       );
     } catch (err) {
@@ -5831,7 +5939,7 @@ export default function ChatDashboard({
     } finally {
       setDmSidebarActionBusyKey((prev) => (prev === busyKey ? null : prev));
     }
-  }, [accessToken, dmSidebarContextMenu]);
+  }, [accessToken, dmLatestMessageIds, dmSidebarContextMenu]);
 
   const handleDeleteDmFromSidebarContextMenu = useCallback(async () => {
     if (!dmSidebarContextMenu) return;
@@ -5845,8 +5953,14 @@ export default function ChatDashboard({
     try {
       await hideDmConversation(accessToken, conversationId);
 
-      const nextDms = dms.filter((dm) => dm.conversationId !== conversationId);
+      const nextLatestMessageIds = { ...dmLatestMessageIdsRef.current };
+      delete nextLatestMessageIds[conversationId];
+      const nextDms = sortDmsByPinned(
+        dms.filter((dm) => dm.conversationId !== conversationId),
+        nextLatestMessageIds,
+      );
       setDms(nextDms);
+      setDmLatestMessageIds(nextLatestMessageIds);
       setUnreadDmCounts((prev) => {
         if (!(conversationId in prev)) return prev;
         const next = { ...prev };
@@ -5854,8 +5968,6 @@ export default function ChatDashboard({
         return next;
       });
 
-      const nextLatestMessageIds = { ...dmLatestMessageIdsRef.current };
-      delete nextLatestMessageIds[conversationId];
       dmLatestMessageIdsRef.current = nextLatestMessageIds;
 
       const nextCallCounts = { ...dmCallParticipantCountsRef.current };
@@ -7337,6 +7449,18 @@ export default function ChatDashboard({
         if (appended.length > 0 && dmLastLoadedConversationIdRef.current === activeConversationId) {
           const latestId = appended[appended.length - 1]?.id ?? 0;
           dmLastLoadedMessageIdRef.current = Math.max(dmLastLoadedMessageIdRef.current, latestId);
+        }
+        if (appended.length > 0) {
+          const latestId = appended[appended.length - 1]?.id ?? 0;
+          if (latestId > 0) {
+            const nextLatestByConversation = {
+              ...dmLatestMessageIdsRef.current,
+              [activeConversationId]: Math.max(dmLatestMessageIdsRef.current[activeConversationId] || 0, latestId),
+            };
+            dmLatestMessageIdsRef.current = nextLatestByConversation;
+            setDmLatestMessageIds(nextLatestByConversation);
+            setDms((prev) => sortDmsByPinned(prev, nextLatestByConversation));
+          }
         }
         if (shouldAutoScrollAfterSend) {
           scrollMessageListToBottom("smooth");
@@ -8838,9 +8962,9 @@ export default function ChatDashboard({
     viewedThemeRaw && typeof viewedThemeRaw === "object" && !Array.isArray(viewedThemeRaw)
       ? (viewedThemeRaw as Record<string, unknown>)
       : {};
-  const viewedAccent = typeof viewedTheme.accentColor === "string" ? viewedTheme.accentColor : "#ff2ec2";
-  const viewedFrom = typeof viewedTheme.backgroundFrom === "string" ? viewedTheme.backgroundFrom : "#1a1130";
-  const viewedTo = typeof viewedTheme.backgroundTo === "string" ? viewedTheme.backgroundTo : "#0b0a16";
+  const viewedAccent = typeof viewedTheme.accentColor === "string" ? viewedTheme.accentColor : "#4e8cff";
+  const viewedFrom = typeof viewedTheme.backgroundFrom === "string" ? viewedTheme.backgroundFrom : "#101b2f";
+  const viewedTo = typeof viewedTheme.backgroundTo === "string" ? viewedTheme.backgroundTo : "#0a111f";
   const viewedCardStyle = viewedTheme.cardStyle === "solid" ? "solid" : "glass";
   const viewedProfileNameColor =
     typeof viewedTheme.profileNameColor === "string" ? viewedTheme.profileNameColor : DEFAULT_PROFILE_NAME_COLOR;
@@ -8850,6 +8974,7 @@ export default function ChatDashboard({
     typeof viewedTheme.showcaseAccentColor === "string" ? viewedTheme.showcaseAccentColor : DEFAULT_SHOWCASE_ACCENT_COLOR;
   const viewedShowcaseLayout = normalizeProfileShowcaseLayout(viewedTheme.showcaseLayout);
   const viewedShowcaseCardStyle = normalizeProfileShowcaseCardStyle(viewedTheme.showcaseCardStyle);
+  const viewedProfileCommentsVisibility = normalizeProfileCommentsVisibility(viewedTheme.profileCommentsVisibility);
   const viewedAvatarDecoration = normalizeAvatarDecoration(viewedTheme.avatarDecoration);
   const viewedAvatarDecorationColor =
     typeof viewedTheme.avatarDecorationColor === "string" ? viewedTheme.avatarDecorationColor : DEFAULT_AVATAR_DECORATION_COLOR;
@@ -8869,6 +8994,25 @@ export default function ChatDashboard({
     Boolean(viewedProfileUserId) && !viewedIsSelf && !viewedIsFriend && !viewedHasIncomingRequest && !viewedHasOutgoingRequest;
   const viewedCanUnfriend = Boolean(viewedProfileUserId) && !viewedIsSelf && viewedIsFriend;
   const viewedActionBusy = viewedProfileUserId ? memberFriendActionUserId === viewedProfileUserId : false;
+  const viewedCanSeeProfileComments =
+    viewedIsSelf ||
+    viewedProfileCommentsVisibility === "public" ||
+    (viewedProfileCommentsVisibility === "friends" && viewedIsFriend);
+  const viewedCanWriteProfileComments =
+    Boolean(viewedProfileUserId) &&
+    viewedProfileCommentsVisibility !== "off" &&
+    (viewedProfileCommentsVisibility === "public" ||
+      (viewedProfileCommentsVisibility === "friends" && (viewedIsSelf || viewedIsFriend)) ||
+      (viewedProfileCommentsVisibility === "private" && viewedIsSelf));
+  const viewedProfileCommentsVisibilitySummary = viewedIsSelf
+    ? viewedProfileCommentsVisibility === "off"
+      ? "Comments are off."
+      : viewedProfileCommentsVisibility === "private"
+        ? "Comments are private."
+        : viewedProfileCommentsVisibility === "friends"
+          ? "Comments are friends-only."
+          : "Comments are public."
+    : "";
   const viewedRelationshipLabel = viewedIsSelf
     ? "This is your profile."
     : viewedIsFriend
@@ -8880,6 +9024,115 @@ export default function ChatDashboard({
           : "Not friends yet.";
   const viewedShowcases = normalizeProfileShowcases(viewedTheme.showcases).filter((showcase) =>
     isShowcaseVisible(showcase, { isSelf: viewedIsSelf, isFriend: viewedIsFriend }),
+  );
+  const hydrateProfileComments = useCallback(
+    async (profileUserId: string): Promise<ProfileCommentWithAuthor[]> => {
+      const rows: ProfileComment[] = await listProfileComments(accessToken, profileUserId);
+      if (rows.length === 0) {
+        return [];
+      }
+
+      const authorIds = Array.from(new Set(rows.map((row) => row.author_user_id)));
+      const authorProfiles = authorIds.length > 0 ? await fetchProfilesByIds(accessToken, authorIds) : [];
+      if (authorProfiles.length > 0) {
+        setKnownProfiles((prev) => ({
+          ...prev,
+          ...Object.fromEntries(authorProfiles.map((profile) => [profile.user_id, profile])),
+        }));
+      }
+      const profileMap = new Map<string, Profile>(authorProfiles.map((profile) => [profile.user_id, profile]));
+      return rows.map((row) => {
+        const authorProfile = profileMap.get(row.author_user_id);
+        return {
+          id: row.id,
+          profileUserId: row.profile_user_id,
+          authorUserId: row.author_user_id,
+          content: row.content,
+          createdAt: row.created_at,
+          authorName: authorProfile?.username || authorProfile?.display_name || "User",
+          authorAvatarUrl: authorProfile?.avatar_url || "",
+        };
+      });
+    },
+    [accessToken],
+  );
+  useEffect(() => {
+    if (!viewedProfileUserId || !viewedCanSeeProfileComments) {
+      setViewedProfileComments([]);
+      setViewedProfileCommentsLoading(false);
+      setViewedProfileCommentsError("");
+      setViewedProfileCommentDraft("");
+      setViewedProfileCommentDeleteId(null);
+      return;
+    }
+
+    let mounted = true;
+    setViewedProfileCommentsLoading(true);
+    setViewedProfileCommentsError("");
+    setViewedProfileCommentDraft("");
+    setViewedProfileCommentDeleteId(null);
+
+    void hydrateProfileComments(viewedProfileUserId)
+      .then((nextComments) => {
+        if (!mounted) return;
+        setViewedProfileComments(nextComments);
+      })
+      .catch((err) => {
+        if (!mounted) return;
+        setViewedProfileComments([]);
+        setViewedProfileCommentsError(err instanceof Error ? err.message : "Could not load profile comments.");
+      })
+      .finally(() => {
+        if (!mounted) return;
+        setViewedProfileCommentsLoading(false);
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, [hydrateProfileComments, viewedCanSeeProfileComments, viewedProfileUserId]);
+  const handleSubmitViewedProfileComment = useCallback(async () => {
+    if (!viewedProfileUserId || !viewedCanWriteProfileComments) return;
+    const trimmed = viewedProfileCommentDraft.trim();
+    if (!trimmed) return;
+    if (trimmed.length > PROFILE_COMMENT_MAX_LENGTH) {
+      setViewedProfileCommentsError(`Comment must be ${PROFILE_COMMENT_MAX_LENGTH} characters or less.`);
+      return;
+    }
+
+    setViewedProfileCommentBusy(true);
+    setViewedProfileCommentsError("");
+    try {
+      await createProfileComment(accessToken, viewedProfileUserId, trimmed);
+      const nextComments = await hydrateProfileComments(viewedProfileUserId);
+      setViewedProfileComments(nextComments);
+      setViewedProfileCommentDraft("");
+    } catch (err) {
+      setViewedProfileCommentsError(err instanceof Error ? err.message : "Could not post comment.");
+    } finally {
+      setViewedProfileCommentBusy(false);
+    }
+  }, [
+    accessToken,
+    hydrateProfileComments,
+    viewedCanWriteProfileComments,
+    viewedProfileCommentDraft,
+    viewedProfileUserId,
+  ]);
+  const handleDeleteViewedProfileComment = useCallback(
+    async (commentId: number) => {
+      setViewedProfileCommentsError("");
+      setViewedProfileCommentDeleteId(commentId);
+      try {
+        await deleteProfileComment(accessToken, commentId);
+        setViewedProfileComments((prev) => prev.filter((comment) => comment.id !== commentId));
+      } catch (err) {
+        setViewedProfileCommentsError(err instanceof Error ? err.message : "Could not delete comment.");
+      } finally {
+        setViewedProfileCommentDeleteId((prev) => (prev === commentId ? null : prev));
+      }
+    },
+    [accessToken],
   );
   const previewShowcases = profileForm.showcases;
   const showcaseLimitReached = profileForm.showcases.length >= SHOWCASE_MAX_MODULES;
@@ -9025,6 +9278,19 @@ export default function ChatDashboard({
     setShowQuickThemeEditor(false);
   }, []);
 
+  const openSettingsView = useCallback(
+    (section: SettingsSection = "profile", tab?: SettingsTab) => {
+      setSettingsSection(section);
+      if (tab) {
+        setSettingsTab(tab);
+      } else {
+        setSettingsTab(section === "profile" ? "edit" : "theme");
+      }
+      setViewMode("settings");
+    },
+    [],
+  );
+
   return (
     <div className="page" style={pageStyle}>
       <aside className="sidemenu">
@@ -9158,7 +9424,7 @@ export default function ChatDashboard({
               className="avatarButton railAvatarButton withPresence"
               type="button"
               title={`Status: ${currentUserPresenceLabel}`}
-              onClick={() => setViewMode("settings")}
+              onClick={() => openSettingsView("profile", "edit")}
             >
               {sidebarAvatar ? (
                 <img src={sidebarAvatar} alt="Profile" />
@@ -9178,7 +9444,7 @@ export default function ChatDashboard({
                 className="avatarButton withPresence"
                 type="button"
                 title={`Status: ${currentUserPresenceLabel}`}
-                onClick={() => setViewMode("settings")}
+                onClick={() => openSettingsView("profile", "edit")}
               >
                 {sidebarAvatar ? (
                   <img src={sidebarAvatar} alt="Profile" />
@@ -9211,7 +9477,7 @@ export default function ChatDashboard({
                     <option value="offline">Offline</option>
                   </select>
                 </label>
-                <button className="settingsLink" type="button" onClick={() => setViewMode("settings")}>
+                <button className="settingsLink" type="button" onClick={() => openSettingsView("profile", "edit")}>
                   Profile Settings
                 </button>
               </div>
@@ -9301,8 +9567,20 @@ export default function ChatDashboard({
                 ) : (
                   <nav className="channelList" aria-label="Direct messages" ref={dmSidebarListRef}>
                     <p className="sectionLabel">Direct Messages</p>
-                    {dms.length === 0 && <p className="smallMuted">No DMs yet</p>}
-                    {dms.map((dm) => {
+                    <div className="dmSearchRow">
+                      <input
+                        className="dmSearchInput"
+                        value={dmSearchDraft}
+                        onChange={(e) => setDmSearchDraft(e.target.value)}
+                        placeholder="Search direct messages"
+                        aria-label="Search direct messages"
+                      />
+                    </div>
+                    {sortedDms.length === 0 && <p className="smallMuted">No DMs yet</p>}
+                    {sortedDms.length > 0 && filteredDms.length === 0 && (
+                      <p className="smallMuted">No direct messages matched your search.</p>
+                    )}
+                    {filteredDms.map((dm) => {
                       const unreadCount = unreadDmCounts[dm.conversationId] || 0;
                       const unreadLabel = unreadCount > 99 ? "99+" : String(unreadCount);
                       const incomingCallCount = dmIncomingCallCounts[dm.conversationId] || 0;
@@ -9346,8 +9624,10 @@ export default function ChatDashboard({
                               setActiveConversationId(dm.conversationId);
                             }}
                           >
-                            <span>{dm.friendName}</span>
-                            {dm.isPinned && <span className="dmPinnedBadge" title="Pinned DM" aria-hidden="true" />}
+                            <span className="dmNameRow">
+                              <span className="dmNameText">{dm.friendName}</span>
+                              {dm.isPinned && <span className="dmPinnedBadge" title="Pinned DM" aria-hidden="true" />}
+                            </span>
                             {(incomingCallCount > 0 || unreadCount > 0) && (
                               <span className="dmAlertBubbles">
                                 {incomingCallCount > 0 && (
@@ -9522,91 +9802,8 @@ export default function ChatDashboard({
 
                 {showGlytchDirectory || !activeGlytch ? (
                   <>
-                    <div className="glytchActions">
-                      <button
-                        className={glytchActionMode === "create" ? "channelItem active" : "channelItem"}
-                        type="button"
-                        onClick={() => {
-                          setGlytchActionMode((prev) => (prev === "create" ? "none" : "create"));
-                          setJoinBannedGlytchId(null);
-                          setJoinUnbanRequestDraft("");
-                          setJoinUnbanRequestNotice("");
-                        }}
-                      >
-                        Create Glytch
-                      </button>
-                      <button
-                        className={glytchActionMode === "join" ? "channelItem active" : "channelItem"}
-                        type="button"
-                        onClick={() => {
-                          const nextMode = glytchActionMode === "join" ? "none" : "join";
-                          setGlytchActionMode(nextMode);
-                          if (nextMode !== "join") {
-                            setJoinBannedGlytchId(null);
-                            setJoinUnbanRequestDraft("");
-                            setJoinUnbanRequestNotice("");
-                          }
-                        }}
-                      >
-                        Join Glytch
-                      </button>
-                    </div>
-
-                    {glytchActionMode === "create" && (
-                      <form className="stackedForm" onSubmit={handleCreateGlytch}>
-                        <input
-                          value={glytchNameDraft}
-                          onChange={(e) => setGlytchNameDraft(e.target.value)}
-                          placeholder="New Glytch name"
-                          aria-label="New Glytch name"
-                        />
-                        <button type="submit">Create</button>
-                      </form>
-                    )}
-
-                    {glytchActionMode === "join" && (
-                      <>
-                        <form className="stackedForm" onSubmit={handleJoinGlytch}>
-                          <input
-                            value={inviteCodeDraft}
-                            onChange={(e) => {
-                              setInviteCodeDraft(e.target.value);
-                              setJoinBannedGlytchId(null);
-                              setJoinUnbanRequestNotice("");
-                            }}
-                            placeholder="Invite code"
-                            aria-label="Invite code"
-                          />
-                          <button type="submit">Join</button>
-                        </form>
-                        {joinBannedGlytchId && (
-                          <form className="stackedForm" onSubmit={handleSubmitJoinUnbanRequest}>
-                            <p className="smallMuted">
-                              You are banned from this Glytch. Submit an unban request and moderators can review it.
-                            </p>
-                            <textarea
-                              value={joinUnbanRequestDraft}
-                              onChange={(e) => setJoinUnbanRequestDraft(e.target.value)}
-                              placeholder="Why should we unban you? (optional)"
-                              aria-label="Unban request message"
-                              rows={3}
-                              disabled={joinUnbanRequestBusy || Boolean(joinUnbanRequestNotice)}
-                            />
-                            <button
-                              type="submit"
-                              disabled={joinUnbanRequestBusy || Boolean(joinUnbanRequestNotice)}
-                            >
-                              {joinUnbanRequestBusy ? "Submitting..." : "Submit Unban Request"}
-                            </button>
-                            {joinUnbanRequestNotice && <p className="smallMuted">{joinUnbanRequestNotice}</p>}
-                          </form>
-                        )}
-                      </>
-                    )}
-
                     <section className="requestSection">
-                      <p className="sectionLabel">Browse Glytches</p>
-                      <p className="smallMuted">Pick a Glytch from the main panel.</p>
+                      <p className="smallMuted">Browse, create, and join Glytches from the main panel.</p>
                     </section>
                   </>
                 ) : (
@@ -10470,42 +10667,47 @@ export default function ChatDashboard({
 
         {viewMode === "settings" ? (
           <section className="settingsPage" aria-label="Profile settings">
-            <div className="settingsTabs">
+            <div className="settingsTopTabs">
               <button
-                className={settingsTab === "edit" ? "tab active" : "tab"}
+                className={settingsSection === "profile" ? "tab active" : "tab"}
                 type="button"
-                onClick={() => setSettingsTab("edit")}
+                onClick={() => {
+                  setSettingsSection("profile");
+                  setSettingsTab("edit");
+                }}
               >
-                Edit Profile
+                Profile Settings
               </button>
               <button
-                className={settingsTab === "preview" ? "tab active" : "tab"}
+                className={settingsSection === "system" ? "tab active" : "tab"}
                 type="button"
-                onClick={() => setSettingsTab("preview")}
+                onClick={() => {
+                  setSettingsSection("system");
+                  setSettingsTab("theme");
+                }}
               >
-                Preview Page
+                System Settings
               </button>
-              <button
-                className={settingsTab === "theme" ? "tab active" : "tab"}
-                type="button"
-                onClick={() => setSettingsTab("theme")}
-              >
-                Theme
-              </button>
-              <button
-                className={settingsTab === "showcases" ? "tab active" : "tab"}
-                type="button"
-                onClick={() => setSettingsTab("showcases")}
-              >
-                Showcases
-              </button>
-              <button
-                className={settingsTab === "notifications" ? "tab active" : "tab"}
-                type="button"
-                onClick={() => setSettingsTab("notifications")}
-              >
-                Notifications
-              </button>
+            </div>
+            <div className="settingsTabs settingsSubTabs">
+              {(settingsSection === "profile" ? PROFILE_SETTINGS_TABS : SYSTEM_SETTINGS_TABS).map((tab) => (
+                <button
+                  key={tab}
+                  className={settingsTab === tab ? "tab active" : "tab"}
+                  type="button"
+                  onClick={() => setSettingsTab(tab)}
+                >
+                  {tab === "edit"
+                    ? "Identity"
+                    : tab === "theme"
+                      ? "Appearance"
+                      : tab === "showcases"
+                        ? "Showcase Modules"
+                        : tab === "notifications"
+                          ? "Notifications"
+                          : "Live Preview"}
+                </button>
+              ))}
             </div>
 
             {profileSaveError && <p className="chatError">{profileSaveError}</p>}
@@ -10610,6 +10812,24 @@ export default function ChatDashboard({
                     rows={4}
                     placeholder="Tell people about your profile page"
                   />
+                </label>
+
+                <label>
+                  Profile Comments
+                  <select
+                    value={profileForm.profileCommentsVisibility}
+                    onChange={(e) =>
+                      setProfileForm((prev) => ({
+                        ...prev,
+                        profileCommentsVisibility: normalizeProfileCommentsVisibility(e.target.value),
+                      }))
+                    }
+                  >
+                    <option value="public">Public</option>
+                    <option value="friends">Friends only</option>
+                    <option value="private">Private (only you)</option>
+                    <option value="off">Off</option>
+                  </select>
                 </label>
 
                 <div className="colorGrid">
@@ -10790,7 +11010,7 @@ export default function ChatDashboard({
               <form className="settingsForm" onSubmit={handleSaveShowcaseSettings}>
                 <p className="sectionLabel">Profile Showcases</p>
                 <p className="smallMuted">
-                  Build a custom profile layout with modules you can reorder. Gallery modules support direct image/GIF uploads.
+                  Build a welcoming profile layout with up to {SHOWCASE_MAX_MODULES} modules. Reorder modules and upload gallery media.
                 </p>
                 <div className="showcaseToolbar">
                   <p className="showcaseCountPill">
@@ -10821,7 +11041,7 @@ export default function ChatDashboard({
                   ))}
                 </div>
                 {showcaseLimitReached && (
-                  <p className="smallMuted">Maximum reached. Remove a module or duplicate after cleanup.</p>
+                  <p className="smallMuted">You reached the {SHOWCASE_MAX_MODULES}-module limit. Remove one to add another.</p>
                 )}
 
                 {profileForm.showcases.length === 0 ? (
@@ -11950,9 +12170,88 @@ export default function ChatDashboard({
         ) : shouldHideGlytchMessageArea ? (
           <section className="glytchSelectionState" aria-label="Choose a Glytch">
             <div className="glytchSelectionPanel">
+              <div className="glytchActions glytchSelectionActions">
+                <button
+                  className={glytchActionMode === "create" ? "channelItem active" : "channelItem"}
+                  type="button"
+                  onClick={() => {
+                    setGlytchActionMode((prev) => (prev === "create" ? "none" : "create"));
+                    setJoinBannedGlytchId(null);
+                    setJoinUnbanRequestDraft("");
+                    setJoinUnbanRequestNotice("");
+                  }}
+                >
+                  Create Glytch
+                </button>
+                <button
+                  className={glytchActionMode === "join" ? "channelItem active" : "channelItem"}
+                  type="button"
+                  onClick={() => {
+                    const nextMode = glytchActionMode === "join" ? "none" : "join";
+                    setGlytchActionMode(nextMode);
+                    if (nextMode !== "join") {
+                      setJoinBannedGlytchId(null);
+                      setJoinUnbanRequestDraft("");
+                      setJoinUnbanRequestNotice("");
+                    }
+                  }}
+                >
+                  Join Glytch
+                </button>
+              </div>
+              {glytchActionMode === "create" && (
+                <form className="stackedForm" onSubmit={handleCreateGlytch}>
+                  <input
+                    value={glytchNameDraft}
+                    onChange={(e) => setGlytchNameDraft(e.target.value)}
+                    placeholder="New Glytch name"
+                    aria-label="New Glytch name"
+                  />
+                  <button type="submit">Create</button>
+                </form>
+              )}
+              {glytchActionMode === "join" && (
+                <>
+                  <form className="stackedForm" onSubmit={handleJoinGlytch}>
+                    <input
+                      value={inviteCodeDraft}
+                      onChange={(e) => {
+                        setInviteCodeDraft(e.target.value);
+                        setJoinBannedGlytchId(null);
+                        setJoinUnbanRequestNotice("");
+                      }}
+                      placeholder="Invite code"
+                      aria-label="Invite code"
+                    />
+                    <button type="submit">Join</button>
+                  </form>
+                  {joinBannedGlytchId && (
+                    <form className="stackedForm" onSubmit={handleSubmitJoinUnbanRequest}>
+                      <p className="smallMuted">
+                        You are banned from this Glytch. Submit an unban request and moderators can review it.
+                      </p>
+                      <textarea
+                        value={joinUnbanRequestDraft}
+                        onChange={(e) => setJoinUnbanRequestDraft(e.target.value)}
+                        placeholder="Why should we unban you? (optional)"
+                        aria-label="Unban request message"
+                        rows={3}
+                        disabled={joinUnbanRequestBusy || Boolean(joinUnbanRequestNotice)}
+                      />
+                      <button
+                        type="submit"
+                        disabled={joinUnbanRequestBusy || Boolean(joinUnbanRequestNotice)}
+                      >
+                        {joinUnbanRequestBusy ? "Submitting..." : "Submit Unban Request"}
+                      </button>
+                      {joinUnbanRequestNotice && <p className="smallMuted">{joinUnbanRequestNotice}</p>}
+                    </form>
+                  )}
+                </>
+              )}
               <p className="sectionLabel">Your Glytches</p>
               {glytches.length === 0 ? (
-                <p className="chatInfo">No Glytches yet. Create one or join with an invite code from the left panel.</p>
+                <p className="chatInfo">No Glytches yet. Create one or join with an invite code above.</p>
               ) : (
                 <div className="glytchSelectionList">
                   {glytches.map((glytch) => (
@@ -12940,6 +13239,90 @@ export default function ChatDashboard({
                 cardStyle: viewedShowcaseCardStyle,
                 accentColor: viewedShowcaseAccentColor,
               })}
+              <section className="profileCommentsSection" aria-label="Profile comments">
+                <p className="sectionLabel">Comments</p>
+                {viewedProfileCommentsVisibilitySummary && <p className="smallMuted">{viewedProfileCommentsVisibilitySummary}</p>}
+                {!viewedCanSeeProfileComments ? (
+                  <p className="smallMuted">Comments are unavailable for this profile.</p>
+                ) : (
+                  <>
+                    {viewedProfileCommentsError && <p className="chatError">{viewedProfileCommentsError}</p>}
+                    {viewedProfileCommentsLoading ? (
+                      <p className="smallMuted">Loading comments...</p>
+                    ) : viewedProfileComments.length === 0 ? (
+                      <p className="smallMuted">No comments yet.</p>
+                    ) : (
+                      <div className="profileCommentsList">
+                        {viewedProfileComments.map((comment) => {
+                          const canDelete = comment.authorUserId === currentUserId || viewedIsSelf;
+                          return (
+                            <article key={comment.id} className="profileCommentCard">
+                              <div className="profileCommentHeader">
+                                <span className="profileCommentAuthor">
+                                  <span className="friendAvatar" aria-hidden="true">
+                                    {comment.authorAvatarUrl ? (
+                                      <img src={comment.authorAvatarUrl} alt="" />
+                                    ) : (
+                                      <span>{initialsFromName(comment.authorName)}</span>
+                                    )}
+                                  </span>
+                                  <span>{comment.authorName}</span>
+                                </span>
+                                <span className="profileCommentMeta">
+                                  {new Date(comment.createdAt).toLocaleString([], {
+                                    month: "short",
+                                    day: "numeric",
+                                    hour: "2-digit",
+                                    minute: "2-digit",
+                                  })}
+                                </span>
+                              </div>
+                              <p className="profileCommentText">{comment.content}</p>
+                              {canDelete && (
+                                <button
+                                  type="button"
+                                  className="profileCommentDelete"
+                                  onClick={() => void handleDeleteViewedProfileComment(comment.id)}
+                                  disabled={viewedProfileCommentDeleteId === comment.id}
+                                >
+                                  {viewedProfileCommentDeleteId === comment.id ? "Removing..." : "Remove"}
+                                </button>
+                              )}
+                            </article>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {viewedCanWriteProfileComments ? (
+                      <form
+                        className="profileCommentComposer"
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          void handleSubmitViewedProfileComment();
+                        }}
+                      >
+                        <textarea
+                          value={viewedProfileCommentDraft}
+                          onChange={(e) => setViewedProfileCommentDraft(e.target.value)}
+                          placeholder="Leave a comment on this profile"
+                          maxLength={PROFILE_COMMENT_MAX_LENGTH}
+                          rows={3}
+                          disabled={viewedProfileCommentBusy}
+                        />
+                        <button type="submit" disabled={viewedProfileCommentBusy || !viewedProfileCommentDraft.trim()}>
+                          {viewedProfileCommentBusy ? "Posting..." : "Post Comment"}
+                        </button>
+                      </form>
+                    ) : viewedProfileCommentsVisibility !== "off" ? (
+                      <p className="smallMuted">
+                        {viewedProfileCommentsVisibility === "private"
+                          ? "Only this user can write comments."
+                          : "Only friends can write comments."}
+                      </p>
+                    ) : null}
+                  </>
+                )}
+              </section>
             </div>
             <div className="profileModalActions">
               {memberFriendActionError && <p className="chatError">{memberFriendActionError}</p>}

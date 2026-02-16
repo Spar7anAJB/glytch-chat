@@ -37,6 +37,14 @@ export type FriendRequest = {
   receiver_profile?: Profile;
 };
 
+export type ProfileComment = {
+  id: number;
+  profile_user_id: string;
+  author_user_id: string;
+  content: string;
+  created_at: string;
+};
+
 export type DmConversation = {
   id: number;
   user_a: string;
@@ -486,6 +494,11 @@ function isMissingDmConversationStateSchemaError(message: string): boolean {
     normalized.includes("set_dm_conversation_pinned") ||
     normalized.includes("dm_conversation_user_state")
   );
+}
+
+function isMissingProfileCommentsSchemaError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return normalized.includes("profile_comments");
 }
 
 async function listDmConversationsLegacy(accessToken: string): Promise<DmConversation[]> {
@@ -1054,6 +1067,88 @@ export async function updateMyProfileCustomization(
   });
 
   return (await readJsonOrThrow(res)) as Profile[];
+}
+
+export async function listProfileComments(
+  accessToken: string,
+  profileUserId: string,
+  limit = 120,
+): Promise<ProfileComment[]> {
+  assertConfig();
+  const safeLimit = Math.min(200, Math.max(1, Math.trunc(limit)));
+
+  try {
+    const query = new URLSearchParams({
+      select: "id,profile_user_id,author_user_id,content,created_at",
+      profile_user_id: `eq.${profileUserId}`,
+      order: "created_at.asc",
+      limit: String(safeLimit),
+    });
+    const res = await supabaseFetch(`/rest/v1/profile_comments?${query.toString()}`, {
+      method: "GET",
+      headers: supabaseHeaders(accessToken),
+    });
+
+    return (await readJsonOrThrow(res)) as ProfileComment[];
+  } catch (err) {
+    if (err instanceof Error && isMissingProfileCommentsSchemaError(err.message)) {
+      return [];
+    }
+    throw err;
+  }
+}
+
+export async function createProfileComment(
+  accessToken: string,
+  profileUserId: string,
+  content: string,
+): Promise<ProfileComment[]> {
+  assertConfig();
+
+  try {
+    const res = await supabaseFetch(`/rest/v1/profile_comments`, {
+      method: "POST",
+      headers: {
+        ...supabaseHeaders(accessToken),
+        Prefer: "return=representation",
+      },
+      body: JSON.stringify([
+        {
+          profile_user_id: profileUserId,
+          content,
+        },
+      ]),
+    });
+
+    return (await readJsonOrThrow(res)) as ProfileComment[];
+  } catch (err) {
+    if (err instanceof Error && isMissingProfileCommentsSchemaError(err.message)) {
+      throw new Error("Profile comments require the latest database migration.");
+    }
+    throw err;
+  }
+}
+
+export async function deleteProfileComment(accessToken: string, commentId: number) {
+  assertConfig();
+
+  try {
+    const res = await supabaseFetch(`/rest/v1/profile_comments?id=eq.${commentId}`, {
+      method: "DELETE",
+      headers: {
+        ...supabaseHeaders(accessToken),
+        Prefer: "return=minimal",
+      },
+    });
+
+    await readJsonOrThrow(res);
+    return { deleted: true };
+  } catch (err) {
+    if (err instanceof Error && isMissingProfileCommentsSchemaError(err.message)) {
+      throw new Error("Profile comments require the latest database migration.");
+    }
+    throw err;
+  }
 }
 
 export async function updateMyPresence(
