@@ -1528,6 +1528,7 @@ export default function ChatDashboard({
   const previousVoiceParticipantIdsRef = useRef<string[]>([]);
   const soundContextRef = useRef<AudioContext | null>(null);
   const notificationSoundLastPlayedAtRef = useRef(0);
+  const incomingCallRingLastPlayedAtRef = useRef(0);
   const notificationPermissionRequestedRef = useRef(false);
   const dmLatestMessageIdsRef = useRef<Record<number, number>>({});
   const dmMessageNotificationSeededRef = useRef(false);
@@ -1940,18 +1941,73 @@ export default function ChatDashboard({
     }
   }, []);
 
+  const playIncomingCallRing = useCallback(async () => {
+    const nowMs = Date.now();
+    if (nowMs - incomingCallRingLastPlayedAtRef.current < 2600) {
+      return;
+    }
+    incomingCallRingLastPlayedAtRef.current = nowMs;
+
+    try {
+      let audioCtx = soundContextRef.current;
+      if (!audioCtx) {
+        audioCtx = new AudioContext();
+        soundContextRef.current = audioCtx;
+      }
+      if (audioCtx.state !== "running") {
+        await audioCtx.resume();
+      }
+      if (audioCtx.state !== "running") return;
+
+      const schedulePulse = (offsetSeconds: number, baseFrequency: number) => {
+        const gain = audioCtx.createGain();
+        gain.gain.value = 0.0001;
+        gain.connect(audioCtx.destination);
+
+        const low = audioCtx.createOscillator();
+        const high = audioCtx.createOscillator();
+        low.type = "sine";
+        high.type = "triangle";
+
+        const startAt = audioCtx.currentTime + offsetSeconds;
+        low.frequency.setValueAtTime(baseFrequency, startAt);
+        high.frequency.setValueAtTime(baseFrequency * 1.5, startAt + 0.02);
+        low.connect(gain);
+        high.connect(gain);
+
+        gain.gain.exponentialRampToValueAtTime(0.05, startAt + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.025, startAt + 0.18);
+        gain.gain.exponentialRampToValueAtTime(0.0001, startAt + 0.36);
+
+        low.start(startAt);
+        low.stop(startAt + 0.3);
+        high.start(startAt + 0.05);
+        high.stop(startAt + 0.36);
+      };
+
+      schedulePulse(0, 620);
+      schedulePulse(0.52, 660);
+      schedulePulse(1.04, 620);
+      schedulePulse(1.56, 660);
+    } catch {
+      // Ignore autoplay-policy and audio device failures.
+    }
+  }, []);
+
   const triggerDesktopNotification = useCallback(
     async ({
       title,
       body,
       tag,
       icon,
+      playSound = true,
       onClick,
     }: {
       title: string;
       body: string;
       tag: string;
       icon?: string;
+      playSound?: boolean;
       onClick?: () => void;
     }) => {
       const permission =
@@ -1971,7 +2027,9 @@ export default function ChatDashboard({
           onClick?.();
           notification.close();
         };
-        void playNotificationSound();
+        if (playSound) {
+          void playNotificationSound();
+        }
       } catch {
         // Ignore notification failures (blocked APIs, invalid icon URLs, etc.)
       }
@@ -2108,7 +2166,12 @@ export default function ChatDashboard({
     () => Object.values(unreadDmCounts).reduce((sum, count) => sum + Math.max(0, Number(count) || 0), 0),
     [unreadDmCounts],
   );
-  const totalUnreadDmLabel = totalUnreadDmCount > 99 ? "99+" : String(totalUnreadDmCount);
+  const totalIncomingDmCallCount = useMemo(
+    () => Object.values(dmIncomingCallCounts).reduce((sum, count) => sum + (count > 0 ? 1 : 0), 0),
+    [dmIncomingCallCounts],
+  );
+  const totalDmAlertCount = totalUnreadDmCount > 0 ? totalUnreadDmCount : totalIncomingDmCallCount;
+  const totalDmAlertLabel = totalDmAlertCount > 99 ? "99+" : String(totalDmAlertCount);
   const incomingRequestUserIds = useMemo(() => new Set(pendingIncoming.map((req) => req.sender_id)), [pendingIncoming]);
   const outgoingRequestUserIds = useMemo(() => new Set(pendingOutgoing.map((req) => req.receiver_id)), [pendingOutgoing]);
   const normalizedGlytchInviteSearch = glytchInviteSearch.trim().toLowerCase();
@@ -3964,22 +4027,43 @@ export default function ChatDashboard({
 
           const hasIncomingCallNow = otherParticipantCount > 0;
           const callJustStarted = previousCount === 0 && hasIncomingCallNow;
+          const participantCountIncreased = otherParticipantCount > previousCount;
           const shouldNotifyIncomingCall =
             dmCallNotificationSeededRef.current && callJustStarted && voiceRoomKey !== roomKey;
-          if (!shouldNotifyIncomingCall) continue;
-          if (!dmCallNotificationsEnabled) continue;
+          const shouldNotifyJoinedActiveDmVoice =
+            dmCallNotificationSeededRef.current && participantCountIncreased && voiceRoomKey === roomKey;
 
-          void triggerDesktopNotification({
-            title: `Incoming call from ${dm.friendName}`,
-            body: "Open this DM and join voice to answer.",
-            tag: `dm-call-${dm.conversationId}`,
-            icon: dm.friendAvatarUrl || undefined,
-            onClick: () => {
-              setViewMode("dm");
-              setDmPanelMode("dms");
-              setActiveConversationId(dm.conversationId);
-            },
-          });
+          if (shouldNotifyIncomingCall && dmCallNotificationsEnabled) {
+            void playIncomingCallRing();
+            void triggerDesktopNotification({
+              title: `Incoming call from ${dm.friendName}`,
+              body: "Open this DM and join voice to answer.",
+              tag: `dm-call-${dm.conversationId}`,
+              icon: dm.friendAvatarUrl || undefined,
+              playSound: false,
+              onClick: () => {
+                setViewMode("dm");
+                setDmPanelMode("dms");
+                setActiveConversationId(dm.conversationId);
+              },
+            });
+          }
+
+          if (shouldNotifyJoinedActiveDmVoice && dmCallNotificationsEnabled) {
+            void playNotificationSound();
+            void triggerDesktopNotification({
+              title: `${dm.friendName} joined the call`,
+              body: "Your DM voice call now has participants.",
+              tag: `dm-call-joined-${dm.conversationId}-${otherParticipantCount}`,
+              icon: dm.friendAvatarUrl || undefined,
+              playSound: false,
+              onClick: () => {
+                setViewMode("dm");
+                setDmPanelMode("dms");
+                setActiveConversationId(dm.conversationId);
+              },
+            });
+          }
         }
 
         dmCallParticipantCountsRef.current = nextCounts;
@@ -4015,6 +4099,8 @@ export default function ChatDashboard({
     dmCallNotificationsEnabled,
     dms,
     isElectronRuntime,
+    playIncomingCallRing,
+    playNotificationSound,
     shouldPauseBackgroundPolling,
     triggerDesktopNotification,
     voiceRoomKey,
@@ -8157,7 +8243,7 @@ export default function ChatDashboard({
                   strokeLinejoin="round"
                 />
               </svg>
-              {totalUnreadDmCount > 0 && <span className="navUnreadBadge">{totalUnreadDmLabel}</span>}
+              {totalDmAlertCount > 0 && <span className="navUnreadBadge">{totalDmAlertLabel}</span>}
             </span>
             <span>DMs</span>
           </button>
@@ -8365,6 +8451,7 @@ export default function ChatDashboard({
                     {dms.map((dm) => {
                       const unreadCount = unreadDmCounts[dm.conversationId] || 0;
                       const unreadLabel = unreadCount > 99 ? "99+" : String(unreadCount);
+                      const incomingCallCount = dmIncomingCallCounts[dm.conversationId] || 0;
                       const dmPresenceStatus = resolvePresenceForUser(dm.friendUserId);
                       const dmPresenceTitle = `Status: ${presenceStatusLabel(dmPresenceStatus)}`;
                       return (
@@ -8407,7 +8494,29 @@ export default function ChatDashboard({
                           >
                             <span>{dm.friendName}</span>
                             {dm.isPinned && <span className="dmPinnedBadge" title="Pinned DM" aria-hidden="true" />}
-                            {unreadCount > 0 && <span className="unreadBubble">{unreadLabel}</span>}
+                            {(incomingCallCount > 0 || unreadCount > 0) && (
+                              <span className="dmAlertBubbles">
+                                {incomingCallCount > 0 && (
+                                  <span
+                                    className="callBubble"
+                                    aria-label={`${dm.friendName} is calling`}
+                                    title={`${dm.friendName} is calling`}
+                                  >
+                                    <svg viewBox="0 0 24 24" role="presentation" aria-hidden="true">
+                                      <path
+                                        d="M7.4 3.8h3.2l1.3 3.5-1.8 1.5a12.3 12.3 0 0 0 5.1 5.1l1.5-1.8 3.5 1.3v3.2l-2.2.8c-1.1.4-2.3.4-3.3-.1a17.3 17.3 0 0 1-8-8 3.6 3.6 0 0 1-.1-3.3l.8-2.2Z"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        strokeWidth="1.8"
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                      />
+                                    </svg>
+                                  </span>
+                                )}
+                                {unreadCount > 0 && <span className="unreadBubble">{unreadLabel}</span>}
+                              </span>
+                            )}
                           </button>
                         </div>
                       );
@@ -9292,11 +9401,42 @@ export default function ChatDashboard({
                 ) : (
                   <button
                     type="button"
-                    className={shouldShowJoinDmCallAction ? "voiceButton active" : "voiceButton"}
+                    className={
+                      viewMode === "dm"
+                        ? shouldShowJoinDmCallAction
+                          ? "voiceButton iconOnly active callActionButton"
+                          : "voiceButton iconOnly callActionButton"
+                        : shouldShowJoinDmCallAction
+                          ? "voiceButton active"
+                          : "voiceButton"
+                    }
                     onClick={() => void handleJoinVoice()}
-                    title={shouldShowJoinDmCallAction ? `${activeDmIncomingCallerLabel} is in this call` : "Start Call"}
+                    aria-label={joinVoiceButtonLabel}
+                    title={joinVoiceButtonLabel}
                   >
-                    {joinVoiceButtonLabel}
+                    {viewMode === "dm" ? (
+                      <>
+                        <span className="voiceButtonIcon" aria-hidden="true">
+                          <svg viewBox="0 0 24 24" role="presentation">
+                            <path
+                              d="M7.4 3.8h3.2l1.3 3.5-1.8 1.5a12.3 12.3 0 0 0 5.1 5.1l1.5-1.8 3.5 1.3v3.2l-2.2.8c-1.1.4-2.3.4-3.3-.1a17.3 17.3 0 0 1-8-8 3.6 3.6 0 0 1-.1-3.3l.8-2.2Z"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="1.8"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                          </svg>
+                        </span>
+                        {shouldShowJoinDmCallAction && (
+                          <span className="voiceCallBadge">
+                            {activeDmIncomingCallCount > 99 ? "99+" : String(activeDmIncomingCallCount)}
+                          </span>
+                        )}
+                      </>
+                    ) : (
+                      joinVoiceButtonLabel
+                    )}
                   </button>
                 ))}
               {shouldShowQuickThemeControl && quickThemeTarget && (

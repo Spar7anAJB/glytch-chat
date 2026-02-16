@@ -1474,6 +1474,36 @@ textarea:focus-visible {
   line-height: 1;
 }
 
+.dmAlertBubbles {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dmAlertBubbles .unreadBubble {
+  margin-left: 0;
+}
+
+.callBubble {
+  min-width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  padding: 0 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #d62839;
+  color: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  line-height: 1;
+}
+
+.callBubble svg {
+  width: 11px;
+  height: 11px;
+}
+
 .glytchMemberRow {
   display: flex;
   align-items: center;
@@ -2196,6 +2226,32 @@ textarea:focus-visible {
 .voiceButton.compact {
   padding: 6px 8px;
   font-size: 0.78rem;
+}
+
+.voiceButton.callActionButton {
+  position: relative;
+  overflow: visible;
+}
+
+.voiceCallBadge {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  min-width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #d62839;
+  color: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  box-shadow: 0 6px 14px color-mix(in srgb, #000000, transparent 78%);
+  font-size: 0.64rem;
+  font-weight: 800;
+  line-height: 1;
+  pointer-events: none;
 }
 
 .profileHeaderButton {
