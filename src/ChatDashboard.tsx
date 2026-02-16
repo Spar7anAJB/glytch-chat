@@ -125,6 +125,10 @@ type ViewMode = "dm" | "group" | "glytch" | "glytch-settings" | "settings";
 type GlytchActionMode = "none" | "create" | "join";
 type DmPanelMode = "dms" | "friends";
 type SettingsTab = "edit" | "theme" | "showcases" | "preview" | "notifications";
+type AppFontPreset = "cyber" | "clean" | "display" | "compact" | "modern" | "mono" | "serif";
+type AvatarDecoration = "none" | "sparkle" | "crown" | "heart" | "bolt" | "moon" | "leaf" | "star";
+type ProfileShowcaseLayout = "grid" | "stack";
+type ProfileShowcaseCardStyle = "gradient" | "glass" | "solid";
 type GlytchSettingsTab = "profile" | "roles" | "moderation" | "bot" | "channels";
 type RoleSettingsMode = "new-role" | "permissions";
 type GlytchRolePermissionKey =
@@ -248,6 +252,16 @@ type ProfileForm = {
   cardStyle: "glass" | "solid";
   appThemeMode: AppThemeMode;
   appTheme: AppThemePreset;
+  appFontPreset: AppFontPreset;
+  appTextColor: string;
+  profileNameColor: string;
+  profileBodyColor: string;
+  showcaseAccentColor: string;
+  showcaseLayout: ProfileShowcaseLayout;
+  showcaseCardStyle: ProfileShowcaseCardStyle;
+  avatarDecoration: AvatarDecoration;
+  avatarDecorationColor: string;
+  avatarDecorationBackground: string;
   dmBackgroundFrom: string;
   dmBackgroundTo: string;
   glytchBackgroundFrom: string;
@@ -338,8 +352,8 @@ const GLYTCH_MESSAGE_COLUMN_MIN_WIDTH = 420;
 const MAX_MESSAGE_ATTACHMENT_BYTES = 8 * 1024 * 1024;
 const MAX_THEME_IMAGE_BYTES = 8 * 1024 * 1024;
 const MAX_GIF_RESULTS = 20;
-const SHOWCASE_MAX_MODULES = 12;
-const SHOWCASE_MAX_ENTRIES = 16;
+const SHOWCASE_MAX_MODULES = 24;
+const SHOWCASE_MAX_ENTRIES = 32;
 const MAX_RENDERED_MESSAGES = 120;
 const DEFAULT_DM_CHAT_BACKGROUND: BackgroundGradient = {
   from: "#1b1030",
@@ -353,6 +367,11 @@ const DEFAULT_GLYTCH_CHAT_BACKGROUND: BackgroundGradient = {
 };
 const SHOWCASE_MAX_TITLE_LENGTH = 60;
 const SHOWCASE_MAX_TEXT_LENGTH = 1000;
+const DEFAULT_PROFILE_NAME_COLOR = "#f3f4ff";
+const DEFAULT_PROFILE_BODY_COLOR = "#e5def2";
+const DEFAULT_SHOWCASE_ACCENT_COLOR = "#78dcff";
+const DEFAULT_AVATAR_DECORATION_COLOR = "#ffffff";
+const DEFAULT_AVATAR_DECORATION_BG = "#ff2ec2";
 const PRESENCE_HEARTBEAT_MS = 45_000;
 const PRESENCE_AWAY_IDLE_MS = 5 * 60_000;
 const PRESENCE_STALE_MS = 120_000;
@@ -662,6 +681,69 @@ const APP_THEME_PALETTES: Record<AppThemeMode, Record<AppThemePreset, AppThemePa
     },
   },
 };
+
+const APP_FONT_PRESET_LABELS: Record<AppFontPreset, string> = {
+  cyber: "Cyber",
+  clean: "Clean",
+  display: "Display",
+  compact: "Compact",
+  modern: "Modern",
+  mono: "Mono",
+  serif: "Serif",
+};
+
+const APP_FONT_PRESET_STYLES: Record<AppFontPreset, { ui: string; display: string }> = {
+  cyber: {
+    ui: '"Orbitron", "Manrope", "Avenir Next", "Segoe UI", sans-serif',
+    display: '"Orbitron", "Sora", "Manrope", "Avenir Next", sans-serif',
+  },
+  clean: {
+    ui: '"Manrope", "Avenir Next", "Segoe UI", sans-serif',
+    display: '"Manrope", "Sora", "Avenir Next", sans-serif',
+  },
+  display: {
+    ui: '"Sora", "Manrope", "Avenir Next", sans-serif',
+    display: '"Sora", "Orbitron", "Manrope", sans-serif',
+  },
+  compact: {
+    ui: '"Rajdhani", "Orbitron", "Manrope", sans-serif',
+    display: '"Rajdhani", "Sora", "Orbitron", sans-serif',
+  },
+  modern: {
+    ui: '"Poppins", "Manrope", "Avenir Next", sans-serif',
+    display: '"Poppins", "Sora", "Manrope", sans-serif',
+  },
+  mono: {
+    ui: '"Space Mono", "SFMono-Regular", "Menlo", monospace',
+    display: '"Space Mono", "Orbitron", "Manrope", monospace',
+  },
+  serif: {
+    ui: '"Merriweather", "Georgia", serif',
+    display: '"Merriweather", "Sora", serif',
+  },
+};
+
+const AVATAR_DECORATION_LABELS: Record<AvatarDecoration, string> = {
+  none: "None",
+  sparkle: "Sparkle",
+  crown: "Crown",
+  heart: "Heart",
+  bolt: "Bolt",
+  moon: "Moon",
+  leaf: "Leaf",
+  star: "Star",
+};
+
+const AVATAR_DECORATION_GLYPHS: Record<Exclude<AvatarDecoration, "none">, string> = {
+  sparkle: "✦",
+  crown: "♕",
+  heart: "♥",
+  bolt: "⚡",
+  moon: "☾",
+  leaf: "❧",
+  star: "★",
+};
+
 const ROLE_PERMISSION_OPTIONS: Array<{ key: GlytchRolePermissionKey; label: string; fallbackKeys: string[] }> = [
   { key: "ban_members", label: "Can Ban Members", fallbackKeys: ["manage_members"] },
   { key: "manage_channels", label: "Can manage channels", fallbackKeys: [] },
@@ -770,6 +852,34 @@ function normalizeAppThemeMode(raw: unknown): AppThemeMode {
     return "light";
   }
   return "dark";
+}
+
+function normalizeAppFontPreset(raw: unknown): AppFontPreset {
+  if (raw === "clean" || raw === "display" || raw === "compact" || raw === "modern" || raw === "mono" || raw === "serif") {
+    return raw;
+  }
+  return "cyber";
+}
+
+function normalizeAvatarDecoration(raw: unknown): AvatarDecoration {
+  if (raw === "sparkle" || raw === "crown" || raw === "heart" || raw === "bolt" || raw === "moon" || raw === "leaf" || raw === "star") {
+    return raw;
+  }
+  return "none";
+}
+
+function normalizeProfileShowcaseLayout(raw: unknown): ProfileShowcaseLayout {
+  if (raw === "stack") {
+    return "stack";
+  }
+  return "grid";
+}
+
+function normalizeProfileShowcaseCardStyle(raw: unknown): ProfileShowcaseCardStyle {
+  if (raw === "glass" || raw === "solid") {
+    return raw;
+  }
+  return "gradient";
 }
 
 function textPostModeLabel(mode: TextPostMode): string {
@@ -968,6 +1078,66 @@ function parseShowcaseStatEntry(entry: string): { label: string; value: string }
     label: rawLabel.trim(),
     value: rest.join(":").trim(),
   };
+}
+
+function parseShowcaseStatProgress(value: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  const percentMatch = trimmed.match(/^(-?\d+(?:\.\d+)?)\s*%$/);
+  if (percentMatch) {
+    const parsed = Number.parseFloat(percentMatch[1]);
+    if (!Number.isFinite(parsed)) return null;
+    return Math.max(0, Math.min(100, parsed));
+  }
+
+  if (!/^-?\d+(?:\.\d+)?$/.test(trimmed)) return null;
+  const parsed = Number.parseFloat(trimmed);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100) return null;
+  return parsed;
+}
+
+function extractShowcaseLinkHost(href: string): string | null {
+  try {
+    const url = new URL(href);
+    return url.hostname.replace(/^www\./i, "") || null;
+  } catch {
+    return null;
+  }
+}
+
+function renderAvatarDecoration(
+  decoration: AvatarDecoration,
+  options: {
+    color: string;
+    background: string;
+    size?: "normal" | "small";
+  },
+) {
+  if (decoration === "none") return null;
+
+  const style = {
+    "--avatar-decor-color": options.color,
+    "--avatar-decor-bg": options.background,
+  } as CSSProperties;
+  const sizeClass = options.size === "small" ? "small" : "";
+
+  if (decoration === "sparkle") {
+    return (
+      <span className={`avatarDecorationLayer sparkle ${sizeClass}`.trim()} style={style} aria-hidden="true">
+        <span className="sparkle s1">✦</span>
+        <span className="sparkle s2">✦</span>
+        <span className="sparkle s3">✦</span>
+      </span>
+    );
+  }
+
+  const glyph = AVATAR_DECORATION_GLYPHS[decoration] || "✦";
+  return (
+    <span className={`avatarDecorationLayer ${decoration} ${sizeClass}`.trim()} style={style} aria-hidden="true">
+      <span className="avatarDecorationGlyph">{glyph}</span>
+    </span>
+  );
 }
 
 function normalizeBlockedWordsDraft(raw: string): string[] {
@@ -1356,6 +1526,20 @@ function buildProfileForm(profile: Profile | null): ProfileForm {
   const isLegacyLightPreset = legacyThemeValue === "light";
   const appThemeMode = isLegacyLightPreset ? "light" : normalizeAppThemeMode(theme.appThemeMode);
   const appTheme = isLegacyLightPreset ? "simplistic" : normalizeAppTheme(legacyThemeValue);
+  const appThemePalette = APP_THEME_PALETTES[appThemeMode]?.[appTheme] || APP_THEME_PALETTES.dark.default;
+  const appFontPreset = normalizeAppFontPreset(theme.appFontPreset);
+  const appTextColor = typeof theme.appTextColor === "string" ? theme.appTextColor : appThemePalette.text;
+  const profileNameColor = typeof theme.profileNameColor === "string" ? theme.profileNameColor : DEFAULT_PROFILE_NAME_COLOR;
+  const profileBodyColor = typeof theme.profileBodyColor === "string" ? theme.profileBodyColor : DEFAULT_PROFILE_BODY_COLOR;
+  const showcaseAccentColor =
+    typeof theme.showcaseAccentColor === "string" ? theme.showcaseAccentColor : DEFAULT_SHOWCASE_ACCENT_COLOR;
+  const showcaseLayout = normalizeProfileShowcaseLayout(theme.showcaseLayout);
+  const showcaseCardStyle = normalizeProfileShowcaseCardStyle(theme.showcaseCardStyle);
+  const avatarDecoration = normalizeAvatarDecoration(theme.avatarDecoration);
+  const avatarDecorationColor =
+    typeof theme.avatarDecorationColor === "string" ? theme.avatarDecorationColor : DEFAULT_AVATAR_DECORATION_COLOR;
+  const avatarDecorationBackground =
+    typeof theme.avatarDecorationBackground === "string" ? theme.avatarDecorationBackground : DEFAULT_AVATAR_DECORATION_BG;
   const profilePresenceStatus = normalizePresenceStatus(profile?.presence_status);
   const initialPresenceStatus = profilePresenceStatus === "away" ? "active" : profilePresenceStatus;
   return {
@@ -1370,6 +1554,16 @@ function buildProfileForm(profile: Profile | null): ProfileForm {
     cardStyle: theme.cardStyle === "solid" ? "solid" : "glass",
     appThemeMode,
     appTheme,
+    appFontPreset,
+    appTextColor,
+    profileNameColor,
+    profileBodyColor,
+    showcaseAccentColor,
+    showcaseLayout,
+    showcaseCardStyle,
+    avatarDecoration,
+    avatarDecorationColor,
+    avatarDecorationBackground,
     dmBackgroundFrom:
       typeof theme.dmBackgroundFrom === "string" ? theme.dmBackgroundFrom : DEFAULT_DM_CHAT_BACKGROUND.from,
     dmBackgroundTo:
@@ -1400,6 +1594,16 @@ function buildProfileThemePayload(form: ProfileForm): Record<string, unknown> {
     cardStyle: form.cardStyle,
     appThemeMode: form.appThemeMode,
     appTheme: form.appTheme,
+    appFontPreset: form.appFontPreset,
+    appTextColor: form.appTextColor,
+    profileNameColor: form.profileNameColor,
+    profileBodyColor: form.profileBodyColor,
+    showcaseAccentColor: form.showcaseAccentColor,
+    showcaseLayout: form.showcaseLayout,
+    showcaseCardStyle: form.showcaseCardStyle,
+    avatarDecoration: form.avatarDecoration,
+    avatarDecorationColor: form.avatarDecorationColor,
+    avatarDecorationBackground: form.avatarDecorationBackground,
     dmBackgroundFrom: form.dmBackgroundFrom,
     dmBackgroundTo: form.dmBackgroundTo,
     glytchBackgroundFrom: form.glytchBackgroundFrom,
@@ -1689,6 +1893,7 @@ export default function ChatDashboard({
   const [forcedDefaultGlytchChannelIds, setForcedDefaultGlytchChannelIds] = useState<Record<number, true>>({});
   const [draggingShowcaseId, setDraggingShowcaseId] = useState<string | null>(null);
   const [showcaseDropTargetId, setShowcaseDropTargetId] = useState<string | null>(null);
+  const [showcaseGalleryUploadBusyId, setShowcaseGalleryUploadBusyId] = useState<string | null>(null);
   const lastPresenceInteractionAtRef = useRef(Date.now());
   const isUserIdleRef = useRef(false);
   const dmMessagesPollingInFlightRef = useRef(false);
@@ -6230,6 +6435,52 @@ export default function ChatDashboard({
     }));
   };
 
+  const handleUploadShowcaseGalleryAsset = (showcaseId: string) => async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const targetShowcase = profileForm.showcases.find((showcase) => showcase.id === showcaseId);
+    if (!targetShowcase || targetShowcase.kind !== "gallery") {
+      setProfileSaveError("Select a gallery showcase first.");
+      e.target.value = "";
+      return;
+    }
+    if (!file.type.startsWith("image/")) {
+      setProfileSaveError("Only image files can be added to gallery showcases.");
+      e.target.value = "";
+      return;
+    }
+    if (file.size > MAX_THEME_IMAGE_BYTES) {
+      setProfileSaveError("Gallery upload must be 8MB or smaller.");
+      e.target.value = "";
+      return;
+    }
+
+    setShowcaseGalleryUploadBusyId(showcaseId);
+    setProfileSaveError("");
+    try {
+      const uploadedUrl = await uploadProfileAsset(accessToken, currentUserId, file, "theme");
+      setProfileForm((prev) => ({
+        ...prev,
+        showcases: prev.showcases.map((showcase) => {
+          if (showcase.id !== showcaseId || showcase.kind !== "gallery") {
+            return showcase;
+          }
+          const nextEntries = [...showcase.entries, uploadedUrl].slice(0, SHOWCASE_MAX_ENTRIES);
+          return {
+            ...showcase,
+            entries: nextEntries,
+          };
+        }),
+      }));
+    } catch (err) {
+      setProfileSaveError(err instanceof Error ? err.message : "Could not upload gallery image.");
+    } finally {
+      setShowcaseGalleryUploadBusyId((prev) => (prev === showcaseId ? null : prev));
+      e.target.value = "";
+    }
+  };
+
   const handleQuickThemeImageUpload = async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -8591,6 +8842,21 @@ export default function ChatDashboard({
   const viewedFrom = typeof viewedTheme.backgroundFrom === "string" ? viewedTheme.backgroundFrom : "#1a1130";
   const viewedTo = typeof viewedTheme.backgroundTo === "string" ? viewedTheme.backgroundTo : "#0b0a16";
   const viewedCardStyle = viewedTheme.cardStyle === "solid" ? "solid" : "glass";
+  const viewedProfileNameColor =
+    typeof viewedTheme.profileNameColor === "string" ? viewedTheme.profileNameColor : DEFAULT_PROFILE_NAME_COLOR;
+  const viewedProfileBodyColor =
+    typeof viewedTheme.profileBodyColor === "string" ? viewedTheme.profileBodyColor : DEFAULT_PROFILE_BODY_COLOR;
+  const viewedShowcaseAccentColor =
+    typeof viewedTheme.showcaseAccentColor === "string" ? viewedTheme.showcaseAccentColor : DEFAULT_SHOWCASE_ACCENT_COLOR;
+  const viewedShowcaseLayout = normalizeProfileShowcaseLayout(viewedTheme.showcaseLayout);
+  const viewedShowcaseCardStyle = normalizeProfileShowcaseCardStyle(viewedTheme.showcaseCardStyle);
+  const viewedAvatarDecoration = normalizeAvatarDecoration(viewedTheme.avatarDecoration);
+  const viewedAvatarDecorationColor =
+    typeof viewedTheme.avatarDecorationColor === "string" ? viewedTheme.avatarDecorationColor : DEFAULT_AVATAR_DECORATION_COLOR;
+  const viewedAvatarDecorationBackground =
+    typeof viewedTheme.avatarDecorationBackground === "string"
+      ? viewedTheme.avatarDecorationBackground
+      : DEFAULT_AVATAR_DECORATION_BG;
   const viewedDisplayName = viewedProfile?.username || viewedProfile?.display_name || "User";
   const viewedProfileUserId = viewedProfile?.user_id || null;
   const viewedPresenceStatus = viewedProfileUserId ? resolvePresenceForUser(viewedProfileUserId) : "offline";
@@ -8620,15 +8886,19 @@ export default function ChatDashboard({
   const voiceSpeakingRingColor = profileForm.speakingRingColor.trim() || "#00ffff";
   const appThemePalette =
     APP_THEME_PALETTES[profileForm.appThemeMode]?.[profileForm.appTheme] || APP_THEME_PALETTES.dark.default;
+  const appFontPreset = APP_FONT_PRESET_STYLES[profileForm.appFontPreset] || APP_FONT_PRESET_STYLES.cyber;
+  const appTextColor = profileForm.appTextColor.trim() || appThemePalette.text;
   const pageStyle = useMemo(
     () =>
       ({
         colorScheme: profileForm.appThemeMode,
         "--voice-speaking-ring-color": voiceSpeakingRingColor,
+        "--font-ui": appFontPreset.ui,
+        "--font-display": appFontPreset.display,
         "--bg": appThemePalette.bg,
         "--panel": appThemePalette.panel,
         "--panel-border": appThemePalette.panelBorder,
-        "--text": appThemePalette.text,
+        "--text": appTextColor,
         "--muted": appThemePalette.muted,
         "--accent": appThemePalette.accent,
         "--accent-strong": appThemePalette.accentStrong,
@@ -8641,7 +8911,7 @@ export default function ChatDashboard({
         "--warn": appThemePalette.warn,
         "--violet": appThemePalette.violet,
       }) as CSSProperties,
-    [appThemePalette, profileForm.appThemeMode, voiceSpeakingRingColor],
+    [appFontPreset.display, appFontPreset.ui, appTextColor, appThemePalette, profileForm.appThemeMode, voiceSpeakingRingColor],
   );
 
   const renderProfileShowcaseContent = (showcase: ProfileShowcase) => {
@@ -8657,11 +8927,13 @@ export default function ChatDashboard({
             const parsed = parseShowcaseLinkEntry(entry);
             const href =
               parsed.url.startsWith("http://") || parsed.url.startsWith("https://") ? parsed.url : `https://${parsed.url}`;
+            const host = extractShowcaseLinkHost(href);
             return (
               <li key={`${showcase.id}:${entry}`}>
                 <a href={href} target="_blank" rel="noreferrer">
                   {parsed.label}
                 </a>
+                {host && <small className="profileShowcaseLinkHost">{host}</small>}
               </li>
             );
           })}
@@ -8675,11 +8947,19 @@ export default function ChatDashboard({
         <div className="profileShowcaseStats">
           {showcase.entries.map((entry) => {
             const parsed = parseShowcaseStatEntry(entry);
+            const progress = parseShowcaseStatProgress(parsed.value);
             return (
-              <p key={`${showcase.id}:${entry}`} className="profileShowcaseStatRow">
-                <span>{parsed.label || "Stat"}</span>
-                <strong>{parsed.value || "-"}</strong>
-              </p>
+              <div key={`${showcase.id}:${entry}`} className="profileShowcaseStatItem">
+                <p className="profileShowcaseStatRow">
+                  <span>{parsed.label || "Stat"}</span>
+                  <strong>{parsed.value || "-"}</strong>
+                </p>
+                {progress !== null && (
+                  <span className="profileShowcaseStatMeter" aria-hidden="true">
+                    <span style={{ width: `${progress}%` }} />
+                  </span>
+                )}
+              </div>
             );
           })}
         </div>
@@ -8698,15 +8978,26 @@ export default function ChatDashboard({
     );
   };
 
-  const renderProfileShowcaseList = (showcases: ProfileShowcase[]) => {
+  const renderProfileShowcaseList = (
+    showcases: ProfileShowcase[],
+    options: {
+      layout: ProfileShowcaseLayout;
+      cardStyle: ProfileShowcaseCardStyle;
+      accentColor: string;
+    },
+  ) => {
     if (showcases.length === 0) {
       return <p className="smallMuted">No showcases yet.</p>;
     }
 
     return (
-      <div className="profileShowcaseList">
+      <div className={`profileShowcaseList ${options.layout === "stack" ? "stack" : "grid"}`}>
         {showcases.map((showcase) => (
-          <section key={showcase.id} className="profileShowcaseCard">
+          <section
+            key={showcase.id}
+            className={`profileShowcaseCard showcaseStyle-${options.cardStyle}`}
+            style={{ "--profile-showcase-accent": options.accentColor } as CSSProperties}
+          >
             <div className="profileShowcaseHeadRow">
               <p className="profileShowcaseTitle">{showcase.title || "Showcase"}</p>
               <span className={`profileShowcaseKindTag ${showcase.kind}`}>{showcaseKindLabel(showcase.kind)}</span>
@@ -8874,6 +9165,11 @@ export default function ChatDashboard({
               ) : (
                 <span>{initialsFromName(displayName)}</span>
               )}
+              {renderAvatarDecoration(profileForm.avatarDecoration, {
+                color: profileForm.avatarDecorationColor,
+                background: profileForm.avatarDecorationBackground,
+                size: "small",
+              })}
               <span className={`presenceDot ${currentUserPresenceStatus}`} aria-hidden="true" />
             </button>
 
@@ -8889,6 +9185,11 @@ export default function ChatDashboard({
                 ) : (
                   <span>{initialsFromName(displayName)}</span>
                 )}
+                {renderAvatarDecoration(profileForm.avatarDecoration, {
+                  color: profileForm.avatarDecorationColor,
+                  background: profileForm.avatarDecorationBackground,
+                  size: "small",
+                })}
                 <span className={`presenceDot ${currentUserPresenceStatus}`} aria-hidden="true" />
               </button>
               <div className="identityMeta">
@@ -10215,13 +10516,20 @@ export default function ChatDashboard({
                   Profile Picture
                   <input
                     type="file"
-                    accept="image/*"
+                    accept="image/png,image/jpeg,image/webp,image/gif,image/avif"
                     onChange={handleProfileImageUpload("avatar")}
                   />
                 </label>
+                <p className="smallMuted">GIF profile pictures are supported.</p>
                 {avatarUploadBusy && <p className="smallMuted">Uploading avatar...</p>}
                 {profileForm.avatarUrl && (
-                  <img className="settingsThumb avatar" src={profileForm.avatarUrl} alt="Avatar preview" />
+                  <div className="settingsAvatarPreview">
+                    <img className="settingsThumb avatar" src={profileForm.avatarUrl} alt="Avatar preview" />
+                    {renderAvatarDecoration(profileForm.avatarDecoration, {
+                      color: profileForm.avatarDecorationColor,
+                      background: profileForm.avatarDecorationBackground,
+                    })}
+                  </div>
                 )}
                 {profileForm.avatarUrl && (
                   <button
@@ -10233,11 +10541,50 @@ export default function ChatDashboard({
                   </button>
                 )}
 
+                <div className="profileDecorationGrid">
+                  <label>
+                    Avatar Decoration
+                    <select
+                      value={profileForm.avatarDecoration}
+                      onChange={(e) =>
+                        setProfileForm((prev) => ({
+                          ...prev,
+                          avatarDecoration: normalizeAvatarDecoration(e.target.value),
+                        }))
+                      }
+                    >
+                      {Object.entries(AVATAR_DECORATION_LABELS).map(([value, label]) => (
+                        <option key={value} value={value}>
+                          {label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Decoration Icon Color
+                    <input
+                      type="color"
+                      value={profileForm.avatarDecorationColor}
+                      onChange={(e) => setProfileForm((prev) => ({ ...prev, avatarDecorationColor: e.target.value }))}
+                    />
+                  </label>
+                  <label>
+                    Decoration Background
+                    <input
+                      type="color"
+                      value={profileForm.avatarDecorationBackground}
+                      onChange={(e) =>
+                        setProfileForm((prev) => ({ ...prev, avatarDecorationBackground: e.target.value }))
+                      }
+                    />
+                  </label>
+                </div>
+
                 <label>
                   Banner Image
                   <input
                     type="file"
-                    accept="image/*"
+                    accept="image/png,image/jpeg,image/webp,image/gif,image/avif"
                     onChange={handleProfileImageUpload("banner")}
                   />
                 </label>
@@ -10344,6 +10691,93 @@ export default function ChatDashboard({
                   </select>
                 </label>
 
+                <label>
+                  Font Style
+                  <select
+                    value={profileForm.appFontPreset}
+                    onChange={(e) =>
+                      setProfileForm((prev) => ({
+                        ...prev,
+                        appFontPreset: normalizeAppFontPreset(e.target.value),
+                      }))
+                    }
+                  >
+                    {Object.entries(APP_FONT_PRESET_LABELS).map(([value, label]) => (
+                      <option key={value} value={value}>
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <div className="colorGrid profileCustomizationColorGrid">
+                  <label>
+                    App Text Color
+                    <input
+                      type="color"
+                      value={profileForm.appTextColor}
+                      onChange={(e) => setProfileForm((prev) => ({ ...prev, appTextColor: e.target.value }))}
+                    />
+                  </label>
+                  <label>
+                    Profile Name Color
+                    <input
+                      type="color"
+                      value={profileForm.profileNameColor}
+                      onChange={(e) => setProfileForm((prev) => ({ ...prev, profileNameColor: e.target.value }))}
+                    />
+                  </label>
+                  <label>
+                    Profile Body Color
+                    <input
+                      type="color"
+                      value={profileForm.profileBodyColor}
+                      onChange={(e) => setProfileForm((prev) => ({ ...prev, profileBodyColor: e.target.value }))}
+                    />
+                  </label>
+                  <label>
+                    Showcase Accent
+                    <input
+                      type="color"
+                      value={profileForm.showcaseAccentColor}
+                      onChange={(e) => setProfileForm((prev) => ({ ...prev, showcaseAccentColor: e.target.value }))}
+                    />
+                  </label>
+                </div>
+
+                <label>
+                  Showcase Layout
+                  <select
+                    value={profileForm.showcaseLayout}
+                    onChange={(e) =>
+                      setProfileForm((prev) => ({
+                        ...prev,
+                        showcaseLayout: normalizeProfileShowcaseLayout(e.target.value),
+                      }))
+                    }
+                  >
+                    <option value="grid">Grid</option>
+                    <option value="stack">Stack</option>
+                  </select>
+                </label>
+
+                <label>
+                  Showcase Card Style
+                  <select
+                    value={profileForm.showcaseCardStyle}
+                    onChange={(e) =>
+                      setProfileForm((prev) => ({
+                        ...prev,
+                        showcaseCardStyle: normalizeProfileShowcaseCardStyle(e.target.value),
+                      }))
+                    }
+                  >
+                    <option value="gradient">Gradient</option>
+                    <option value="glass">Glass</option>
+                    <option value="solid">Solid</option>
+                  </select>
+                </label>
+
                 <p className="smallMuted">
                   DM and channel backgrounds are now edited in-chat from the header gear icon.
                 </p>
@@ -10356,7 +10790,7 @@ export default function ChatDashboard({
               <form className="settingsForm" onSubmit={handleSaveShowcaseSettings}>
                 <p className="sectionLabel">Profile Showcases</p>
                 <p className="smallMuted">
-                  Build a custom profile layout with modules you can reorder.
+                  Build a custom profile layout with modules you can reorder. Gallery modules support direct image/GIF uploads.
                 </p>
                 <div className="showcaseToolbar">
                   <p className="showcaseCountPill">
@@ -10544,21 +10978,35 @@ export default function ChatDashboard({
                             />
                           </label>
                         ) : (
-                          <label>
-                            Image URLs (one per line)
-                            <textarea
-                              rows={4}
-                              value={showcase.entries.join("\n")}
-                              onChange={(e) =>
-                                handleUpdateShowcase(showcase.id, { entries: parseShowcaseEntriesDraft(e.target.value) })
-                              }
-                              placeholder="https://..."
-                            />
-                          </label>
+                          <>
+                            <label>
+                              Image URLs (one per line)
+                              <textarea
+                                rows={4}
+                                value={showcase.entries.join("\n")}
+                                onChange={(e) =>
+                                  handleUpdateShowcase(showcase.id, { entries: parseShowcaseEntriesDraft(e.target.value) })
+                                }
+                                placeholder="https://..."
+                              />
+                            </label>
+                            <label className="uploadButton showcaseUploadButton">
+                              {showcaseGalleryUploadBusyId === showcase.id ? "Uploading..." : "Upload Gallery Image/GIF"}
+                              <input
+                                type="file"
+                                accept="image/png,image/jpeg,image/webp,image/gif,image/avif"
+                                onChange={handleUploadShowcaseGalleryAsset(showcase.id)}
+                                disabled={showcaseGalleryUploadBusyId === showcase.id}
+                              />
+                            </label>
+                          </>
                         )}
                         <div className="showcaseEditorPreview">
                           <p className="sectionLabel">Live Preview</p>
-                          <section className="profileShowcaseCard compact">
+                          <section
+                            className={`profileShowcaseCard compact showcaseStyle-${profileForm.showcaseCardStyle}`}
+                            style={{ "--profile-showcase-accent": profileForm.showcaseAccentColor } as CSSProperties}
+                          >
                             <div className="profileShowcaseHeadRow">
                               <p className="profileShowcaseTitle">{showcase.title || "Showcase"}</p>
                               <span className={`profileShowcaseKindTag ${showcase.kind}`}>
@@ -10665,10 +11113,15 @@ export default function ChatDashboard({
             ) : (
               <div
                 className={`profilePreviewCard ${profileForm.cardStyle}`}
-                style={{
-                  background: `linear-gradient(150deg, ${profileForm.backgroundFrom}, ${profileForm.backgroundTo})`,
-                  borderColor: profileForm.accentColor,
-                }}
+                style={
+                  {
+                    background: `linear-gradient(150deg, ${profileForm.backgroundFrom}, ${profileForm.backgroundTo})`,
+                    borderColor: profileForm.accentColor,
+                    "--profile-name-color": profileForm.profileNameColor,
+                    "--profile-body-color": profileForm.profileBodyColor,
+                    "--profile-showcase-accent": profileForm.showcaseAccentColor,
+                  } as CSSProperties
+                }
               >
                 <div
                   className="profileBanner"
@@ -10688,13 +11141,21 @@ export default function ChatDashboard({
                   ) : (
                     <span>{initialsFromName(displayName)}</span>
                   )}
+                  {renderAvatarDecoration(profileForm.avatarDecoration, {
+                    color: profileForm.avatarDecorationColor,
+                    background: profileForm.avatarDecorationBackground,
+                  })}
                   <span className={`profilePresenceDot ${currentUserPresenceStatus}`} aria-hidden="true" />
                 </div>
                 <h2>{displayName}</h2>
                 <p className={`profilePresenceText ${currentUserPresenceStatus}`}>{currentUserPresenceLabel}</p>
                 <p>{profileForm.bio || "No bio yet. Edit your profile to personalize this page."}</p>
                 <p className="sectionLabel">Showcases</p>
-                {renderProfileShowcaseList(previewShowcases)}
+                {renderProfileShowcaseList(previewShowcases, {
+                  layout: profileForm.showcaseLayout,
+                  cardStyle: profileForm.showcaseCardStyle,
+                  accentColor: profileForm.showcaseAccentColor,
+                })}
               </div>
             )}
 
@@ -12436,10 +12897,15 @@ export default function ChatDashboard({
             </button>
             <div
               className={`profilePreviewCard ${viewedCardStyle}`}
-              style={{
-                background: `linear-gradient(150deg, ${viewedFrom}, ${viewedTo})`,
-                borderColor: viewedAccent,
-              }}
+              style={
+                {
+                  background: `linear-gradient(150deg, ${viewedFrom}, ${viewedTo})`,
+                  borderColor: viewedAccent,
+                  "--profile-name-color": viewedProfileNameColor,
+                  "--profile-body-color": viewedProfileBodyColor,
+                  "--profile-showcase-accent": viewedShowcaseAccentColor,
+                } as CSSProperties
+              }
             >
               <div
                 className="profileBanner"
@@ -12459,13 +12925,21 @@ export default function ChatDashboard({
                 ) : (
                   <span>{initialsFromName(viewedDisplayName)}</span>
                 )}
+                {renderAvatarDecoration(viewedAvatarDecoration, {
+                  color: viewedAvatarDecorationColor,
+                  background: viewedAvatarDecorationBackground,
+                })}
                 <span className={`profilePresenceDot ${viewedPresenceStatus}`} aria-hidden="true" />
               </div>
               <h2>{viewedDisplayName}</h2>
               <p className={`profilePresenceText ${viewedPresenceStatus}`}>{viewedPresenceLabel}</p>
               <p>{viewedProfile.bio || "No bio yet."}</p>
               <p className="sectionLabel">Showcases</p>
-              {renderProfileShowcaseList(viewedShowcases)}
+              {renderProfileShowcaseList(viewedShowcases, {
+                layout: viewedShowcaseLayout,
+                cardStyle: viewedShowcaseCardStyle,
+                accentColor: viewedShowcaseAccentColor,
+              })}
             </div>
             <div className="profileModalActions">
               {memberFriendActionError && <p className="chatError">{memberFriendActionError}</p>}

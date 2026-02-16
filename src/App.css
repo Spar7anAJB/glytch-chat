@@ -1,4 +1,4 @@
-@import url("https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Sora:wght@600;700;800&family=Orbitron:wght@500;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Sora:wght@600;700;800&family=Orbitron:wght@500;700&family=Poppins:wght@400;500;600;700&family=Rajdhani:wght@500;600;700&family=Space+Mono:wght@400;700&family=Merriweather:wght@400;700&display=swap");
 
 :root {
   color-scheme: light dark;
@@ -82,6 +82,19 @@
 @keyframes auth-caret-blink {
   50% {
     border-color: transparent;
+  }
+}
+
+@keyframes avatar-sparkle {
+  0%,
+  100% {
+    opacity: 0.35;
+    filter: brightness(0.9);
+  }
+
+  50% {
+    opacity: 1;
+    filter: brightness(1.2);
   }
 }
 
@@ -432,12 +445,120 @@ textarea:focus-visible {
 
 .avatarButton.withPresence {
   position: relative;
+  overflow: visible;
+}
+
+.avatarDecorationLayer {
+  --avatar-decor-color: #ffffff;
+  --avatar-decor-bg: #ff2ec2;
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 4;
+}
+
+.avatarDecorationGlyph {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--avatar-decor-bg), #ffffff 25%);
+  color: var(--avatar-decor-color);
+  background: color-mix(in srgb, var(--avatar-decor-bg), #111111 10%);
+  font-size: 0.66rem;
+  font-weight: 800;
+  line-height: 1;
+  box-shadow: 0 3px 10px color-mix(in srgb, var(--bg), transparent 72%);
+  padding: 0 4px;
+}
+
+.avatarDecorationLayer.small .avatarDecorationGlyph {
+  min-width: 16px;
+  height: 16px;
+  font-size: 0.58rem;
+}
+
+.avatarDecorationLayer.crown .avatarDecorationGlyph {
+  top: -8px;
+  left: 50%;
+  transform: translateX(-50%);
+  min-width: 22px;
+  padding: 0 6px;
+  border-radius: 9px;
+}
+
+.avatarDecorationLayer.small.crown .avatarDecorationGlyph {
+  top: -7px;
+  min-width: 18px;
+}
+
+.avatarDecorationLayer.sparkle::after {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--avatar-decor-color), transparent 62%);
+  opacity: 0.65;
+}
+
+.avatarDecorationLayer.sparkle .sparkle {
+  position: absolute;
+  color: var(--avatar-decor-color);
+  line-height: 1;
+  text-shadow: 0 0 9px color-mix(in srgb, var(--avatar-decor-bg), transparent 10%);
+  animation: avatar-sparkle 1.8s ease-in-out infinite;
+}
+
+.avatarDecorationLayer.sparkle .sparkle.s1 {
+  top: -3px;
+  left: 52%;
+  transform: translateX(-50%);
+  font-size: 0.72rem;
+}
+
+.avatarDecorationLayer.sparkle .sparkle.s2 {
+  top: 17%;
+  right: -3px;
+  font-size: 0.6rem;
+  animation-delay: 0.28s;
+}
+
+.avatarDecorationLayer.sparkle .sparkle.s3 {
+  bottom: 13%;
+  left: -2px;
+  font-size: 0.53rem;
+  animation-delay: 0.56s;
+}
+
+.avatarDecorationLayer.small.sparkle .sparkle.s1 {
+  font-size: 0.62rem;
+}
+
+.avatarDecorationLayer.small.sparkle .sparkle.s2 {
+  font-size: 0.5rem;
+}
+
+.avatarDecorationLayer.small.sparkle .sparkle.s3 {
+  font-size: 0.44rem;
+}
+
+.avatarDecorationLayer.heart .avatarDecorationGlyph,
+.avatarDecorationLayer.bolt .avatarDecorationGlyph,
+.avatarDecorationLayer.moon .avatarDecorationGlyph,
+.avatarDecorationLayer.leaf .avatarDecorationGlyph,
+.avatarDecorationLayer.star .avatarDecorationGlyph {
+  right: -3px;
+  bottom: -3px;
 }
 
 .avatarButton img {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  border-radius: inherit;
 }
 
 .settingsLink {
@@ -3496,6 +3617,20 @@ textarea:focus-visible {
   padding: 8px 10px;
 }
 
+.profileDecorationGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.profileCustomizationColorGrid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.showcaseUploadButton {
+  width: fit-content;
+}
+
 .showcaseToolbar {
   display: flex;
   align-items: center;
@@ -3710,6 +3845,14 @@ textarea:focus-visible {
 }
 
 @media (max-width: 760px) {
+  .profileDecorationGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .profileCustomizationColorGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .showcaseToolbar {
     align-items: stretch;
   }
@@ -3788,6 +3931,11 @@ textarea:focus-visible {
   border: 1px solid var(--card-border);
 }
 
+.settingsAvatarPreview {
+  position: relative;
+  width: fit-content;
+}
+
 .settingsThumb.avatar {
   max-width: 100px;
   aspect-ratio: 1 / 1;
@@ -3810,6 +3958,9 @@ textarea:focus-visible {
 }
 
 .profilePreviewCard {
+  --profile-name-color: var(--text);
+  --profile-body-color: color-mix(in srgb, var(--text), #1b2f56 8%);
+  --profile-showcase-accent: var(--accent);
   border: 1px solid color-mix(in srgb, var(--card-border), transparent 16%);
   border-radius: 18px;
   padding: 16px;
@@ -3852,12 +4003,14 @@ textarea:focus-visible {
 
 .profileAvatarLarge.withPresence {
   position: relative;
+  overflow: visible;
 }
 
 .profileAvatarLarge img {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  border-radius: inherit;
 }
 
 .profilePresenceDot {
@@ -3870,6 +4023,7 @@ textarea:focus-visible {
   border: 2px solid var(--panel);
   background: var(--status-offline);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--text), transparent 72%);
+  z-index: 5;
 }
 
 .profilePresenceDot.active {
@@ -3912,10 +4066,12 @@ textarea:focus-visible {
 
 .profilePreviewCard h2 {
   margin: 10px 0 6px;
+  color: var(--profile-name-color);
 }
 
-.profilePreviewCard p {
+.profilePreviewCard p:not(.profilePresenceText):not(.sectionLabel) {
   margin: 0;
+  color: var(--profile-body-color);
 }
 
 .profileShowcaseList {
@@ -3925,8 +4081,12 @@ textarea:focus-visible {
   gap: 10px;
 }
 
+.profileShowcaseList.stack {
+  grid-template-columns: 1fr;
+}
+
 .profileShowcaseCard {
-  border: 1px solid color-mix(in srgb, var(--card-border), transparent 20%);
+  border: 1px solid color-mix(in srgb, var(--profile-showcase-accent), var(--card-border) 60%);
   border-radius: 12px;
   background: linear-gradient(
     145deg,
@@ -3938,6 +4098,15 @@ textarea:focus-visible {
   flex-direction: column;
   gap: 8px;
   min-height: 116px;
+}
+
+.profileShowcaseCard.showcaseStyle-glass {
+  background: color-mix(in srgb, var(--card), transparent 16%);
+  backdrop-filter: blur(12px);
+}
+
+.profileShowcaseCard.showcaseStyle-solid {
+  background: color-mix(in srgb, var(--panel), var(--bg) 10%);
 }
 
 .profileShowcaseCard.compact {
@@ -4012,6 +4181,9 @@ textarea:focus-visible {
 }
 
 .profileShowcaseLinks li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   border: 1px solid color-mix(in srgb, var(--card-border), transparent 26%);
   border-radius: 8px;
   padding: 6px 8px;
@@ -4023,10 +4195,21 @@ textarea:focus-visible {
   text-decoration: underline;
 }
 
+.profileShowcaseLinkHost {
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
 .profileShowcaseStats {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+.profileShowcaseStatItem {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
 }
 
 .profileShowcaseStatRow {
@@ -4039,6 +4222,26 @@ textarea:focus-visible {
   border-radius: 8px;
   padding: 6px 8px;
   background: color-mix(in srgb, var(--panel), var(--bg) 18%);
+}
+
+.profileShowcaseStatMeter {
+  position: relative;
+  width: 100%;
+  height: 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel), transparent 12%);
+  overflow: hidden;
+}
+
+.profileShowcaseStatMeter span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--profile-showcase-accent), #ffffff 18%),
+    color-mix(in srgb, var(--profile-showcase-accent), #0b1f2e 10%)
+  );
 }
 
 .profileShowcaseGallery {
