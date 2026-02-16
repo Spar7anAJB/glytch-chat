@@ -1,27 +1,27 @@
-@import url("https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Sora:wght@600;700;800&family=Orbitron:wght@500;700&family=Poppins:wght@400;500;600;700&family=Rajdhani:wght@500;600;700&family=Space+Mono:wght@400;700&family=Merriweather:wght@400;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Manrope:wght@400;500;600;700;800&family=Sora:wght@600;700;800&family=Orbitron:wght@500;700&family=Poppins:wght@400;500;600;700&family=Rajdhani:wght@500;600;700&family=Space+Mono:wght@400;700&family=Merriweather:wght@400;700&display=swap");
 
 :root {
-  color-scheme: light dark;
-  --bg: #060b16;
-  --panel: #111d31;
-  --panel-border: #27476f;
-  --text: #e4efff;
-  --muted: #9ab0d1;
-  --accent: #4a8dff;
-  --accent-strong: #73c6ff;
-  --card: #162741;
-  --card-border: #2f5e91;
-  --bubble-bot: #1a2f4e;
-  --bubble-me: #22406a;
-  --hot: #73c6ff;
-  --orange: #58a4ff;
-  --warn: #19304f;
-  --violet: #203a5f;
-  --text-on-accent: #061123;
-  --status-active: #63b7ff;
+  color-scheme: dark;
+  --bg: #2f404d;
+  --panel: #39515f;
+  --panel-border: #3d898d;
+  --text: #e2dddf;
+  --muted: #b0acb0;
+  --accent: #85ebd9;
+  --accent-strong: #3d898d;
+  --card: #344a57;
+  --card-border: #3d898d;
+  --bubble-bot: #39515f;
+  --bubble-me: #3d898d;
+  --hot: #85ebd9;
+  --orange: #85ebd9;
+  --warn: #2a3944;
+  --violet: #36515b;
+  --text-on-accent: #1d2f36;
+  --status-active: #34c759;
   --status-away: #f6cf64;
   --status-busy: #ff6a88;
-  --status-offline: #6e86a8;
+  --status-offline: #8f98a0;
   --font-ui: "Orbitron", "Manrope", "Avenir Next", "Segoe UI", sans-serif;
   --font-display: "Orbitron", "Sora", "Manrope", "Avenir Next", sans-serif;
   --focus-ring: 0 0 0 3px color-mix(in srgb, var(--accent-strong), transparent 74%);
@@ -57,7 +57,7 @@
 
 @keyframes auth-glitch {
   0% {
-    text-shadow: 1px 1px #00ffff, -1px -1px #ff2ec2;
+    text-shadow: 1px 1px var(--accent-strong), -1px -1px var(--accent);
     transform: translate(0);
   }
 
@@ -74,7 +74,7 @@
   }
 
   100% {
-    text-shadow: 0 0 5px #00ffff;
+    text-shadow: 0 0 5px var(--accent-strong);
     transform: translate(0);
   }
 }
@@ -187,7 +187,8 @@ body,
 
 body {
   font-family: var(--font-ui);
-  background: #030711;
+  background: var(--bg);
+  color: var(--text);
 }
 
 button,
@@ -212,7 +213,7 @@ textarea:focus-visible {
   height: 100%;
   display: grid;
   place-items: center;
-  background: #0a0a0a;
+  background: linear-gradient(160deg, color-mix(in srgb, var(--bg), #000 14%), color-mix(in srgb, var(--panel), #000 12%));
   color: var(--text);
   font-family: var(--font-ui);
   padding: 20px;
@@ -224,9 +225,9 @@ textarea:focus-visible {
   inset: 0;
   z-index: -2;
   background:
-    radial-gradient(circle at 30% 30%, #6a00f4 0%, transparent 70%),
-    radial-gradient(circle at 70% 70%, #ff2ec2 0%, transparent 70%);
-  opacity: 0.44;
+    radial-gradient(circle at 24% 26%, color-mix(in srgb, var(--accent), transparent 72%) 0%, transparent 66%),
+    radial-gradient(circle at 74% 74%, color-mix(in srgb, var(--accent-strong), transparent 76%) 0%, transparent 68%);
+  opacity: 0.56;
   animation: auth-bg-drift 20s linear infinite;
 }
 
@@ -237,8 +238,8 @@ textarea:focus-visible {
   z-index: -1;
   background: repeating-linear-gradient(
     180deg,
-    rgba(0, 255, 255, 0.03) 0px,
-    rgba(0, 255, 255, 0.03) 1px,
+    color-mix(in srgb, var(--accent-strong), transparent 92%) 0px,
+    color-mix(in srgb, var(--accent-strong), transparent 92%) 1px,
     transparent 1px,
     transparent 5px
   );
@@ -247,34 +248,37 @@ textarea:focus-visible {
 
 .authCard {
   width: min(430px, 100%);
-  background: color-mix(in srgb, #6a00f4, transparent 74%);
-  border: 1px solid color-mix(in srgb, #00ffff, transparent 52%);
+  background: color-mix(in srgb, var(--card), transparent 6%);
+  border: 1px solid color-mix(in srgb, var(--panel-border), transparent 18%);
   border-radius: 16px;
   padding: 24px;
-  box-shadow: 0 0 20px rgba(255, 46, 194, 0.42), 0 0 10px rgba(0, 255, 255, 0.34), var(--surface-shadow-strong);
+  box-shadow:
+    0 0 20px color-mix(in srgb, var(--accent), transparent 82%),
+    0 0 12px color-mix(in srgb, var(--accent-strong), transparent 88%),
+    var(--surface-shadow-strong);
   backdrop-filter: blur(9px);
   position: relative;
   z-index: 2;
 }
 
 .authPage .authBackButton {
-  border: 1px solid color-mix(in srgb, #00ffff, transparent 52%);
-  background: color-mix(in srgb, #1b1b1b, transparent 16%);
-  color: #e5e5e5;
+  border: 1px solid color-mix(in srgb, var(--panel-border), transparent 34%);
+  background: color-mix(in srgb, var(--panel), var(--bg) 20%);
+  color: var(--text);
   padding: 0.4rem 0.95rem;
   transition: border-color 0.16s ease, box-shadow 0.16s ease, color 0.16s ease;
 }
 
 .authPage .authBackButton:hover {
-  color: #00ffff;
-  border-color: color-mix(in srgb, #00ffff, transparent 18%);
-  box-shadow: 0 0 10px rgba(0, 255, 255, 0.28);
+  color: var(--accent-strong);
+  border-color: color-mix(in srgb, var(--accent), transparent 30%);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--accent-strong), transparent 78%);
 }
 
 .authPage .site-title {
   margin: 0;
   font-family: "Orbitron", var(--font-display);
-  color: #ff2ec2;
+  color: var(--accent);
   text-align: center;
   font-size: clamp(1.8rem, 3.5vw, 2.35rem);
   letter-spacing: 0.06em;
@@ -286,7 +290,7 @@ textarea:focus-visible {
 }
 
 .typing-text {
-  border-right: 2px solid #ff2ec2;
+  border-right: 2px solid var(--accent);
   padding-right: 4px;
   white-space: nowrap;
   overflow: hidden;
@@ -304,12 +308,12 @@ textarea:focus-visible {
   text-align: center;
   font-size: 1.08rem;
   letter-spacing: 0.08em;
-  color: #e5e5e5;
+  color: var(--text);
 }
 
 .authSubtitle {
   margin: 8px 0 16px;
-  color: color-mix(in srgb, #e5e5e5, #00ffff 18%);
+  color: color-mix(in srgb, var(--muted), var(--text) 20%);
   font-size: 0.88rem;
   text-align: center;
 }
@@ -322,9 +326,9 @@ textarea:focus-visible {
 }
 
 .authTabs .tab {
-  border: 1px solid color-mix(in srgb, #00ffff, transparent 52%);
-  background: color-mix(in srgb, #1b1b1b, transparent 18%);
-  color: #e5e5e5;
+  border: 1px solid color-mix(in srgb, var(--card-border), transparent 36%);
+  background: color-mix(in srgb, var(--panel), var(--bg) 20%);
+  color: var(--text);
   border-radius: 10px;
   padding: 10px;
   cursor: pointer;
@@ -336,15 +340,15 @@ textarea:focus-visible {
 
 .authTabs .tab:hover {
   transform: translateY(-1px);
-  color: #00ffff;
-  border-color: color-mix(in srgb, #00ffff, transparent 20%);
+  color: var(--accent-strong);
+  border-color: color-mix(in srgb, var(--accent), transparent 35%);
 }
 
 .authTabs .tab.active {
-  background: color-mix(in srgb, #ff2ec2, transparent 16%);
-  border-color: color-mix(in srgb, #ff2ec2, transparent 20%);
-  color: #1b1b1b;
-  box-shadow: 0 0 12px rgba(255, 46, 194, 0.38);
+  background: linear-gradient(140deg, color-mix(in srgb, var(--accent), #fff 8%), var(--accent-strong));
+  border-color: color-mix(in srgb, var(--accent), #fff 22%);
+  color: var(--text-on-accent);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--accent), transparent 72%);
 }
 
 .authForm {
@@ -358,32 +362,32 @@ textarea:focus-visible {
   flex-direction: column;
   gap: 6px;
   font-size: 0.84rem;
-  color: color-mix(in srgb, #e5e5e5, #00ffff 20%);
+  color: color-mix(in srgb, var(--muted), var(--text) 20%);
   text-transform: uppercase;
   letter-spacing: 0.05em;
   font-weight: 700;
 }
 
 .authForm input:not([type="checkbox"]) {
-  border: 1px solid color-mix(in srgb, #00ffff, transparent 52%);
+  border: 1px solid color-mix(in srgb, var(--panel-border), transparent 30%);
   border-radius: 10px;
   padding: 11px 12px;
-  background: color-mix(in srgb, #1b1b1b, transparent 10%);
-  color: #e5e5e5;
+  background: color-mix(in srgb, var(--panel), var(--bg) 16%);
+  color: var(--text);
   outline: none;
   transition: border-color 0.16s ease, box-shadow 0.16s ease, color 0.16s ease;
 }
 
 .authForm input:not([type="checkbox"]):focus {
-  border-color: color-mix(in srgb, #00ffff, transparent 18%);
-  box-shadow: 0 0 8px rgba(0, 255, 255, 0.28);
+  border-color: color-mix(in srgb, var(--accent), transparent 24%);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--accent-strong), transparent 78%);
 }
 
 .authRememberMe {
   flex-direction: row;
   align-items: center;
   gap: 8px;
-  color: color-mix(in srgb, #e5e5e5, #00ffff 20%);
+  color: color-mix(in srgb, var(--muted), var(--text) 20%);
   text-transform: none;
   letter-spacing: 0.01em;
 }
@@ -391,15 +395,15 @@ textarea:focus-visible {
 .authRememberMe input[type="checkbox"] {
   width: 16px;
   height: 16px;
-  accent-color: #ff2ec2;
+  accent-color: var(--accent);
 }
 
 .authError {
   margin: 0;
-  color: #ff2ec2;
+  color: #d64564;
   font-size: 0.9rem;
   text-align: center;
-  text-shadow: 0 0 10px rgba(255, 46, 194, 0.3);
+  text-shadow: 0 0 10px color-mix(in srgb, #d64564, transparent 74%);
 }
 
 .authSubmit {
@@ -407,20 +411,20 @@ textarea:focus-visible {
   border-radius: 10px;
   padding: 12px;
   margin-top: 4px;
-  background: #ff2ec2;
-  color: #1b1b1b;
+  background: linear-gradient(140deg, color-mix(in srgb, var(--accent), #fff 8%), var(--accent-strong));
+  color: var(--text-on-accent);
   font-family: "Orbitron", var(--font-ui);
   font-weight: 700;
   letter-spacing: 0.04em;
   cursor: pointer;
   transition: transform 0.16s ease, box-shadow 0.16s ease, background-color 0.16s ease;
-  box-shadow: 0 0 12px rgba(0, 255, 255, 0.28);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--accent-strong), transparent 74%);
 }
 
 .authSubmit:hover {
   transform: translateY(-1px);
-  background: #00ffff;
-  box-shadow: 0 0 16px rgba(0, 255, 255, 0.45);
+  background: linear-gradient(140deg, color-mix(in srgb, var(--accent), #fff 16%), var(--accent-strong));
+  box-shadow: 0 0 16px color-mix(in srgb, var(--accent), transparent 66%);
 }
 
 .authSubmit:disabled {
@@ -471,6 +475,23 @@ textarea:focus-visible {
     linear-gradient(148deg, color-mix(in srgb, var(--bg), #0a1222 36%), color-mix(in srgb, var(--panel), #040913 28%));
   color: var(--text);
   font-family: var(--font-ui);
+}
+
+.page.a11yUnderlineLinks a {
+  text-decoration: underline !important;
+}
+
+.page.a11yHighContrast {
+  --focus-ring: 0 0 0 3px color-mix(in srgb, var(--accent), transparent 42%);
+}
+
+.page.a11yReduceMotion *,
+.page.a11yReduceMotion *::before,
+.page.a11yReduceMotion *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
 }
 
 .sidemenu {
@@ -726,6 +747,7 @@ textarea:focus-visible {
   object-fit: cover;
   object-position: center;
   border-radius: inherit;
+  display: block;
 }
 
 .avatarButton.withPresence img {
@@ -941,12 +963,48 @@ textarea:focus-visible {
 .railIdentity {
   margin-top: auto;
   display: flex;
-  justify-content: center;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
   position: relative;
 }
 
 .railAvatarButton {
-  flex: 0 0 44px;
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  aspect-ratio: 1 / 1;
+}
+
+.railAvatarButton img {
+  aspect-ratio: 1 / 1;
+}
+
+.railSystemButton {
+  width: 36px;
+  height: 36px;
+  border-radius: 11px;
+  border: 1px solid color-mix(in srgb, var(--card-border), transparent 38%);
+  background: color-mix(in srgb, var(--panel), var(--bg) 18%);
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 0.16s ease, border-color 0.16s ease, background-color 0.16s ease;
+}
+
+.railSystemButton:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--accent), #ffffff 20%);
+  background: color-mix(in srgb, var(--card), var(--panel) 40%);
+}
+
+.railSystemButton svg {
+  width: 18px;
+  height: 18px;
 }
 
 .railIdentityPopover {
@@ -963,8 +1021,11 @@ textarea:focus-visible {
   z-index: 2;
 }
 
-.railIdentity:hover .railIdentityPopover,
-.railIdentity:focus-within .railIdentityPopover {
+.railAvatarButton:hover + .railIdentityPopover,
+.railAvatarButton:focus + .railIdentityPopover,
+.railAvatarButton:focus-visible + .railIdentityPopover,
+.railIdentityPopover:hover,
+.railIdentityPopover:focus-within {
   opacity: 1;
   transform: translateY(0);
   visibility: visible;
@@ -1721,6 +1782,17 @@ textarea:focus-visible {
   line-height: 1;
 }
 
+.dmMutedBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  font-size: 0.7rem;
+  line-height: 1;
+}
+
 .dmSidebarContextMenu {
   position: absolute;
   z-index: 48;
@@ -2134,6 +2206,7 @@ textarea:focus-visible {
   height: 100%;
   object-fit: cover;
   object-position: center;
+  display: block;
 }
 
 .friendAvatar.withPresence img {
@@ -2278,9 +2351,30 @@ textarea:focus-visible {
   padding-right: 2px;
 }
 
+.glytchSidebarDirectory .glytchSelectionList {
+  max-height: 220px;
+  flex: 0 1 auto;
+}
+
 .glytchSelectionItem {
   width: 100%;
   min-height: 42px;
+}
+
+.discoverFeaturedCard {
+  border: 1px solid color-mix(in srgb, var(--accent), var(--card-border) 52%);
+  border-radius: 12px;
+  background:
+    radial-gradient(320px 140px at 0% -35%, color-mix(in srgb, var(--accent), transparent 84%), transparent 68%),
+    color-mix(in srgb, var(--card), var(--panel) 36%);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.discoverFeaturedCard button {
+  align-self: flex-start;
 }
 
 .glytchSelectionState .chatInfo {
@@ -3860,6 +3954,66 @@ textarea:focus-visible {
   gap: 8px;
 }
 
+.profileAppearancePicker {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.profileAppearanceOption {
+  border: 1px solid color-mix(in srgb, var(--card-border), transparent 20%);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel), var(--bg) 18%);
+  color: var(--text);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px;
+  text-align: left;
+  transition: transform 0.14s ease, border-color 0.14s ease, background-color 0.14s ease;
+}
+
+.profileAppearanceOption:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--accent), var(--card-border) 36%);
+}
+
+.profileAppearanceOption.active {
+  border-color: color-mix(in srgb, var(--accent), #ffffff 24%);
+  background: color-mix(in srgb, var(--accent), var(--panel) 76%);
+}
+
+.profileAppearanceAvatarPreview {
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
+}
+
+.profileAppearanceMeta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.profileAppearanceTitle {
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.profileAppearanceHint {
+  font-size: 0.7rem;
+  color: var(--muted);
+}
+
+.profileBioInput {
+  min-height: 92px;
+  max-height: 220px;
+  resize: none;
+  overflow-y: hidden;
+}
+
 .profileCustomizationColorGrid {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
@@ -4094,6 +4248,10 @@ textarea:focus-visible {
     grid-template-columns: 1fr;
   }
 
+  .profileAppearancePicker {
+    grid-template-columns: 1fr;
+  }
+
   .profileCustomizationColorGrid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -4174,6 +4332,7 @@ textarea:focus-visible {
   object-fit: cover;
   border-radius: 10px;
   border: 1px solid var(--card-border);
+  display: block;
 }
 
 .settingsAvatarPreview {
@@ -4182,6 +4341,8 @@ textarea:focus-visible {
 }
 
 .settingsThumb.avatar {
+  width: 100px;
+  height: 100px;
   max-width: 100px;
   aspect-ratio: 1 / 1;
   border-radius: 50%;
@@ -4687,6 +4848,94 @@ textarea:focus-visible {
   padding: 8px 10px;
   cursor: pointer;
   font-weight: 700;
+}
+
+.bannerCropBackdrop {
+  position: fixed;
+  inset: 0;
+  background: color-mix(in srgb, #0d1318, transparent 28%);
+  display: grid;
+  place-items: center;
+  z-index: 24;
+  padding: 16px;
+}
+
+.bannerCropDialog {
+  width: min(520px, 100%);
+  border: 1px solid color-mix(in srgb, var(--card-border), transparent 14%);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--card), var(--bg) 12%);
+  box-shadow: var(--surface-shadow-strong);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.bannerCropViewport {
+  position: relative;
+  width: min(100%, 420px);
+  aspect-ratio: 3 / 1;
+  align-self: center;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--card-border), transparent 16%);
+  background:
+    linear-gradient(45deg, color-mix(in srgb, var(--panel), transparent 32%) 25%, transparent 25%) 0 0 / 16px 16px,
+    linear-gradient(-45deg, color-mix(in srgb, var(--panel), transparent 32%) 25%, transparent 25%) 0 0 / 16px 16px,
+    color-mix(in srgb, var(--panel), var(--bg) 24%);
+  touch-action: none;
+  cursor: grab;
+}
+
+.bannerCropViewport.dragging {
+  cursor: grabbing;
+}
+
+.bannerCropImage {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform-origin: center center;
+  user-select: none;
+  pointer-events: none;
+  -webkit-user-drag: none;
+}
+
+.bannerCropControls {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bannerCropActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.bannerCropActions .clearButton {
+  border: 1px solid color-mix(in srgb, var(--card-border), transparent 18%);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel), var(--bg) 16%);
+  color: var(--text);
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+.bannerCropActions button:not(.clearButton) {
+  border: 0;
+  border-radius: 10px;
+  background: linear-gradient(130deg, color-mix(in srgb, var(--accent), #fff 10%), var(--accent-strong));
+  color: var(--text-on-accent);
+  padding: 8px 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.bannerCropActions button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .inviteCode {

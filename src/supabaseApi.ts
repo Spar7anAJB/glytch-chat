@@ -131,7 +131,25 @@ export type Glytch = {
   invite_code: string;
   bio?: string | null;
   icon_url?: string | null;
+  is_public?: boolean | null;
+  max_members?: number | null;
+  member_count?: number | null;
+  is_joined?: boolean | null;
   created_at: string;
+};
+
+export type PublicGlytchDirectoryEntry = {
+  id: number;
+  owner_id: string;
+  name: string;
+  invite_code: string;
+  bio?: string | null;
+  icon_url?: string | null;
+  is_public: boolean;
+  max_members?: number | null;
+  member_count: number;
+  created_at: string;
+  is_joined: boolean;
 };
 
 export type GlytchChannel = {
@@ -499,6 +517,19 @@ function isMissingDmConversationStateSchemaError(message: string): boolean {
 function isMissingProfileCommentsSchemaError(message: string): boolean {
   const normalized = message.toLowerCase();
   return normalized.includes("profile_comments");
+}
+
+function isMissingGlytchDirectorySchemaError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("glytches.is_public") ||
+    normalized.includes("glytches.max_members") ||
+    normalized.includes("join_public_glytch") ||
+    normalized.includes("search_public_glytches") ||
+    normalized.includes("set_glytch_profile") ||
+    (normalized.includes("is_public") && normalized.includes("does not exist")) ||
+    (normalized.includes("max_members") && normalized.includes("does not exist"))
+  );
 }
 
 async function listDmConversationsLegacy(accessToken: string): Promise<DmConversation[]> {
@@ -1904,15 +1935,38 @@ export async function createGroupChatMessage(
   return (await readJsonOrThrow(res)) as GroupChatMessage[];
 }
 
-export async function createGlytch(accessToken: string, name: string) {
+export async function createGlytch(
+  accessToken: string,
+  name: string,
+  options?: { isPublic?: boolean; maxMembers?: number | null },
+) {
   assertConfig();
-  const res = await supabaseFetch(`/rest/v1/rpc/create_glytch`, {
-    method: "POST",
-    headers: supabaseHeaders(accessToken),
-    body: JSON.stringify({ p_name: name }),
-  });
+  try {
+    const res = await supabaseFetch(`/rest/v1/rpc/create_glytch`, {
+      method: "POST",
+      headers: supabaseHeaders(accessToken),
+      body: JSON.stringify({
+        p_name: name,
+        p_is_public: Boolean(options?.isPublic),
+        p_max_members:
+          typeof options?.maxMembers === "number" && Number.isFinite(options.maxMembers)
+            ? Math.trunc(options.maxMembers)
+            : null,
+      }),
+    });
+    return (await readJsonOrThrow(res)) as { glytch_id: number; invite_code: string; channel_id: number };
+  } catch (err) {
+    if (!(err instanceof Error) || !isMissingGlytchDirectorySchemaError(err.message)) {
+      throw err;
+    }
 
-  return (await readJsonOrThrow(res)) as { glytch_id: number; invite_code: string; channel_id: number };
+    const fallbackRes = await supabaseFetch(`/rest/v1/rpc/create_glytch`, {
+      method: "POST",
+      headers: supabaseHeaders(accessToken),
+      body: JSON.stringify({ p_name: name }),
+    });
+    return (await readJsonOrThrow(fallbackRes)) as { glytch_id: number; invite_code: string; channel_id: number };
+  }
 }
 
 export async function joinGlytchByCode(accessToken: string, inviteCode: string) {
@@ -1940,32 +1994,153 @@ export async function joinGlytchByCode(accessToken: string, inviteCode: string) 
 
 export async function listGlytches(accessToken: string): Promise<Glytch[]> {
   assertConfig();
-  const query = new URLSearchParams({
-    select: "id,owner_id,name,invite_code,bio,icon_url,created_at",
-    order: "created_at.asc",
-  });
+  try {
+    const query = new URLSearchParams({
+      select: "id,owner_id,name,invite_code,bio,icon_url,is_public,max_members,created_at",
+      order: "created_at.asc",
+    });
 
-  const res = await supabaseFetch(`/rest/v1/glytches?${query.toString()}`, {
-    method: "GET",
-    headers: supabaseHeaders(accessToken),
-  });
+    const res = await supabaseFetch(`/rest/v1/glytches?${query.toString()}`, {
+      method: "GET",
+      headers: supabaseHeaders(accessToken),
+    });
 
-  return (await readJsonOrThrow(res)) as Glytch[];
+    return (await readJsonOrThrow(res)) as Glytch[];
+  } catch (err) {
+    if (!(err instanceof Error) || !isMissingGlytchDirectorySchemaError(err.message)) {
+      throw err;
+    }
+
+    const fallbackQuery = new URLSearchParams({
+      select: "id,owner_id,name,invite_code,bio,icon_url,created_at",
+      order: "created_at.asc",
+    });
+    const fallbackRes = await supabaseFetch(`/rest/v1/glytches?${fallbackQuery.toString()}`, {
+      method: "GET",
+      headers: supabaseHeaders(accessToken),
+    });
+    const rows = (await readJsonOrThrow(fallbackRes)) as Glytch[];
+    return rows.map((row) => ({
+      ...row,
+      is_public: false,
+      max_members: null,
+      member_count: null,
+      is_joined: true,
+    }));
+  }
 }
 
-export async function setGlytchProfile(accessToken: string, glytchId: number, name: string, bio: string | null) {
+export async function searchPublicGlytches(
+  accessToken: string,
+  query: string,
+  limit = 30,
+): Promise<PublicGlytchDirectoryEntry[]> {
   assertConfig();
-  const res = await supabaseFetch(`/rest/v1/rpc/set_glytch_profile`, {
-    method: "POST",
-    headers: supabaseHeaders(accessToken),
-    body: JSON.stringify({
-      p_glytch_id: glytchId,
-      p_name: name,
-      p_bio: bio,
-    }),
-  });
+  const boundedLimit = Math.max(1, Math.min(80, Math.trunc(limit)));
+  try {
+    const res = await supabaseFetch(`/rest/v1/rpc/search_public_glytches`, {
+      method: "POST",
+      headers: supabaseHeaders(accessToken),
+      body: JSON.stringify({
+        p_query: query.trim() || null,
+        p_limit: boundedLimit,
+      }),
+    });
+    return (await readJsonOrThrow(res)) as PublicGlytchDirectoryEntry[];
+  } catch (err) {
+    if (err instanceof Error && isMissingGlytchDirectorySchemaError(err.message)) {
+      throw new Error("Public Glytch discovery requires the latest database migration.");
+    }
+    throw err;
+  }
+}
 
-  return (await readJsonOrThrow(res)) as Glytch;
+export async function joinPublicGlytch(accessToken: string, glytchId: number): Promise<{ glytch_id: number }> {
+  assertConfig();
+  try {
+    const res = await supabaseFetch(`/rest/v1/rpc/join_public_glytch`, {
+      method: "POST",
+      headers: supabaseHeaders(accessToken),
+      body: JSON.stringify({
+        p_glytch_id: glytchId,
+      }),
+    });
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const message = extractErrorMessageFromPayload(data) || "Supabase request failed.";
+      const payload = data as { hint?: unknown; details?: unknown };
+      const hint = typeof payload.hint === "string" ? payload.hint.trim().toUpperCase() : "";
+      const normalizedMessage = message.toLowerCase();
+      if (hint === "GLYTCH_BANNED" || normalizedMessage.includes("banned from this glytch")) {
+        throw new JoinGlytchBannedError(message, parseGlytchIdFromJoinErrorDetails(payload.details));
+      }
+      throw new Error(message);
+    }
+
+    return data as { glytch_id: number };
+  } catch (err) {
+    if (err instanceof Error && isMissingGlytchDirectorySchemaError(err.message)) {
+      throw new Error("Public Glytch joining requires the latest database migration.");
+    }
+    throw err;
+  }
+}
+
+export async function setGlytchProfile(
+  accessToken: string,
+  glytchId: number,
+  name: string,
+  bio: string | null,
+  options?: { isPublic?: boolean; maxMembers?: number | null },
+) {
+  assertConfig();
+  const hasVisibilityOption = typeof options?.isPublic === "boolean";
+  const hasMaxMembersOption = Boolean(options && Object.prototype.hasOwnProperty.call(options, "maxMembers"));
+  const requestBody: Record<string, unknown> = {
+    p_glytch_id: glytchId,
+    p_name: name,
+    p_bio: bio,
+  };
+  if (hasVisibilityOption) {
+    requestBody.p_is_public = Boolean(options?.isPublic);
+  }
+  if (hasMaxMembersOption) {
+    requestBody.p_max_members =
+      typeof options?.maxMembers === "number" && Number.isFinite(options.maxMembers)
+        ? Math.trunc(options.maxMembers)
+        : null;
+    requestBody.p_apply_max_members = true;
+  }
+
+  try {
+    const res = await supabaseFetch(`/rest/v1/rpc/set_glytch_profile`, {
+      method: "POST",
+      headers: supabaseHeaders(accessToken),
+      body: JSON.stringify(requestBody),
+    });
+    return (await readJsonOrThrow(res)) as Glytch;
+  } catch (err) {
+    if (!(err instanceof Error) || !isMissingGlytchDirectorySchemaError(err.message)) {
+      throw err;
+    }
+
+    const fallbackRes = await supabaseFetch(`/rest/v1/rpc/set_glytch_profile`, {
+      method: "POST",
+      headers: supabaseHeaders(accessToken),
+      body: JSON.stringify({
+        p_glytch_id: glytchId,
+        p_name: name,
+        p_bio: bio,
+      }),
+    });
+    const row = (await readJsonOrThrow(fallbackRes)) as Glytch;
+    return {
+      ...row,
+      is_public: false,
+      max_members: null,
+    };
+  }
 }
 
 export async function deleteGlytch(accessToken: string, glytchId: number, confirmationName: string) {

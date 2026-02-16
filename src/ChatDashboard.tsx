@@ -31,6 +31,7 @@ import {
   fetchProfilesByIds,
   findProfileByUsername,
   getGlytchBotSettings,
+  joinPublicGlytch,
   getMyProfile,
   forceVoiceParticipantState,
   joinGlytchByCode,
@@ -78,6 +79,7 @@ import {
   sendVoiceSignal,
   setVoiceState,
   searchGifLibrary,
+  searchPublicGlytches,
   sendFriendRequest,
   ingestRemoteMessageAsset,
   reviewGlytchUnbanRequest,
@@ -112,6 +114,7 @@ import {
   type MessageAttachmentType,
   type Profile,
   type ProfileComment,
+  type PublicGlytchDirectoryEntry,
   type UserPresenceStatus,
   type GifResult,
   type VoiceParticipant,
@@ -129,7 +132,7 @@ type ViewMode = "dm" | "group" | "glytch" | "glytch-settings" | "settings";
 type GlytchActionMode = "none" | "create" | "join";
 type DmPanelMode = "dms" | "friends";
 type SettingsSection = "profile" | "system";
-type SettingsTab = "edit" | "theme" | "showcases" | "preview" | "notifications";
+type SettingsTab = "edit" | "theme" | "showcases" | "preview" | "notifications" | "accessibility";
 type AppFontPreset = "cyber" | "clean" | "display" | "compact" | "modern" | "mono" | "serif";
 type AvatarDecoration = "none" | "sparkle" | "crown" | "heart" | "bolt" | "moon" | "leaf" | "star";
 type ProfileShowcaseLayout = "grid" | "stack";
@@ -137,6 +140,7 @@ type ProfileShowcaseCardStyle = "gradient" | "glass" | "solid";
 type ProfileCommentsVisibility = "public" | "friends" | "private" | "off";
 type GlytchSettingsTab = "profile" | "roles" | "moderation" | "bot" | "channels";
 type RoleSettingsMode = "new-role" | "permissions";
+type GlytchDirectoryTab = "my" | "discover";
 type GlytchRolePermissionKey =
   | "ban_members"
   | "manage_channels"
@@ -213,6 +217,7 @@ type DmSidebarContextMenuState = {
   y: number;
   unreadCount: number;
   isPinned: boolean;
+  isMuted: boolean;
 };
 
 type DmNavContextMenuState = {
@@ -283,6 +288,13 @@ type ProfileForm = {
   notifyGlytchMessages: boolean;
   notifyFriendRequests: boolean;
   notifyFriendRequestAccepted: boolean;
+  thirdPartyIntegrationsEnabled: boolean;
+  mutedDmConversationIds: number[];
+  accessibilityReduceMotion: boolean;
+  accessibilityHighContrast: boolean;
+  accessibilityTextScale: number;
+  accessibilityDyslexiaFont: boolean;
+  accessibilityUnderlineLinks: boolean;
 };
 
 type ProfileCommentWithAuthor = {
@@ -342,7 +354,7 @@ type GlytchInviteMessagePayload = {
 
 type TextPostMode = GlytchChannel["text_post_mode"];
 type AppThemeMode = "dark" | "light";
-type AppThemePreset = "default" | "simplistic" | "ocean" | "sunset" | "mint";
+type AppThemePreset = "default" | "neon" | "simplistic" | "ocean" | "sunset" | "mint";
 type AppThemePalette = {
   bg: string;
   panel: string;
@@ -373,9 +385,14 @@ const SHOWCASE_MAX_MODULES = 6;
 const SHOWCASE_MAX_ENTRIES = 32;
 const MAX_RENDERED_MESSAGES = 120;
 const PROFILE_COMMENT_MAX_LENGTH = 400;
-const DEFAULT_DM_CHAT_BACKGROUND: BackgroundGradient = {
+const LEGACY_DEFAULT_DM_CHAT_BACKGROUND: BackgroundGradient = {
   from: "#122341",
   to: "#0a162b",
+  mode: "gradient",
+};
+const DEFAULT_DM_CHAT_BACKGROUND: BackgroundGradient = {
+  from: "#39515f",
+  to: "#2a3944",
   mode: "gradient",
 };
 const DEFAULT_GLYTCH_CHAT_BACKGROUND: BackgroundGradient = {
@@ -385,6 +402,15 @@ const DEFAULT_GLYTCH_CHAT_BACKGROUND: BackgroundGradient = {
 };
 const SHOWCASE_MAX_TITLE_LENGTH = 60;
 const SHOWCASE_MAX_TEXT_LENGTH = 1000;
+const GLYTCH_MAX_MEMBERS_MIN = 2;
+const GLYTCH_MAX_MEMBERS_MAX = 5000;
+const ACCESSIBILITY_TEXT_SCALE_MIN = 85;
+const ACCESSIBILITY_TEXT_SCALE_MAX = 135;
+const ACCESSIBILITY_TEXT_SCALE_DEFAULT = 100;
+const BANNER_CROP_PREVIEW_WIDTH = 360;
+const BANNER_CROP_PREVIEW_HEIGHT = 120;
+const BANNER_OUTPUT_WIDTH = 1500;
+const BANNER_OUTPUT_HEIGHT = 500;
 const DEFAULT_PROFILE_NAME_COLOR = "#f3f4ff";
 const DEFAULT_PROFILE_BODY_COLOR = "#e5def2";
 const DEFAULT_SHOWCASE_ACCENT_COLOR = "#78dcff";
@@ -526,21 +552,38 @@ const SHOWCASE_KIND_EMPTY_COPY: Record<ShowcaseKind, string> = {
 const APP_THEME_PALETTES: Record<AppThemeMode, Record<AppThemePreset, AppThemePalette>> = {
   dark: {
     default: {
-      bg: "#060b16",
-      panel: "#111d31",
-      panelBorder: "#27476f",
-      text: "#e4efff",
-      muted: "#9ab0d1",
-      accent: "#4a8dff",
-      accentStrong: "#73c6ff",
-      card: "#162741",
-      cardBorder: "#2f5e91",
-      bubbleBot: "#1a2f4e",
-      bubbleMe: "#22406a",
-      hot: "#73c6ff",
-      orange: "#58a4ff",
-      warn: "#19304f",
-      violet: "#203a5f",
+      bg: "#2f404d",
+      panel: "#39515f",
+      panelBorder: "#3d898d",
+      text: "#e2dddf",
+      muted: "#b0acb0",
+      accent: "#85ebd9",
+      accentStrong: "#3d898d",
+      card: "#344a57",
+      cardBorder: "#3d898d",
+      bubbleBot: "#39515f",
+      bubbleMe: "#3d898d",
+      hot: "#85ebd9",
+      orange: "#85ebd9",
+      warn: "#2a3944",
+      violet: "#36515b",
+    },
+    neon: {
+      bg: "#120458",
+      panel: "#1b0a66",
+      panelBorder: "#7a04eb",
+      text: "#fdf0ff",
+      muted: "#d09be9",
+      accent: "#ff00a0",
+      accentStrong: "#fe75fe",
+      card: "#220b72",
+      cardBorder: "#7a04eb",
+      bubbleBot: "#21096f",
+      bubbleMe: "#7a04eb",
+      hot: "#ff124f",
+      orange: "#ff00a0",
+      warn: "#2a0b7c",
+      violet: "#7a04eb",
     },
     simplistic: {
       bg: "#050914",
@@ -615,19 +658,36 @@ const APP_THEME_PALETTES: Record<AppThemeMode, Record<AppThemePreset, AppThemePa
     default: {
       bg: "#eef4ff",
       panel: "#deebff",
-      panelBorder: "#9fbbe2",
-      text: "#1e3554",
-      muted: "#5a769a",
-      accent: "#4a8dff",
-      accentStrong: "#78bdff",
+      panelBorder: "#9dc8b8",
+      text: "#1f3b33",
+      muted: "#5d7d70",
+      accent: "#3d898d",
+      accentStrong: "#85ebd9",
       card: "#d4e3fb",
-      cardBorder: "#8eafd8",
+      cardBorder: "#8dbfae",
       bubbleBot: "#dce9ff",
-      bubbleMe: "#c8defe",
-      hot: "#4a8dff",
-      orange: "#4f9eff",
-      warn: "#c6dbfa",
-      violet: "#b7d1f3",
+      bubbleMe: "#c4e8da",
+      hot: "#3d898d",
+      orange: "#3d898d",
+      warn: "#cbe3d7",
+      violet: "#bcdacb",
+    },
+    neon: {
+      bg: "#fff0ff",
+      panel: "#ffe3ff",
+      panelBorder: "#caa0f3",
+      text: "#2a0c58",
+      muted: "#7b54a1",
+      accent: "#ff00a0",
+      accentStrong: "#7a04eb",
+      card: "#ffd3ff",
+      cardBorder: "#b78dea",
+      bubbleBot: "#ffd8ff",
+      bubbleMe: "#f3b3ff",
+      hot: "#ff124f",
+      orange: "#7a04eb",
+      warn: "#f1c6ff",
+      violet: "#eab5ff",
     },
     simplistic: {
       bg: "#edf2fb",
@@ -761,8 +821,18 @@ const AVATAR_DECORATION_GLYPHS: Record<Exclude<AvatarDecoration, "none">, string
   leaf: "❧",
   star: "★",
 };
+const AVATAR_DECORATION_HINTS: Record<AvatarDecoration, string> = {
+  none: "No animation",
+  sparkle: "Twinkling stars",
+  crown: "Royal glow",
+  heart: "Pulse aura",
+  bolt: "Electric flicker",
+  moon: "Orbiting moon",
+  leaf: "Floating leaves",
+  star: "Breathing halo",
+};
 const PROFILE_SETTINGS_TABS: SettingsTab[] = ["edit", "showcases", "preview"];
-const SYSTEM_SETTINGS_TABS: SettingsTab[] = ["theme", "notifications"];
+const SYSTEM_SETTINGS_TABS: SettingsTab[] = ["theme", "notifications", "accessibility"];
 
 const ROLE_PERMISSION_OPTIONS: Array<{ key: GlytchRolePermissionKey; label: string; fallbackKeys: string[] }> = [
   { key: "ban_members", label: "Can Ban Members", fallbackKeys: ["manage_members"] },
@@ -839,6 +909,10 @@ function initialsFromName(name: string) {
   return name.slice(0, 2).toUpperCase();
 }
 
+function formatGlytchNameWithId(name: string, id: number) {
+  return `${name}#${id}`;
+}
+
 function normalizeTextPostMode(raw: unknown): TextPostMode {
   if (raw === "images_only" || raw === "text_only") {
     return raw;
@@ -866,7 +940,11 @@ function inferVideoShareKindFromTrack(track: MediaStreamTrack): LocalVideoShareK
 }
 
 function normalizeAppTheme(raw: unknown): AppThemePreset {
-  if (raw === "simplistic" || raw === "ocean" || raw === "sunset" || raw === "mint") {
+  // Map legacy "classic" values back to default so old profiles remain valid.
+  if (raw === "classic") {
+    return "default";
+  }
+  if (raw === "neon" || raw === "simplistic" || raw === "ocean" || raw === "sunset" || raw === "mint") {
     return raw;
   }
   return "default";
@@ -912,6 +990,137 @@ function normalizeProfileCommentsVisibility(raw: unknown): ProfileCommentsVisibi
     return raw;
   }
   return "public";
+}
+
+function normalizeAccessibilityTextScale(raw: unknown): number {
+  const parsed = typeof raw === "number" ? raw : Number.parseInt(String(raw || ""), 10);
+  if (!Number.isFinite(parsed)) return ACCESSIBILITY_TEXT_SCALE_DEFAULT;
+  return Math.max(ACCESSIBILITY_TEXT_SCALE_MIN, Math.min(ACCESSIBILITY_TEXT_SCALE_MAX, Math.trunc(parsed)));
+}
+
+function parseMutedDmConversationIds(raw: unknown): number[] {
+  if (!Array.isArray(raw)) return [];
+  return Array.from(
+    new Set(
+      raw
+        .map((entry) => (typeof entry === "number" ? entry : Number.parseInt(String(entry || ""), 10)))
+        .filter((entry) => Number.isFinite(entry) && entry > 0)
+        .map((entry) => Math.trunc(entry)),
+    ),
+  );
+}
+
+function parseHexColor(raw: string): { r: number; g: number; b: number } | null {
+  const normalized = raw.trim();
+  const match = normalized.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+  if (!match) return null;
+  const hex = match[1].length === 3
+    ? match[1]
+        .split("")
+        .map((char) => char + char)
+        .join("")
+    : match[1];
+  const int = Number.parseInt(hex, 16);
+  if (!Number.isFinite(int)) return null;
+  return {
+    r: (int >> 16) & 255,
+    g: (int >> 8) & 255,
+    b: int & 255,
+  };
+}
+
+function srgbToLinear(channel: number): number {
+  const normalized = channel / 255;
+  return normalized <= 0.03928 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
+}
+
+function relativeLuminance(color: { r: number; g: number; b: number }): number {
+  return 0.2126 * srgbToLinear(color.r) + 0.7152 * srgbToLinear(color.g) + 0.0722 * srgbToLinear(color.b);
+}
+
+function contrastRatio(colorA: { r: number; g: number; b: number }, colorB: { r: number; g: number; b: number }): number {
+  const luminanceA = relativeLuminance(colorA);
+  const luminanceB = relativeLuminance(colorB);
+  const lighter = Math.max(luminanceA, luminanceB);
+  const darker = Math.min(luminanceA, luminanceB);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+function minContrastRatioAgainstSurfaces(textColorHex: string, surfaceHexes: string[]): number | null {
+  const parsedTextColor = parseHexColor(textColorHex);
+  if (!parsedTextColor) return null;
+  let minContrast: number | null = null;
+  for (const surfaceHex of surfaceHexes) {
+    const parsedSurfaceColor = parseHexColor(surfaceHex);
+    if (!parsedSurfaceColor) continue;
+    const ratio = contrastRatio(parsedTextColor, parsedSurfaceColor);
+    minContrast = minContrast === null ? ratio : Math.min(minContrast, ratio);
+  }
+  return minContrast;
+}
+
+function ensureReadableTextColor(
+  candidateHex: string,
+  fallbackHex: string,
+  surfaceHexes: string[],
+  minimumContrast: number,
+): string {
+  const candidateContrast = minContrastRatioAgainstSurfaces(candidateHex, surfaceHexes);
+  if (candidateContrast !== null && candidateContrast >= minimumContrast) {
+    return candidateHex;
+  }
+  return fallbackHex;
+}
+
+function clampBannerCropOffsets(
+  naturalSize: { width: number; height: number } | null,
+  zoom: number,
+  offsetX: number,
+  offsetY: number,
+): { x: number; y: number } {
+  if (!naturalSize || naturalSize.width <= 0 || naturalSize.height <= 0) {
+    return { x: 0, y: 0 };
+  }
+  const baseScale = Math.max(
+    BANNER_CROP_PREVIEW_WIDTH / naturalSize.width,
+    BANNER_CROP_PREVIEW_HEIGHT / naturalSize.height,
+  );
+  const totalScale = baseScale * Math.max(1, zoom);
+  const renderedWidth = naturalSize.width * totalScale;
+  const renderedHeight = naturalSize.height * totalScale;
+  const maxX = Math.max(0, (renderedWidth - BANNER_CROP_PREVIEW_WIDTH) / 2);
+  const maxY = Math.max(0, (renderedHeight - BANNER_CROP_PREVIEW_HEIGHT) / 2);
+  return {
+    x: Math.max(-maxX, Math.min(maxX, offsetX)),
+    y: Math.max(-maxY, Math.min(maxY, offsetY)),
+  };
+}
+
+function computeBannerCropSourceRect(
+  naturalSize: { width: number; height: number },
+  zoom: number,
+  offsetX: number,
+  offsetY: number,
+): { sx: number; sy: number; sw: number; sh: number } {
+  const baseScale = Math.max(
+    BANNER_CROP_PREVIEW_WIDTH / naturalSize.width,
+    BANNER_CROP_PREVIEW_HEIGHT / naturalSize.height,
+  );
+  const totalScale = baseScale * Math.max(1, zoom);
+  const renderedWidth = naturalSize.width * totalScale;
+  const renderedHeight = naturalSize.height * totalScale;
+  const sw = BANNER_CROP_PREVIEW_WIDTH / totalScale;
+  const sh = BANNER_CROP_PREVIEW_HEIGHT / totalScale;
+  const sx = ((renderedWidth - BANNER_CROP_PREVIEW_WIDTH) / 2 - offsetX) / totalScale;
+  const sy = ((renderedHeight - BANNER_CROP_PREVIEW_HEIGHT) / 2 - offsetY) / totalScale;
+  const clampedSx = Math.max(0, Math.min(Math.max(0, naturalSize.width - sw), sx));
+  const clampedSy = Math.max(0, Math.min(Math.max(0, naturalSize.height - sh), sy));
+  return {
+    sx: clampedSx,
+    sy: clampedSy,
+    sw: Math.max(1, Math.min(sw, naturalSize.width)),
+    sh: Math.max(1, Math.min(sh, naturalSize.height)),
+  };
 }
 
 function textPostModeLabel(mode: TextPostMode): string {
@@ -1561,6 +1770,14 @@ function buildProfileForm(profile: Profile | null): ProfileForm {
   const notifyFriendRequests = typeof theme.notifyFriendRequests === "boolean" ? theme.notifyFriendRequests : true;
   const notifyFriendRequestAccepted =
     typeof theme.notifyFriendRequestAccepted === "boolean" ? theme.notifyFriendRequestAccepted : true;
+  const thirdPartyIntegrationsEnabled =
+    typeof theme.thirdPartyIntegrationsEnabled === "boolean" ? theme.thirdPartyIntegrationsEnabled : true;
+  const mutedDmConversationIds = parseMutedDmConversationIds(theme.mutedDmConversationIds);
+  const accessibilityReduceMotion = Boolean(theme.accessibilityReduceMotion);
+  const accessibilityHighContrast = Boolean(theme.accessibilityHighContrast);
+  const accessibilityTextScale = normalizeAccessibilityTextScale(theme.accessibilityTextScale);
+  const accessibilityDyslexiaFont = Boolean(theme.accessibilityDyslexiaFont);
+  const accessibilityUnderlineLinks = Boolean(theme.accessibilityUnderlineLinks);
   const dmBackgroundByConversation = normalizeBackgroundGradientMap(theme.dmBackgroundByConversation);
   const groupBackgroundByChat = normalizeBackgroundGradientMap(theme.groupBackgroundByChat);
   const glytchBackgroundByChannel = normalizeBackgroundGradientMap(theme.glytchBackgroundByChannel);
@@ -1584,6 +1801,19 @@ function buildProfileForm(profile: Profile | null): ProfileForm {
     typeof theme.avatarDecorationColor === "string" ? theme.avatarDecorationColor : DEFAULT_AVATAR_DECORATION_COLOR;
   const avatarDecorationBackground =
     typeof theme.avatarDecorationBackground === "string" ? theme.avatarDecorationBackground : DEFAULT_AVATAR_DECORATION_BG;
+  const dmBackgroundFromRaw =
+    typeof theme.dmBackgroundFrom === "string" ? theme.dmBackgroundFrom : DEFAULT_DM_CHAT_BACKGROUND.from;
+  const dmBackgroundToRaw =
+    typeof theme.dmBackgroundTo === "string" ? theme.dmBackgroundTo : DEFAULT_DM_CHAT_BACKGROUND.to;
+  const normalizedDmBackgroundFrom = dmBackgroundFromRaw.trim().toLowerCase();
+  const normalizedDmBackgroundTo = dmBackgroundToRaw.trim().toLowerCase();
+  const isLegacyDefaultDmBackground =
+    (normalizedDmBackgroundFrom === LEGACY_DEFAULT_DM_CHAT_BACKGROUND.from &&
+      normalizedDmBackgroundTo === LEGACY_DEFAULT_DM_CHAT_BACKGROUND.to) ||
+    (normalizedDmBackgroundFrom === LEGACY_DEFAULT_DM_CHAT_BACKGROUND.to &&
+      normalizedDmBackgroundTo === LEGACY_DEFAULT_DM_CHAT_BACKGROUND.from);
+  const dmBackgroundFrom = isLegacyDefaultDmBackground ? DEFAULT_DM_CHAT_BACKGROUND.from : dmBackgroundFromRaw;
+  const dmBackgroundTo = isLegacyDefaultDmBackground ? DEFAULT_DM_CHAT_BACKGROUND.to : dmBackgroundToRaw;
   const profilePresenceStatus = normalizePresenceStatus(profile?.presence_status);
   const initialPresenceStatus = profilePresenceStatus === "away" ? "active" : profilePresenceStatus;
   return {
@@ -1609,10 +1839,8 @@ function buildProfileForm(profile: Profile | null): ProfileForm {
     avatarDecoration,
     avatarDecorationColor,
     avatarDecorationBackground,
-    dmBackgroundFrom:
-      typeof theme.dmBackgroundFrom === "string" ? theme.dmBackgroundFrom : DEFAULT_DM_CHAT_BACKGROUND.from,
-    dmBackgroundTo:
-      typeof theme.dmBackgroundTo === "string" ? theme.dmBackgroundTo : DEFAULT_DM_CHAT_BACKGROUND.to,
+    dmBackgroundFrom,
+    dmBackgroundTo,
     glytchBackgroundFrom:
       typeof theme.glytchBackgroundFrom === "string" ? theme.glytchBackgroundFrom : DEFAULT_GLYTCH_CHAT_BACKGROUND.from,
     glytchBackgroundTo:
@@ -1627,6 +1855,13 @@ function buildProfileForm(profile: Profile | null): ProfileForm {
     notifyGlytchMessages,
     notifyFriendRequests,
     notifyFriendRequestAccepted,
+    thirdPartyIntegrationsEnabled,
+    mutedDmConversationIds,
+    accessibilityReduceMotion,
+    accessibilityHighContrast,
+    accessibilityTextScale,
+    accessibilityDyslexiaFont,
+    accessibilityUnderlineLinks,
   };
 }
 
@@ -1671,6 +1906,13 @@ function buildProfileThemePayload(form: ProfileForm): Record<string, unknown> {
     notifyGlytchMessages: form.notifyGlytchMessages,
     notifyFriendRequests: form.notifyFriendRequests,
     notifyFriendRequestAccepted: form.notifyFriendRequestAccepted,
+    thirdPartyIntegrationsEnabled: form.thirdPartyIntegrationsEnabled,
+    mutedDmConversationIds: form.mutedDmConversationIds,
+    accessibilityReduceMotion: form.accessibilityReduceMotion,
+    accessibilityHighContrast: form.accessibilityHighContrast,
+    accessibilityTextScale: form.accessibilityTextScale,
+    accessibilityDyslexiaFont: form.accessibilityDyslexiaFont,
+    accessibilityUnderlineLinks: form.accessibilityUnderlineLinks,
   };
 }
 
@@ -1808,6 +2050,8 @@ export default function ChatDashboard({
   const [viewedProfileCommentDeleteId, setViewedProfileCommentDeleteId] = useState<number | null>(null);
 
   const [glytchNameDraft, setGlytchNameDraft] = useState("");
+  const [glytchCreateVisibilityDraft, setGlytchCreateVisibilityDraft] = useState<"private" | "public">("private");
+  const [glytchCreateMaxMembersDraft, setGlytchCreateMaxMembersDraft] = useState("");
   const [inviteCodeDraft, setInviteCodeDraft] = useState("");
   const [categoryNameDraft, setCategoryNameDraft] = useState("");
   const [channelNameDraft, setChannelNameDraft] = useState("");
@@ -1818,6 +2062,14 @@ export default function ChatDashboard({
   const [showChannelCreate, setShowChannelCreate] = useState(false);
   const [glytchActionMode, setGlytchActionMode] = useState<GlytchActionMode>("none");
   const [showGlytchDirectory, setShowGlytchDirectory] = useState(true);
+  const [glytchDirectoryTab, setGlytchDirectoryTab] = useState<GlytchDirectoryTab>("discover");
+  const [glytchSidebarSearchDraft, setGlytchSidebarSearchDraft] = useState("");
+  const [publicGlytchSearchDraft, setPublicGlytchSearchDraft] = useState("");
+  const [publicGlytchResults, setPublicGlytchResults] = useState<PublicGlytchDirectoryEntry[]>([]);
+  const [publicGlytchSearchBusy, setPublicGlytchSearchBusy] = useState(false);
+  const [publicGlytchSearchError, setPublicGlytchSearchError] = useState("");
+  const [publicGlytchJoinBusyId, setPublicGlytchJoinBusyId] = useState<number | null>(null);
+  const [selectedDiscoverGlytchId, setSelectedDiscoverGlytchId] = useState<number | null>(null);
   const [showGlytchInvitePanel, setShowGlytchInvitePanel] = useState(false);
   const [glytchInviteSearch, setGlytchInviteSearch] = useState("");
   const [glytchInviteBusyConversationId, setGlytchInviteBusyConversationId] = useState<number | null>(null);
@@ -1876,6 +2128,8 @@ export default function ChatDashboard({
   const [glytchIconError, setGlytchIconError] = useState("");
   const [glytchProfileNameDraft, setGlytchProfileNameDraft] = useState("");
   const [glytchProfileBioDraft, setGlytchProfileBioDraft] = useState("");
+  const [glytchProfileVisibilityDraft, setGlytchProfileVisibilityDraft] = useState<"private" | "public">("private");
+  const [glytchProfileMaxMembersDraft, setGlytchProfileMaxMembersDraft] = useState("");
   const [glytchProfileBusy, setGlytchProfileBusy] = useState(false);
   const [glytchProfileError, setGlytchProfileError] = useState("");
   const [glytchDeleteConfirmName, setGlytchDeleteConfirmName] = useState("");
@@ -1893,6 +2147,14 @@ export default function ChatDashboard({
   const [profileSaveBusy, setProfileSaveBusy] = useState(false);
   const [avatarUploadBusy, setAvatarUploadBusy] = useState(false);
   const [bannerUploadBusy, setBannerUploadBusy] = useState(false);
+  const [bannerCropSourceUrl, setBannerCropSourceUrl] = useState("");
+  const [bannerCropSourceType, setBannerCropSourceType] = useState("image/webp");
+  const [bannerCropZoom, setBannerCropZoom] = useState(1);
+  const [bannerCropOffsetX, setBannerCropOffsetX] = useState(0);
+  const [bannerCropOffsetY, setBannerCropOffsetY] = useState(0);
+  const [bannerCropNaturalSize, setBannerCropNaturalSize] = useState<{ width: number; height: number } | null>(null);
+  const [bannerCropDragging, setBannerCropDragging] = useState(false);
+  const bannerCropPointerRef = useRef<{ pointerId: number; startX: number; startY: number; originX: number; originY: number } | null>(null);
 
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [dismissedDmMessageIds, setDismissedDmMessageIds] = useState<Record<number, true>>({});
@@ -1960,6 +2222,7 @@ export default function ChatDashboard({
   const dmSidebarListRef = useRef<HTMLElement | null>(null);
   const messageEndRef = useRef<HTMLDivElement | null>(null);
   const messageInputRef = useRef<HTMLInputElement | null>(null);
+  const profileBioInputRef = useRef<HTMLTextAreaElement | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const localScreenTrackRef = useRef<MediaStreamTrack | null>(null);
   const localScreenStreamRef = useRef<MediaStream | null>(null);
@@ -2038,6 +2301,34 @@ export default function ChatDashboard({
   const activeGlytch = useMemo(
     () => glytches.find((item) => item.id === activeGlytchId) || null,
     [glytches, activeGlytchId],
+  );
+  const mutedDmConversationIdSet = useMemo(
+    () => new Set(profileForm.mutedDmConversationIds.filter((id) => Number.isFinite(id) && id > 0)),
+    [profileForm.mutedDmConversationIds],
+  );
+  const filteredSidebarGlytches = useMemo(() => {
+    const rawQuery = glytchSidebarSearchDraft.trim();
+    if (!rawQuery) return glytches;
+    const hashIndex = rawQuery.lastIndexOf("#");
+    const hasHashSuffix = hashIndex >= 0;
+    const namePart = (hasHashSuffix ? rawQuery.slice(0, hashIndex) : rawQuery).trim().toLowerCase();
+    const rawIdPart = hasHashSuffix ? rawQuery.slice(hashIndex + 1) : "";
+    const isNumericOnlyQuery = !hasHashSuffix && /^[0-9]+$/.test(rawQuery);
+    const normalizedNameQuery = isNumericOnlyQuery ? "" : namePart;
+    const normalizedIdQuery = (hasHashSuffix ? rawIdPart : isNumericOnlyQuery ? rawQuery : "").replace(/\D/g, "");
+    return glytches.filter((glytch) => {
+      const bio = (glytch.bio || "").toLowerCase();
+      const matchesName =
+        normalizedNameQuery.length === 0 ||
+        glytch.name.toLowerCase().includes(normalizedNameQuery) ||
+        bio.includes(normalizedNameQuery);
+      const matchesId = normalizedIdQuery.length === 0 || String(glytch.id) === normalizedIdQuery;
+      return matchesName && matchesId;
+    });
+  }, [glytchSidebarSearchDraft, glytches]);
+  const selectedDiscoverGlytch = useMemo(
+    () => publicGlytchResults.find((glytch) => glytch.id === selectedDiscoverGlytchId) || publicGlytchResults[0] || null,
+    [publicGlytchResults, selectedDiscoverGlytchId],
   );
 
   const activeChannel = useMemo(
@@ -2277,6 +2568,24 @@ export default function ChatDashboard({
   );
   const currentUserForceMuted = Boolean(currentUserVoiceParticipant?.moderatorForcedMuted);
   const currentUserForceDeafened = Boolean(currentUserVoiceParticipant?.moderatorForcedDeafened);
+
+  useEffect(() => {
+    if (publicGlytchResults.length === 0) {
+      setSelectedDiscoverGlytchId(null);
+      return;
+    }
+    if (!selectedDiscoverGlytchId || !publicGlytchResults.some((row) => row.id === selectedDiscoverGlytchId)) {
+      setSelectedDiscoverGlytchId(publicGlytchResults[0].id);
+    }
+  }, [publicGlytchResults, selectedDiscoverGlytchId]);
+
+  useEffect(() => {
+    return () => {
+      if (bannerCropSourceUrl) {
+        URL.revokeObjectURL(bannerCropSourceUrl);
+      }
+    };
+  }, [bannerCropSourceUrl]);
 
   useEffect(() => {
     const allowedTabs = settingsSection === "profile" ? PROFILE_SETTINGS_TABS : SYSTEM_SETTINGS_TABS;
@@ -2775,12 +3084,24 @@ export default function ChatDashboard({
 
   const sidebarAvatar = profileForm.avatarUrl || currentProfile?.avatar_url || "";
   const displayName = currentProfile?.username || currentUserName;
+  const resizeProfileBioInput = useCallback(() => {
+    const textarea = profileBioInputRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    const clampedHeight = Math.max(92, Math.min(220, textarea.scrollHeight));
+    textarea.style.height = `${clampedHeight}px`;
+    textarea.style.overflowY = textarea.scrollHeight > clampedHeight ? "auto" : "hidden";
+  }, []);
+  useEffect(() => {
+    resizeProfileBioInput();
+  }, [profileForm.bio, resizeProfileBioInput, settingsSection, settingsTab]);
   const dmMessageNotificationsEnabled = profileForm.notificationsEnabled && profileForm.notifyDmMessages;
   const dmCallNotificationsEnabled = profileForm.notificationsEnabled && profileForm.notifyDmCalls;
   const glytchMessageNotificationsEnabled = profileForm.notificationsEnabled && profileForm.notifyGlytchMessages;
   const friendRequestNotificationsEnabled = profileForm.notificationsEnabled && profileForm.notifyFriendRequests;
   const friendRequestAcceptedNotificationsEnabled =
     profileForm.notificationsEnabled && profileForm.notifyFriendRequestAccepted;
+  const thirdPartyIntegrationsEnabled = profileForm.thirdPartyIntegrationsEnabled;
   const isElectronRuntime = typeof window !== "undefined" && Boolean(window.electronAPI?.isElectron);
   const isComposerInputFocused = useCallback(
     () =>
@@ -3335,6 +3656,12 @@ export default function ChatDashboard({
 
   useEffect(() => {
     if (!showGifPicker) return;
+    if (!thirdPartyIntegrationsEnabled) {
+      setGifLoading(false);
+      setGifResults([]);
+      setGifError("Third-party integrations are disabled in settings.");
+      return;
+    }
     const canCompose =
       viewMode === "dm"
         ? !!activeConversationId
@@ -3377,7 +3704,18 @@ export default function ChatDashboard({
     activeChannelId,
     activeChannel?.kind,
     activeChannel?.text_post_mode,
+    thirdPartyIntegrationsEnabled,
   ]);
+
+  useEffect(() => {
+    if (thirdPartyIntegrationsEnabled) return;
+    setShowGifPicker(false);
+    setGifLoading(false);
+    setGifResults([]);
+    if (selectedGif) {
+      setSelectedGif(null);
+    }
+  }, [thirdPartyIntegrationsEnabled, selectedGif]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -4159,12 +4497,20 @@ export default function ChatDashboard({
     if (!activeGlytch) {
       setGlytchProfileNameDraft("");
       setGlytchProfileBioDraft("");
+      setGlytchProfileVisibilityDraft("private");
+      setGlytchProfileMaxMembersDraft("");
       setGlytchDeleteConfirmName("");
       setGlytchDeleteError("");
       return;
     }
     setGlytchProfileNameDraft(activeGlytch.name || "");
     setGlytchProfileBioDraft(activeGlytch.bio || "");
+    setGlytchProfileVisibilityDraft(activeGlytch.is_public ? "public" : "private");
+    setGlytchProfileMaxMembersDraft(
+      typeof activeGlytch.max_members === "number" && Number.isFinite(activeGlytch.max_members)
+        ? String(Math.trunc(activeGlytch.max_members))
+        : "",
+    );
     setGlytchDeleteConfirmName("");
     setGlytchDeleteError("");
   }, [activeGlytch]);
@@ -4259,6 +4605,7 @@ export default function ChatDashboard({
             latest.id > previousId;
           if (!hasNewIncomingMessage) continue;
           if (!dmMessageNotificationsEnabled) continue;
+          if (mutedDmConversationIdSet.has(dm.conversationId)) continue;
 
           const viewingThisDm =
             viewMode === "dm" && activeConversationId === dm.conversationId && isAppVisibleAndFocused();
@@ -4318,6 +4665,7 @@ export default function ChatDashboard({
     dms,
     isElectronRuntime,
     isAppVisibleAndFocused,
+    mutedDmConversationIdSet,
     shouldPauseBackgroundPolling,
     triggerDesktopNotification,
     viewMode,
@@ -4639,6 +4987,7 @@ export default function ChatDashboard({
         const nextCounts: Record<number, number> = {};
 
         for (const { dm, roomKey, participants } of snapshots) {
+          const isDmMuted = mutedDmConversationIdSet.has(dm.conversationId);
           const previousCount = previousCounts[dm.conversationId] ?? 0;
           const otherParticipantCount = participants.filter((row) => row.user_id !== currentUserId).length;
           nextCounts[dm.conversationId] = otherParticipantCount;
@@ -4651,7 +5000,7 @@ export default function ChatDashboard({
           const shouldNotifyJoinedActiveDmVoice =
             dmCallNotificationSeededRef.current && participantCountIncreased && voiceRoomKey === roomKey;
 
-          if (shouldNotifyIncomingCall && dmCallNotificationsEnabled) {
+          if (shouldNotifyIncomingCall && dmCallNotificationsEnabled && !isDmMuted) {
             void playIncomingCallRing();
             void triggerDesktopNotification({
               title: `Incoming call from ${dm.friendName}`,
@@ -4667,7 +5016,7 @@ export default function ChatDashboard({
             });
           }
 
-          if (shouldNotifyJoinedActiveDmVoice && dmCallNotificationsEnabled) {
+          if (shouldNotifyJoinedActiveDmVoice && dmCallNotificationsEnabled && !isDmMuted) {
             void playNotificationSound();
             void triggerDesktopNotification({
               title: `${dm.friendName} joined the call`,
@@ -4717,6 +5066,7 @@ export default function ChatDashboard({
     dmCallNotificationsEnabled,
     dms,
     isElectronRuntime,
+    mutedDmConversationIdSet,
     playIncomingCallRing,
     playNotificationSound,
     shouldPauseBackgroundPolling,
@@ -4747,6 +5097,39 @@ export default function ChatDashboard({
       window.clearInterval(interval);
     };
   }, [isElectronRuntime, loadGlytchSidebarData, shouldPauseBackgroundPolling]);
+
+  useEffect(() => {
+    if (!isInGlytchView || !showGlytchDirectory || glytchDirectoryTab !== "discover") {
+      setPublicGlytchSearchBusy(false);
+      setPublicGlytchSearchError("");
+      return;
+    }
+
+    let mounted = true;
+    const timeout = window.setTimeout(() => {
+      setPublicGlytchSearchBusy(true);
+      setPublicGlytchSearchError("");
+      void searchPublicGlytches(accessToken, publicGlytchSearchDraft, 40)
+        .then((rows) => {
+          if (!mounted) return;
+          setPublicGlytchResults(rows);
+        })
+        .catch((err) => {
+          if (!mounted) return;
+          setPublicGlytchResults([]);
+          setPublicGlytchSearchError(err instanceof Error ? err.message : "Could not search public Glytches.");
+        })
+        .finally(() => {
+          if (!mounted) return;
+          setPublicGlytchSearchBusy(false);
+        });
+    }, 180);
+
+    return () => {
+      mounted = false;
+      window.clearTimeout(timeout);
+    };
+  }, [accessToken, glytchDirectoryTab, isInGlytchView, publicGlytchSearchDraft, showGlytchDirectory]);
 
   useEffect(() => {
     if (viewMode !== "dm") {
@@ -5578,9 +5961,25 @@ export default function ChatDashboard({
       return;
     }
 
+    const maxMembersDraft = glytchCreateMaxMembersDraft.trim();
+    let maxMembers: number | null = null;
+    if (maxMembersDraft) {
+      const parsed = Number.parseInt(maxMembersDraft, 10);
+      if (!Number.isFinite(parsed) || parsed < GLYTCH_MAX_MEMBERS_MIN || parsed > GLYTCH_MAX_MEMBERS_MAX) {
+        setGlytchError(`Max users must be between ${GLYTCH_MAX_MEMBERS_MIN} and ${GLYTCH_MAX_MEMBERS_MAX}.`);
+        return;
+      }
+      maxMembers = Math.trunc(parsed);
+    }
+
     try {
-      const created = await createGlytch(accessToken, name);
+      const created = await createGlytch(accessToken, name, {
+        isPublic: glytchCreateVisibilityDraft === "public",
+        maxMembers,
+      });
       setGlytchNameDraft("");
+      setGlytchCreateVisibilityDraft("private");
+      setGlytchCreateMaxMembersDraft("");
       setGlytchError("");
       setJoinBannedGlytchId(null);
       setJoinUnbanRequestDraft("");
@@ -5589,6 +5988,7 @@ export default function ChatDashboard({
       setViewMode("glytch");
       setActiveGlytchId(created.glytch_id);
       setActiveChannelId(created.channel_id);
+      setGlytchDirectoryTab("discover");
       setGlytchActionMode("none");
       setShowGlytchDirectory(false);
     } catch (err) {
@@ -5599,6 +5999,7 @@ export default function ChatDashboard({
   const openJoinUnbanRequestFlow = useCallback((glytchId: number | null, inviteCode?: string) => {
     setViewMode("glytch");
     setShowGlytchDirectory(true);
+    setGlytchDirectoryTab("discover");
     setGlytchActionMode("join");
     if (typeof inviteCode === "string") {
       setInviteCodeDraft(inviteCode.trim().toLowerCase());
@@ -5627,6 +6028,7 @@ export default function ChatDashboard({
       await loadGlytchSidebarData();
       setViewMode("glytch");
       setActiveGlytchId(joined.glytch_id);
+      setGlytchDirectoryTab("discover");
       setGlytchActionMode("none");
       setShowGlytchDirectory(false);
     } catch (err) {
@@ -5639,6 +6041,31 @@ export default function ChatDashboard({
       setGlytchError(err instanceof Error ? err.message : "Could not join Glytch.");
     }
   };
+
+  const handleJoinPublicGlytch = useCallback(async (glytch: PublicGlytchDirectoryEntry) => {
+    setPublicGlytchJoinBusyId(glytch.id);
+    setPublicGlytchSearchError("");
+    setGlytchError("");
+    setJoinBannedGlytchId(null);
+    setJoinUnbanRequestNotice("");
+    try {
+      const joined = await joinPublicGlytch(accessToken, glytch.id);
+      await loadGlytchSidebarData();
+      setViewMode("glytch");
+      setActiveGlytchId(joined.glytch_id);
+      setGlytchDirectoryTab("discover");
+      setShowGlytchDirectory(false);
+      setGlytchActionMode("none");
+    } catch (err) {
+      if (err instanceof JoinGlytchBannedError) {
+        openJoinUnbanRequestFlow(err.glytchId ?? glytch.id);
+        return;
+      }
+      setPublicGlytchSearchError(err instanceof Error ? err.message : "Could not join public Glytch.");
+    } finally {
+      setPublicGlytchJoinBusyId((prev) => (prev === glytch.id ? null : prev));
+    }
+  }, [accessToken, loadGlytchSidebarData, openJoinUnbanRequestFlow]);
 
   const handleSubmitJoinUnbanRequest = async (e: FormEvent) => {
     e.preventDefault();
@@ -5846,6 +6273,7 @@ export default function ChatDashboard({
     conversationId: number,
     unreadCount: number,
     isPinned: boolean,
+    isMuted: boolean,
   ) => {
     if (viewMode !== "dm" || dmPanelMode !== "dms") return;
     if (!Number.isFinite(conversationId) || conversationId <= 0) return;
@@ -5856,7 +6284,7 @@ export default function ChatDashboard({
     event.stopPropagation();
 
     const menuWidth = 176;
-    const menuHeight = 120;
+    const menuHeight = 154;
     const menuContainerRect = menuContainer.getBoundingClientRect();
     const viewportHost = menuContainer.closest(".sideContentBody");
     const viewportRect =
@@ -5881,6 +6309,7 @@ export default function ChatDashboard({
       y: safeY,
       unreadCount: Math.max(0, unreadCount),
       isPinned,
+      isMuted,
     });
   }, [dmPanelMode, viewMode]);
 
@@ -5940,6 +6369,44 @@ export default function ChatDashboard({
       setDmSidebarActionBusyKey((prev) => (prev === busyKey ? null : prev));
     }
   }, [accessToken, dmLatestMessageIds, dmSidebarContextMenu]);
+
+  const handleToggleMuteDmFromSidebarContextMenu = useCallback(async () => {
+    if (!dmSidebarContextMenu) return;
+    const { conversationId, isMuted } = dmSidebarContextMenu;
+    const nextMuted = !isMuted;
+    const busyKey = `mute:${conversationId}`;
+
+    setDmSidebarContextMenu(null);
+    setDmSidebarActionBusyKey(busyKey);
+    setDmError("");
+
+    const nextMutedDmConversationIds = nextMuted
+      ? Array.from(new Set([...profileForm.mutedDmConversationIds, conversationId]))
+      : profileForm.mutedDmConversationIds.filter((id) => id !== conversationId);
+
+    try {
+      const updated = await updateMyProfileCustomization(accessToken, currentUserId, {
+        profile_theme: buildProfileThemePayload({
+          ...profileForm,
+          mutedDmConversationIds: nextMutedDmConversationIds,
+        }),
+      });
+      const nextProfile = updated[0] || null;
+      if (nextProfile) {
+        setCurrentProfile(nextProfile);
+        setKnownProfiles((prev) => ({ ...prev, [nextProfile.user_id]: nextProfile }));
+        setViewedProfile((prev) => (prev?.user_id === nextProfile.user_id ? nextProfile : prev));
+      }
+      setProfileForm((prev) => ({
+        ...prev,
+        mutedDmConversationIds: nextMutedDmConversationIds,
+      }));
+    } catch (err) {
+      setDmError(err instanceof Error ? err.message : "Could not update DM mute state.");
+    } finally {
+      setDmSidebarActionBusyKey((prev) => (prev === busyKey ? null : prev));
+    }
+  }, [accessToken, currentUserId, dmSidebarContextMenu, profileForm]);
 
   const handleDeleteDmFromSidebarContextMenu = useCallback(async () => {
     if (!dmSidebarContextMenu) return;
@@ -6441,6 +6908,30 @@ export default function ChatDashboard({
     }
   };
 
+  const handleSaveAccessibilitySettings = async (e: FormEvent) => {
+    e.preventDefault();
+    setProfileSaveBusy(true);
+    setProfileSaveError("");
+
+    try {
+      const updated = await updateMyProfileCustomization(accessToken, currentUserId, {
+        profile_theme: buildProfileThemePayload(profileForm),
+      });
+
+      const nextProfile = updated[0] || null;
+      setCurrentProfile(nextProfile);
+      if (nextProfile) {
+        setKnownProfiles((prev) => ({ ...prev, [nextProfile.user_id]: nextProfile }));
+        setViewedProfile((prev) => (prev?.user_id === nextProfile.user_id ? nextProfile : prev));
+        setProfileForm((prev) => ({ ...buildProfileForm(nextProfile), presenceStatus: prev.presenceStatus }));
+      }
+    } catch (err) {
+      setProfileSaveError(err instanceof Error ? err.message : "Could not save accessibility settings.");
+    } finally {
+      setProfileSaveBusy(false);
+    }
+  };
+
   const handleSaveShowcaseSettings = async (e: FormEvent) => {
     e.preventDefault();
     setProfileSaveBusy(true);
@@ -6838,33 +7329,171 @@ export default function ChatDashboard({
     }
   };
 
+  const clearBannerCropDraft = useCallback(() => {
+    setBannerCropSourceUrl((prev) => {
+      if (prev) {
+        URL.revokeObjectURL(prev);
+      }
+      return "";
+    });
+    bannerCropPointerRef.current = null;
+    setBannerCropDragging(false);
+    setBannerCropZoom(1);
+    setBannerCropOffsetX(0);
+    setBannerCropOffsetY(0);
+    setBannerCropNaturalSize(null);
+    setBannerCropSourceType("image/webp");
+  }, []);
+
+  const handleSaveBannerCrop = useCallback(async () => {
+    if (!bannerCropSourceUrl || !bannerCropNaturalSize) return;
+
+    setBannerUploadBusy(true);
+    setProfileSaveError("");
+    try {
+      const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error("Could not read the banner image."));
+        img.src = bannerCropSourceUrl;
+      });
+
+      const { sx, sy, sw, sh } = computeBannerCropSourceRect(
+        bannerCropNaturalSize,
+        bannerCropZoom,
+        bannerCropOffsetX,
+        bannerCropOffsetY,
+      );
+      const canvas = document.createElement("canvas");
+      canvas.width = BANNER_OUTPUT_WIDTH;
+      canvas.height = BANNER_OUTPUT_HEIGHT;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        throw new Error("Could not initialize banner crop canvas.");
+      }
+      ctx.drawImage(image, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+
+      const blob = await new Promise<Blob | null>((resolve) => {
+        canvas.toBlob(
+          (nextBlob) => resolve(nextBlob),
+          bannerCropSourceType || "image/webp",
+          0.92,
+        );
+      });
+      if (!blob) {
+        throw new Error("Could not export cropped banner.");
+      }
+
+      const extension = blob.type.includes("png")
+        ? "png"
+        : blob.type.includes("jpeg")
+          ? "jpg"
+          : blob.type.includes("gif")
+            ? "gif"
+            : "webp";
+      const croppedFile = new File([blob], `banner-${Date.now()}.${extension}`, {
+        type: blob.type || "image/webp",
+      });
+      const uploadedUrl = await uploadProfileAsset(accessToken, currentUserId, croppedFile, "banner");
+      setProfileForm((prev) => ({ ...prev, bannerUrl: uploadedUrl }));
+      clearBannerCropDraft();
+    } catch (err) {
+      setProfileSaveError(err instanceof Error ? err.message : "Could not crop banner.");
+    } finally {
+      setBannerUploadBusy(false);
+    }
+  }, [
+    accessToken,
+    bannerCropNaturalSize,
+    bannerCropOffsetX,
+    bannerCropOffsetY,
+    bannerCropSourceType,
+    bannerCropSourceUrl,
+    bannerCropZoom,
+    clearBannerCropDraft,
+    currentUserId,
+  ]);
+
+  const handleBannerCropPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!bannerCropSourceUrl) return;
+    event.preventDefault();
+    (event.currentTarget as HTMLDivElement).setPointerCapture?.(event.pointerId);
+    bannerCropPointerRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: bannerCropOffsetX,
+      originY: bannerCropOffsetY,
+    };
+    setBannerCropDragging(true);
+  }, [bannerCropOffsetX, bannerCropOffsetY, bannerCropSourceUrl]);
+
+  const handleBannerCropPointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const pointer = bannerCropPointerRef.current;
+    if (!pointer || pointer.pointerId !== event.pointerId || !bannerCropNaturalSize) return;
+    event.preventDefault();
+    const deltaX = event.clientX - pointer.startX;
+    const deltaY = event.clientY - pointer.startY;
+    const next = clampBannerCropOffsets(
+      bannerCropNaturalSize,
+      bannerCropZoom,
+      pointer.originX + deltaX,
+      pointer.originY + deltaY,
+    );
+    setBannerCropOffsetX(next.x);
+    setBannerCropOffsetY(next.y);
+  }, [bannerCropNaturalSize, bannerCropZoom]);
+
+  const handleBannerCropPointerUp = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const pointer = bannerCropPointerRef.current;
+    if (!pointer || pointer.pointerId !== event.pointerId) return;
+    (event.currentTarget as HTMLDivElement).releasePointerCapture?.(event.pointerId);
+    bannerCropPointerRef.current = null;
+    setBannerCropDragging(false);
+  }, []);
+
   const handleProfileImageUpload =
     (kind: "avatar" | "banner") => async (e: ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (!file) return;
 
-      if (kind === "avatar") {
-        setAvatarUploadBusy(true);
-      } else {
-        setBannerUploadBusy(true);
-      }
       setProfileSaveError("");
 
+      if (kind === "banner") {
+        const sourceUrl = URL.createObjectURL(file);
+        const image = new Image();
+        image.onload = () => {
+          setBannerCropSourceUrl((prev) => {
+            if (prev) URL.revokeObjectURL(prev);
+            return sourceUrl;
+          });
+          setBannerCropNaturalSize({
+            width: image.naturalWidth || image.width,
+            height: image.naturalHeight || image.height,
+          });
+          setBannerCropSourceType(file.type === "image/png" ? "image/png" : "image/webp");
+          setBannerCropZoom(1);
+          setBannerCropOffsetX(0);
+          setBannerCropOffsetY(0);
+          setBannerCropDragging(false);
+        };
+        image.onerror = () => {
+          URL.revokeObjectURL(sourceUrl);
+          setProfileSaveError("Could not read banner image.");
+        };
+        image.src = sourceUrl;
+        e.target.value = "";
+        return;
+      }
+
+      setAvatarUploadBusy(true);
       try {
         const uploadedUrl = await uploadProfileAsset(accessToken, currentUserId, file, kind);
-        if (kind === "avatar") {
-          setProfileForm((prev) => ({ ...prev, avatarUrl: uploadedUrl }));
-        } else {
-          setProfileForm((prev) => ({ ...prev, bannerUrl: uploadedUrl }));
-        }
+        setProfileForm((prev) => ({ ...prev, avatarUrl: uploadedUrl }));
       } catch (err) {
         setProfileSaveError(err instanceof Error ? err.message : "Could not upload image.");
       } finally {
-        if (kind === "avatar") {
-          setAvatarUploadBusy(false);
-        } else {
-          setBannerUploadBusy(false);
-        }
+        setAvatarUploadBusy(false);
         e.target.value = "";
       }
     };
@@ -6918,13 +7547,33 @@ export default function ChatDashboard({
       return;
     }
 
+    const maxMembersDraft = glytchProfileMaxMembersDraft.trim();
+    let maxMembers: number | null = null;
+    if (maxMembersDraft) {
+      const parsed = Number.parseInt(maxMembersDraft, 10);
+      if (!Number.isFinite(parsed) || parsed < GLYTCH_MAX_MEMBERS_MIN || parsed > GLYTCH_MAX_MEMBERS_MAX) {
+        setGlytchProfileError(`Max users must be between ${GLYTCH_MAX_MEMBERS_MIN} and ${GLYTCH_MAX_MEMBERS_MAX}.`);
+        return;
+      }
+      maxMembers = Math.trunc(parsed);
+    }
+
     setGlytchProfileBusy(true);
     setGlytchProfileError("");
     try {
-      const updated = await setGlytchProfile(accessToken, activeGlytch.id, name, glytchProfileBioDraft.trim() || null);
+      const updated = await setGlytchProfile(accessToken, activeGlytch.id, name, glytchProfileBioDraft.trim() || null, {
+        isPublic: glytchProfileVisibilityDraft === "public",
+        maxMembers,
+      });
       setGlytches((prev) => prev.map((glytch) => (glytch.id === activeGlytch.id ? { ...glytch, ...updated } : glytch)));
       setGlytchProfileNameDraft(updated.name || "");
       setGlytchProfileBioDraft(updated.bio || "");
+      setGlytchProfileVisibilityDraft(updated.is_public ? "public" : "private");
+      setGlytchProfileMaxMembersDraft(
+        typeof updated.max_members === "number" && Number.isFinite(updated.max_members)
+          ? String(Math.trunc(updated.max_members))
+          : "",
+      );
     } catch (err) {
       setGlytchProfileError(err instanceof Error ? err.message : "Could not save Glytch profile.");
     } finally {
@@ -7365,6 +8014,10 @@ export default function ChatDashboard({
     const hasAttachment = Boolean(composerAttachment);
     const hasGif = Boolean(selectedGif);
     if (!draftText && !hasAttachment && !hasGif) return;
+    if (hasGif && !thirdPartyIntegrationsEnabled) {
+      setChatError("Third-party integrations are disabled. Enable them in system settings to send GIFs.");
+      return;
+    }
     const text =
       viewMode === "dm" && composerReplyTarget
         ? serializeDmReplyMessage({
@@ -7407,6 +8060,9 @@ export default function ChatDashboard({
           uploadedAttachmentUrl = uploaded.url;
           uploadedAttachmentType = uploaded.attachmentType;
         } else if (selectedGif) {
+          if (!thirdPartyIntegrationsEnabled) {
+            throw new Error("Third-party integrations are disabled.");
+          }
           const uploaded = await ingestRemoteMessageAsset(accessToken, uploadContext, uploadContextId, selectedGif.url);
           uploadedAttachmentUrl = uploaded.url;
           uploadedAttachmentType = uploaded.attachmentType;
@@ -9140,31 +9796,72 @@ export default function ChatDashboard({
   const appThemePalette =
     APP_THEME_PALETTES[profileForm.appThemeMode]?.[profileForm.appTheme] || APP_THEME_PALETTES.dark.default;
   const appFontPreset = APP_FONT_PRESET_STYLES[profileForm.appFontPreset] || APP_FONT_PRESET_STYLES.cyber;
-  const appTextColor = profileForm.appTextColor.trim() || appThemePalette.text;
+  const appTextColorRaw = profileForm.appTextColor.trim() || appThemePalette.text;
+  const appTextColor = ensureReadableTextColor(
+    appTextColorRaw,
+    appThemePalette.text,
+    [appThemePalette.bg, appThemePalette.panel, appThemePalette.card, appThemePalette.bubbleBot, appThemePalette.bubbleMe],
+    profileForm.appThemeMode === "light" ? 4.8 : 4.2,
+  );
+  const effectiveUiFont = profileForm.accessibilityDyslexiaFont
+    ? '"Atkinson Hyperlegible", "Manrope", "Avenir Next", "Segoe UI", sans-serif'
+    : appFontPreset.ui;
+  const effectiveDisplayFont = profileForm.accessibilityDyslexiaFont
+    ? '"Atkinson Hyperlegible", "Sora", "Manrope", sans-serif'
+    : appFontPreset.display;
+  const highContrastTextColor = profileForm.accessibilityHighContrast
+    ? profileForm.appThemeMode === "light"
+      ? "#17242d"
+      : "#f4f7f9"
+    : appTextColor;
+  const highContrastPanelBorder = profileForm.accessibilityHighContrast
+    ? profileForm.appThemeMode === "light"
+      ? "#2f404d"
+      : "#85ebd9"
+    : appThemePalette.panelBorder;
+  const highContrastCardBorder = profileForm.accessibilityHighContrast
+    ? profileForm.appThemeMode === "light"
+      ? "#2f404d"
+      : "#85ebd9"
+    : appThemePalette.cardBorder;
+  const textOnAccentColor = profileForm.appThemeMode === "light" ? "#15262d" : "#0d1e2a";
   const pageStyle = useMemo(
     () =>
       ({
         colorScheme: profileForm.appThemeMode,
+        fontSize: `${profileForm.accessibilityTextScale}%`,
         "--voice-speaking-ring-color": voiceSpeakingRingColor,
-        "--font-ui": appFontPreset.ui,
-        "--font-display": appFontPreset.display,
+        "--font-ui": effectiveUiFont,
+        "--font-display": effectiveDisplayFont,
         "--bg": appThemePalette.bg,
         "--panel": appThemePalette.panel,
-        "--panel-border": appThemePalette.panelBorder,
-        "--text": appTextColor,
+        "--panel-border": highContrastPanelBorder,
+        "--text": highContrastTextColor,
         "--muted": appThemePalette.muted,
         "--accent": appThemePalette.accent,
         "--accent-strong": appThemePalette.accentStrong,
         "--card": appThemePalette.card,
-        "--card-border": appThemePalette.cardBorder,
+        "--card-border": highContrastCardBorder,
         "--bubble-bot": appThemePalette.bubbleBot,
         "--bubble-me": appThemePalette.bubbleMe,
         "--hot": appThemePalette.hot,
         "--orange": appThemePalette.orange,
         "--warn": appThemePalette.warn,
         "--violet": appThemePalette.violet,
+        "--text-on-accent": textOnAccentColor,
       }) as CSSProperties,
-    [appFontPreset.display, appFontPreset.ui, appTextColor, appThemePalette, profileForm.appThemeMode, voiceSpeakingRingColor],
+    [
+      appThemePalette,
+      effectiveDisplayFont,
+      effectiveUiFont,
+      highContrastCardBorder,
+      highContrastPanelBorder,
+      highContrastTextColor,
+      profileForm.accessibilityTextScale,
+      profileForm.appThemeMode,
+      textOnAccentColor,
+      voiceSpeakingRingColor,
+    ],
   );
 
   const renderProfileShowcaseContent = (showcase: ProfileShowcase) => {
@@ -9264,6 +9961,7 @@ export default function ChatDashboard({
 
   const handleOpenGlytchDirectory = useCallback(() => {
     setShowGlytchDirectory(true);
+    setGlytchDirectoryTab("discover");
     setActiveGlytchId(null);
     setActiveChannelId(null);
     setMessages([]);
@@ -9291,8 +9989,17 @@ export default function ChatDashboard({
     [],
   );
 
+  const pageClassName = [
+    "page",
+    profileForm.accessibilityReduceMotion ? "a11yReduceMotion" : "",
+    profileForm.accessibilityUnderlineLinks ? "a11yUnderlineLinks" : "",
+    profileForm.accessibilityHighContrast ? "a11yHighContrast" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
-    <div className="page" style={pageStyle}>
+    <div className={pageClassName} style={pageStyle}>
       <aside className="sidemenu">
         <nav className="primaryNav" aria-label="Main sections">
           {shouldShowGlytchRailIcon && activeGlytch && (
@@ -9420,6 +10127,24 @@ export default function ChatDashboard({
           </button>
 
           <div className="railIdentity">
+            <button
+              className="railSystemButton"
+              type="button"
+              aria-label="Open system settings"
+              title="System settings"
+              onClick={() => openSettingsView("system", "theme")}
+            >
+              <svg viewBox="0 0 24 24" role="presentation" aria-hidden="true">
+                <path
+                  d="M12 8.1a3.9 3.9 0 1 1 0 7.8 3.9 3.9 0 0 1 0-7.8Zm8.2 3.9-1.9-.5a6.8 6.8 0 0 0-.6-1.4l1-1.7-1.8-1.8-1.7 1a6.8 6.8 0 0 0-1.4-.6l-.5-1.9h-2.6l-.5 1.9a6.8 6.8 0 0 0-1.4.6l-1.7-1-1.8 1.8 1 1.7a6.8 6.8 0 0 0-.6 1.4l-1.9.5v2.6l1.9.5c.1.5.3.9.6 1.4l-1 1.7 1.8 1.8 1.7-1c.5.3.9.5 1.4.6l.5 1.9h2.6l.5-1.9c.5-.1.9-.3 1.4-.6l1.7 1 1.8-1.8-1-1.7c.3-.5.5-.9.6-1.4l1.9-.5v-2.6Z"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.6"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </button>
             <button
               className="avatarButton railAvatarButton withPresence"
               type="button"
@@ -9584,6 +10309,7 @@ export default function ChatDashboard({
                       const unreadCount = unreadDmCounts[dm.conversationId] || 0;
                       const unreadLabel = unreadCount > 99 ? "99+" : String(unreadCount);
                       const incomingCallCount = dmIncomingCallCounts[dm.conversationId] || 0;
+                      const isDmMuted = mutedDmConversationIdSet.has(dm.conversationId);
                       const dmPresenceStatus = resolvePresenceForUser(dm.friendUserId);
                       const dmPresenceTitle = `Status: ${presenceStatusLabel(dmPresenceStatus)}`;
                       return (
@@ -9591,7 +10317,13 @@ export default function ChatDashboard({
                           key={dm.conversationId}
                           className="friendRow"
                           onContextMenu={(event) => {
-                            openDmSidebarContextMenu(event, dm.conversationId, unreadCount, dm.isPinned);
+                            openDmSidebarContextMenu(
+                              event,
+                              dm.conversationId,
+                              unreadCount,
+                              dm.isPinned,
+                              isDmMuted,
+                            );
                           }}
                         >
                           <button
@@ -9627,6 +10359,7 @@ export default function ChatDashboard({
                             <span className="dmNameRow">
                               <span className="dmNameText">{dm.friendName}</span>
                               {dm.isPinned && <span className="dmPinnedBadge" title="Pinned DM" aria-hidden="true" />}
+                              {isDmMuted && <span className="dmMutedBadge" title="Conversation muted" aria-hidden="true">🔕</span>}
                             </span>
                             {(incomingCallCount > 0 || unreadCount > 0) && (
                               <span className="dmAlertBubbles">
@@ -9684,6 +10417,15 @@ export default function ChatDashboard({
                           disabled={dmSidebarActionBusyKey === `pin:${dmSidebarContextMenu.conversationId}`}
                         >
                           {dmSidebarContextMenu.isPinned ? "Unpin DM" : "Pin DM"}
+                        </button>
+                        <button
+                          type="button"
+                          className="dmSidebarContextMenuItem"
+                          role="menuitem"
+                          onClick={() => void handleToggleMuteDmFromSidebarContextMenu()}
+                          disabled={dmSidebarActionBusyKey === `mute:${dmSidebarContextMenu.conversationId}`}
+                        >
+                          {dmSidebarContextMenu.isMuted ? "Unmute conversation" : "Mute conversation"}
                         </button>
                         <button
                           type="button"
@@ -9800,10 +10542,58 @@ export default function ChatDashboard({
               <>
                 {glytchError && <p className="chatError">{glytchError}</p>}
 
+                {(showGlytchDirectory || !activeGlytch) && (
+                  <section className="requestSection glytchSidebarDirectory">
+                    <p className="sectionLabel">My Glytches</p>
+                    <input
+                      className="glytchInviteSearch"
+                      value={glytchSidebarSearchDraft}
+                      onChange={(e) => setGlytchSidebarSearchDraft(e.target.value)}
+                      placeholder="Search your Glytches by name or #id"
+                      aria-label="Search your Glytches by name or ID"
+                    />
+                    {filteredSidebarGlytches.length === 0 ? (
+                      <p className="smallMuted">No Glytches matched your search.</p>
+                    ) : (
+                      <div className="glytchSelectionList">
+                        {filteredSidebarGlytches.map((glytch) => {
+                          const isSelected = !showGlytchDirectory && activeGlytchId === glytch.id;
+                          const isPublic = Boolean(glytch.is_public);
+                          const maxMembersLabel =
+                            typeof glytch.max_members === "number" && Number.isFinite(glytch.max_members)
+                              ? ` · max ${Math.trunc(glytch.max_members)}`
+                              : "";
+                          return (
+                            <button
+                              key={`sidebar-glytch-${glytch.id}`}
+                              className={isSelected ? "channelItem glytchSelectionItem active" : "channelItem glytchSelectionItem"}
+                              type="button"
+                              onClick={() => {
+                                setActiveGlytchId(glytch.id);
+                                setActiveChannelId(null);
+                                setViewMode("glytch");
+                                setShowGlytchDirectory(false);
+                              }}
+                            >
+                              <span className="glytchItemLabel">
+                                <span className="glytchItemIcon" aria-hidden="true">
+                                  {glytch.icon_url ? <img src={glytch.icon_url} alt="" /> : <span>{initialsFromName(glytch.name)}</span>}
+                                </span>
+                                <span className="glytchItemName">{glytch.name}</span>
+                              </span>
+                              <span className="smallMuted">{isPublic ? "Public" : "Private"}{maxMembersLabel}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </section>
+                )}
+
                 {showGlytchDirectory || !activeGlytch ? (
                   <>
                     <section className="requestSection">
-                      <p className="smallMuted">Browse, create, and join Glytches from the main panel.</p>
+                      <p className="smallMuted">Browse public Glytches in Discover from the main panel.</p>
                     </section>
                   </>
                 ) : (
@@ -10188,12 +10978,14 @@ export default function ChatDashboard({
               <span>
                 {activeGlytch && activeChannel
                   ? `${activeGlytch.name} / ${activeChannel.kind === "voice" ? "🔊" : "#"}${activeChannel.name}`
-                  : "Glytches"}
+                  : activeGlytch
+                    ? activeGlytch.name
+                  : "Discover"}
               </span>
             ) : viewMode === "group" ? (
               <span>{activeGroupChat ? `Group Chat / ${activeGroupChat.name}` : "Group Chats"}</span>
             ) : viewMode === "glytch-settings" ? (
-              <span>{activeGlytch ? `${activeGlytch.name} / Settings` : "Glytch Settings"}</span>
+              <span>{activeGlytch ? `${formatGlytchNameWithId(activeGlytch.name, activeGlytch.id)} / Settings` : "Glytch Settings"}</span>
             ) : (
               <span>Profile Settings</span>
             )}
@@ -10667,28 +11459,6 @@ export default function ChatDashboard({
 
         {viewMode === "settings" ? (
           <section className="settingsPage" aria-label="Profile settings">
-            <div className="settingsTopTabs">
-              <button
-                className={settingsSection === "profile" ? "tab active" : "tab"}
-                type="button"
-                onClick={() => {
-                  setSettingsSection("profile");
-                  setSettingsTab("edit");
-                }}
-              >
-                Profile Settings
-              </button>
-              <button
-                className={settingsSection === "system" ? "tab active" : "tab"}
-                type="button"
-                onClick={() => {
-                  setSettingsSection("system");
-                  setSettingsTab("theme");
-                }}
-              >
-                System Settings
-              </button>
-            </div>
             <div className="settingsTabs settingsSubTabs">
               {(settingsSection === "profile" ? PROFILE_SETTINGS_TABS : SYSTEM_SETTINGS_TABS).map((tab) => (
                 <button
@@ -10701,6 +11471,8 @@ export default function ChatDashboard({
                     ? "Identity"
                     : tab === "theme"
                       ? "Appearance"
+                      : tab === "accessibility"
+                        ? "Accessibility"
                       : tab === "showcases"
                         ? "Showcase Modules"
                         : tab === "notifications"
@@ -10781,6 +11553,35 @@ export default function ChatDashboard({
                     />
                   </label>
                 </div>
+                <div className="profileAppearancePicker" role="radiogroup" aria-label="Avatar decoration presets">
+                  {Object.entries(AVATAR_DECORATION_LABELS).map(([value, label]) => {
+                    const decorationValue = normalizeAvatarDecoration(value);
+                    const selected = profileForm.avatarDecoration === decorationValue;
+                    return (
+                      <button
+                        key={`decor-option-${value}`}
+                        type="button"
+                        className={selected ? "profileAppearanceOption active" : "profileAppearanceOption"}
+                        onClick={() => setProfileForm((prev) => ({ ...prev, avatarDecoration: decorationValue }))}
+                        aria-pressed={selected}
+                      >
+                        <span className="avatarButton withPresence profileAppearanceAvatarPreview" aria-hidden="true">
+                          {profileForm.avatarUrl ? <img src={profileForm.avatarUrl} alt="" /> : <span>{initialsFromName(displayName)}</span>}
+                          {renderAvatarDecoration(decorationValue, {
+                            color: profileForm.avatarDecorationColor,
+                            background: profileForm.avatarDecorationBackground,
+                            size: "small",
+                          })}
+                          <span className={`presenceDot ${currentUserPresenceStatus}`} aria-hidden="true" />
+                        </span>
+                        <span className="profileAppearanceMeta">
+                          <span className="profileAppearanceTitle">{label}</span>
+                          <span className="profileAppearanceHint">{AVATAR_DECORATION_HINTS[decorationValue]}</span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
 
                 <label>
                   Banner Image
@@ -10790,6 +11591,9 @@ export default function ChatDashboard({
                     onChange={handleProfileImageUpload("banner")}
                   />
                 </label>
+                {bannerCropSourceUrl && (
+                  <p className="smallMuted">Crop and position your banner in the popup, then save it.</p>
+                )}
                 {bannerUploadBusy && <p className="smallMuted">Uploading banner...</p>}
                 {profileForm.bannerUrl && (
                   <img className="settingsThumb banner" src={profileForm.bannerUrl} alt="Banner preview" />
@@ -10807,8 +11611,15 @@ export default function ChatDashboard({
                 <label>
                   Bio
                   <textarea
+                    ref={profileBioInputRef}
+                    className="profileBioInput"
                     value={profileForm.bio}
-                    onChange={(e) => setProfileForm((prev) => ({ ...prev, bio: e.target.value }))}
+                    onChange={(e) => {
+                      setProfileForm((prev) => ({ ...prev, bio: e.target.value }));
+                      requestAnimationFrame(() => {
+                        resizeProfileBioInput();
+                      });
+                    }}
                     rows={4}
                     placeholder="Tell people about your profile page"
                   />
@@ -10904,6 +11715,7 @@ export default function ChatDashboard({
                     onChange={(e) => setProfileForm((prev) => ({ ...prev, appTheme: normalizeAppTheme(e.target.value) }))}
                   >
                     <option value="default">Default</option>
+                    <option value="neon">Neon</option>
                     <option value="simplistic">Simplistic</option>
                     <option value="ocean">Ocean</option>
                     <option value="sunset">Sunset</option>
@@ -11322,12 +12134,102 @@ export default function ChatDashboard({
                   <span>Notify when friend requests are accepted</span>
                 </label>
 
+                <label className="permissionToggle settingsToggle">
+                  <input
+                    type="checkbox"
+                    checked={profileForm.thirdPartyIntegrationsEnabled}
+                    onChange={(e) =>
+                      setProfileForm((prev) => ({ ...prev, thirdPartyIntegrationsEnabled: e.target.checked }))
+                    }
+                  />
+                  <span>Enable third-party integrations (GIF search and remote media)</span>
+                </label>
+
                 <p className="smallMuted">
-                  Notifications use your browser/Electron desktop permission. You can change this later in system settings.
+                  Notifications use your browser/Electron desktop permission. Third-party integrations control external services.
                 </p>
 
                 <button type="submit" disabled={profileSaveBusy}>
                   {profileSaveBusy ? "Saving..." : "Save Notification Settings"}
+                </button>
+              </form>
+            ) : settingsTab === "accessibility" ? (
+              <form className="settingsForm" onSubmit={handleSaveAccessibilitySettings}>
+                <p className="sectionLabel">Accessibility</p>
+                <label className="permissionToggle settingsToggle">
+                  <input
+                    type="checkbox"
+                    checked={profileForm.accessibilityReduceMotion}
+                    onChange={(e) =>
+                      setProfileForm((prev) => ({
+                        ...prev,
+                        accessibilityReduceMotion: e.target.checked,
+                      }))
+                    }
+                  />
+                  <span>Reduce motion and animation</span>
+                </label>
+                <label className="permissionToggle settingsToggle">
+                  <input
+                    type="checkbox"
+                    checked={profileForm.accessibilityHighContrast}
+                    onChange={(e) =>
+                      setProfileForm((prev) => ({
+                        ...prev,
+                        accessibilityHighContrast: e.target.checked,
+                      }))
+                    }
+                  />
+                  <span>High-contrast UI mode</span>
+                </label>
+                <label className="permissionToggle settingsToggle">
+                  <input
+                    type="checkbox"
+                    checked={profileForm.accessibilityDyslexiaFont}
+                    onChange={(e) =>
+                      setProfileForm((prev) => ({
+                        ...prev,
+                        accessibilityDyslexiaFont: e.target.checked,
+                      }))
+                    }
+                  />
+                  <span>Use dyslexia-friendly font</span>
+                </label>
+                <label className="permissionToggle settingsToggle">
+                  <input
+                    type="checkbox"
+                    checked={profileForm.accessibilityUnderlineLinks}
+                    onChange={(e) =>
+                      setProfileForm((prev) => ({
+                        ...prev,
+                        accessibilityUnderlineLinks: e.target.checked,
+                      }))
+                    }
+                  />
+                  <span>Always underline links</span>
+                </label>
+                <label>
+                  Text Size ({profileForm.accessibilityTextScale}%)
+                  <input
+                    type="range"
+                    min={ACCESSIBILITY_TEXT_SCALE_MIN}
+                    max={ACCESSIBILITY_TEXT_SCALE_MAX}
+                    step={1}
+                    value={profileForm.accessibilityTextScale}
+                    onChange={(e) =>
+                      setProfileForm((prev) => ({
+                        ...prev,
+                        accessibilityTextScale: normalizeAccessibilityTextScale(e.target.value),
+                      }))
+                    }
+                  />
+                </label>
+                <p className="smallMuted">
+                  Accessibility settings apply immediately and are saved to your profile for future sessions.
+                </p>
+
+                <button type="submit" disabled={profileSaveBusy}>
+                  {profileSaveBusy ? "Saving..." : "Save Accessibility Settings"}
                 </button>
               </form>
             ) : (
@@ -11436,6 +12338,13 @@ export default function ChatDashboard({
                 {activeGlytch ? (
                   <>
                     <p className="inviteCode">Invite code: {activeGlytch.invite_code}</p>
+                    <p className="smallMuted">Glytch ID: #{activeGlytch.id}</p>
+                    <p className="smallMuted">
+                      {activeGlytch.is_public ? "Public Glytch" : "Private Glytch (invite only)"}
+                      {typeof activeGlytch.max_members === "number" && Number.isFinite(activeGlytch.max_members)
+                        ? ` · Max users: ${Math.trunc(activeGlytch.max_members)}`
+                        : " · Max users: Unlimited"}
+                    </p>
                     <div className="glytchIconEditor">
                       <span className="glytchIconPreview" aria-hidden="true">
                         {activeGlytch.icon_url ? (
@@ -11475,6 +12384,23 @@ export default function ChatDashboard({
                             aria-label="Glytch bio"
                             rows={4}
                           />
+                          <select
+                            value={glytchProfileVisibilityDraft}
+                            onChange={(e) => setGlytchProfileVisibilityDraft(e.target.value === "public" ? "public" : "private")}
+                            aria-label="Glytch visibility"
+                          >
+                            <option value="private">Private (invite only)</option>
+                            <option value="public">Public (discoverable)</option>
+                          </select>
+                          <input
+                            type="number"
+                            min={GLYTCH_MAX_MEMBERS_MIN}
+                            max={GLYTCH_MAX_MEMBERS_MAX}
+                            value={glytchProfileMaxMembersDraft}
+                            onChange={(e) => setGlytchProfileMaxMembersDraft(e.target.value)}
+                            placeholder={`Max users (blank = unlimited, ${GLYTCH_MAX_MEMBERS_MIN}-${GLYTCH_MAX_MEMBERS_MAX})`}
+                            aria-label="Max users in this Glytch"
+                          />
                           <button type="submit" disabled={glytchProfileBusy}>
                             {glytchProfileBusy ? "Saving..." : "Save Glytch Profile"}
                           </button>
@@ -11504,7 +12430,15 @@ export default function ChatDashboard({
                         )}
                       </>
                     ) : (
-                      <p className="smallMuted">{activeGlytch.bio || "No Glytch bio yet."}</p>
+                      <>
+                        <p className="smallMuted">{activeGlytch.bio || "No Glytch bio yet."}</p>
+                        <p className="smallMuted">
+                          {activeGlytch.is_public ? "Public Glytch" : "Private Glytch (invite only)"}
+                          {typeof activeGlytch.max_members === "number" && Number.isFinite(activeGlytch.max_members)
+                            ? ` · Max users: ${Math.trunc(activeGlytch.max_members)}`
+                            : " · Max users: Unlimited"}
+                        </p>
+                      </>
                     )}
                   </>
                 ) : (
@@ -12196,7 +13130,7 @@ export default function ChatDashboard({
                     }
                   }}
                 >
-                  Join Glytch
+                  Join by Invite
                 </button>
               </div>
               {glytchActionMode === "create" && (
@@ -12206,6 +13140,23 @@ export default function ChatDashboard({
                     onChange={(e) => setGlytchNameDraft(e.target.value)}
                     placeholder="New Glytch name"
                     aria-label="New Glytch name"
+                  />
+                  <select
+                    value={glytchCreateVisibilityDraft}
+                    onChange={(e) => setGlytchCreateVisibilityDraft(e.target.value === "public" ? "public" : "private")}
+                    aria-label="Glytch visibility"
+                  >
+                    <option value="private">Private (invite only)</option>
+                    <option value="public">Public (discoverable)</option>
+                  </select>
+                  <input
+                    type="number"
+                    min={GLYTCH_MAX_MEMBERS_MIN}
+                    max={GLYTCH_MAX_MEMBERS_MAX}
+                    value={glytchCreateMaxMembersDraft}
+                    onChange={(e) => setGlytchCreateMaxMembersDraft(e.target.value)}
+                    placeholder={`Max users (optional, ${GLYTCH_MAX_MEMBERS_MIN}-${GLYTCH_MAX_MEMBERS_MAX})`}
+                    aria-label="Max users for Glytch"
                   />
                   <button type="submit">Create</button>
                 </form>
@@ -12249,28 +13200,96 @@ export default function ChatDashboard({
                   )}
                 </>
               )}
-              <p className="sectionLabel">Your Glytches</p>
-              {glytches.length === 0 ? (
-                <p className="chatInfo">No Glytches yet. Create one or join with an invite code above.</p>
-              ) : (
-                <div className="glytchSelectionList">
-                  {glytches.map((glytch) => (
+              <div className="dmSearchRow">
+                <input
+                  className="dmSearchInput"
+                  value={publicGlytchSearchDraft}
+                  onChange={(e) => setPublicGlytchSearchDraft(e.target.value)}
+                  placeholder="Search public Glytches by name or #id"
+                  aria-label="Search public Glytches by name or ID"
+                />
+              </div>
+              {publicGlytchSearchError && <p className="chatError">{publicGlytchSearchError}</p>}
+              {publicGlytchSearchBusy && <p className="smallMuted">Searching public Glytches...</p>}
+              {!publicGlytchSearchBusy && !selectedDiscoverGlytch && (
+                <p className="chatInfo">No public Glytches matched your search.</p>
+              )}
+              {selectedDiscoverGlytch && (
+                <article className="discoverFeaturedCard">
+                  <div className="activeGlytchSummaryRow">
+                    <span className="glytchItemIcon" aria-hidden="true">
+                      {selectedDiscoverGlytch.icon_url ? (
+                        <img src={selectedDiscoverGlytch.icon_url} alt="" />
+                      ) : (
+                        <span>{initialsFromName(selectedDiscoverGlytch.name)}</span>
+                      )}
+                    </span>
+                    <span className="activeGlytchSummaryName">{selectedDiscoverGlytch.name}</span>
+                  </div>
+                  <p className="smallMuted">
+                    {selectedDiscoverGlytch.bio?.trim() || "No profile bio yet."}
+                  </p>
+                  <p className="smallMuted">
+                    {selectedDiscoverGlytch.member_count} member{selectedDiscoverGlytch.member_count === 1 ? "" : "s"}
+                    {typeof selectedDiscoverGlytch.max_members === "number" && Number.isFinite(selectedDiscoverGlytch.max_members)
+                      ? ` / ${Math.trunc(selectedDiscoverGlytch.max_members)}`
+                      : ""}{" "}
+                    · Public
+                  </p>
+                  {selectedDiscoverGlytch.is_joined ? (
                     <button
-                      key={glytch.id}
-                      className="channelItem glytchSelectionItem"
                       type="button"
+                      className="ghostButton"
                       onClick={() => {
-                        setActiveGlytchId(glytch.id);
+                        setActiveGlytchId(selectedDiscoverGlytch.id);
                         setActiveChannelId(null);
                         setViewMode("glytch");
                         setShowGlytchDirectory(false);
                       }}
+                    >
+                      Open Glytch
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => void handleJoinPublicGlytch(selectedDiscoverGlytch)}
+                      disabled={
+                        publicGlytchJoinBusyId === selectedDiscoverGlytch.id ||
+                        (typeof selectedDiscoverGlytch.max_members === "number" &&
+                          selectedDiscoverGlytch.member_count >= selectedDiscoverGlytch.max_members)
+                      }
+                    >
+                      {publicGlytchJoinBusyId === selectedDiscoverGlytch.id
+                        ? "Joining..."
+                        : typeof selectedDiscoverGlytch.max_members === "number" &&
+                            selectedDiscoverGlytch.member_count >= selectedDiscoverGlytch.max_members
+                          ? "Glytch Full"
+                          : "Join Glytch"}
+                    </button>
+                  )}
+                </article>
+              )}
+              {publicGlytchResults.length > 1 && (
+                <div className="glytchSelectionList">
+                  {publicGlytchResults.map((glytch) => (
+                    <button
+                      key={`discover-${glytch.id}`}
+                      className={selectedDiscoverGlytch?.id === glytch.id ? "channelItem glytchSelectionItem active" : "channelItem glytchSelectionItem"}
+                      type="button"
+                      onClick={() => setSelectedDiscoverGlytchId(glytch.id)}
                     >
                       <span className="glytchItemLabel">
                         <span className="glytchItemIcon" aria-hidden="true">
                           {glytch.icon_url ? <img src={glytch.icon_url} alt="" /> : <span>{initialsFromName(glytch.name)}</span>}
                         </span>
                         <span className="glytchItemName">{glytch.name}</span>
+                      </span>
+                      <span className="smallMuted">
+                        {glytch.member_count}
+                        {typeof glytch.max_members === "number" && Number.isFinite(glytch.max_members)
+                          ? `/${Math.trunc(glytch.max_members)}`
+                          : ""}{" "}
+                        members
                       </span>
                     </button>
                   ))}
@@ -12971,7 +13990,7 @@ export default function ChatDashboard({
                           onChange={(e) => setGifQueryDraft(e.target.value)}
                           placeholder="Search GIFs"
                           aria-label="Search GIFs"
-                          disabled={!canAttachMediaInCurrentView || messageMediaBusy}
+                          disabled={!canAttachMediaInCurrentView || messageMediaBusy || !thirdPartyIntegrationsEnabled}
                         />
                       </div>
                       {gifLoading ? (
@@ -13033,8 +14052,13 @@ export default function ChatDashboard({
                         setShowGifPicker((prev) => !prev);
                         setShowEmojiPicker(false);
                       }}
-                      disabled={!canAttachMediaInCurrentView || messageMediaBusy}
+                      disabled={!canAttachMediaInCurrentView || messageMediaBusy || !thirdPartyIntegrationsEnabled}
                       aria-label="Open GIF picker"
+                      title={
+                        thirdPartyIntegrationsEnabled
+                          ? "Open GIF picker"
+                          : "Enable third-party integrations in system settings to use GIF search"
+                      }
                     >
                       GIF
                     </button>
@@ -13240,7 +14264,7 @@ export default function ChatDashboard({
                 accentColor: viewedShowcaseAccentColor,
               })}
               <section className="profileCommentsSection" aria-label="Profile comments">
-                <p className="sectionLabel">Comments</p>
+                <p className="sectionLabel">Profile Comments</p>
                 {viewedProfileCommentsVisibilitySummary && <p className="smallMuted">{viewedProfileCommentsVisibilitySummary}</p>}
                 {!viewedCanSeeProfileComments ? (
                   <p className="smallMuted">Comments are unavailable for this profile.</p>
@@ -13347,6 +14371,65 @@ export default function ChatDashboard({
               ) : (
                 <p className="smallMuted">{viewedRelationshipLabel}</p>
               )}
+            </div>
+          </section>
+        </div>
+      )}
+      {bannerCropSourceUrl && bannerCropNaturalSize && (
+        <div className="bannerCropBackdrop" onClick={clearBannerCropDraft}>
+          <section className="bannerCropDialog" onClick={(e) => e.stopPropagation()} aria-label="Crop banner image">
+            <p className="sectionLabel">Crop Banner</p>
+            <p className="smallMuted">Drag to reposition. Use zoom to fine-tune how your banner fits.</p>
+            <div
+              className={bannerCropDragging ? "bannerCropViewport dragging" : "bannerCropViewport"}
+              onPointerDown={handleBannerCropPointerDown}
+              onPointerMove={handleBannerCropPointerMove}
+              onPointerUp={handleBannerCropPointerUp}
+              onPointerCancel={handleBannerCropPointerUp}
+            >
+              <img
+                className="bannerCropImage"
+                src={bannerCropSourceUrl}
+                alt="Banner crop preview"
+                draggable={false}
+                style={{
+                  width: `${bannerCropNaturalSize.width}px`,
+                  height: `${bannerCropNaturalSize.height}px`,
+                  transform: `translate(calc(-50% + ${bannerCropOffsetX}px), calc(-50% + ${bannerCropOffsetY}px)) scale(${bannerCropZoom})`,
+                }}
+              />
+            </div>
+            <div className="bannerCropControls">
+              <label>
+                Zoom ({bannerCropZoom.toFixed(2)}x)
+                <input
+                  type="range"
+                  min={1}
+                  max={3}
+                  step={0.01}
+                  value={bannerCropZoom}
+                  onChange={(e) => {
+                    const nextZoom = Math.max(1, Math.min(3, Number.parseFloat(e.target.value) || 1));
+                    const clamped = clampBannerCropOffsets(
+                      bannerCropNaturalSize,
+                      nextZoom,
+                      bannerCropOffsetX,
+                      bannerCropOffsetY,
+                    );
+                    setBannerCropZoom(nextZoom);
+                    setBannerCropOffsetX(clamped.x);
+                    setBannerCropOffsetY(clamped.y);
+                  }}
+                />
+              </label>
+            </div>
+            <div className="bannerCropActions">
+              <button type="button" className="clearButton" onClick={clearBannerCropDraft} disabled={bannerUploadBusy}>
+                Cancel
+              </button>
+              <button type="button" onClick={() => void handleSaveBannerCrop()} disabled={bannerUploadBusy}>
+                {bannerUploadBusy ? "Saving..." : "Save Banner"}
+              </button>
             </div>
           </section>
         </div>
