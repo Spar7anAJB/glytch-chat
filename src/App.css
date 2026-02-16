@@ -1438,6 +1438,43 @@ textarea:focus-visible {
   cursor: not-allowed;
 }
 
+.dmNavContextMenu {
+  position: fixed;
+  z-index: 72;
+  width: 184px;
+  max-width: calc(100vw - 16px);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border: 1px solid color-mix(in srgb, var(--card-border), transparent 10%);
+  border-radius: 10px;
+  padding: 6px;
+  background: color-mix(in srgb, var(--card), var(--bg) 12%);
+  box-shadow: 0 14px 30px color-mix(in srgb, #000000, transparent 72%);
+}
+
+.dmNavContextMenuItem {
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: transparent;
+  color: var(--text);
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+
+.dmNavContextMenuItem:hover {
+  background: color-mix(in srgb, var(--warn), var(--panel) 40%);
+  border-color: color-mix(in srgb, var(--accent), var(--card-border) 35%);
+}
+
+.dmNavContextMenuItem:disabled {
+  opacity: 0.62;
+  cursor: not-allowed;
+}
+
 .friendAvatarButton {
   border: 1px solid transparent;
   background: transparent;
@@ -2000,10 +2037,28 @@ textarea:focus-visible {
   display: flex;
   align-items: center;
   gap: 8px;
+  overflow: visible;
 }
 
 .quickThemeControl {
   position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.quickThemeButton {
+  width: 40px;
+  height: 40px;
+}
+
+.quickThemeButton .voiceButtonIcon {
+  width: 20px;
+  height: 20px;
+}
+
+.quickThemeButton .voiceButtonIcon svg {
+  overflow: visible;
 }
 
 .quickThemePopover {
@@ -2661,6 +2716,11 @@ textarea:focus-visible {
   display: inline-block;
 }
 
+.messageGifShell {
+  display: inline-block;
+  line-height: 0;
+}
+
 .messageMedia {
   display: block;
   width: min(340px, 62vw);
@@ -2674,6 +2734,22 @@ textarea:focus-visible {
 
 .messageMedia.gif {
   image-rendering: auto;
+}
+
+.messageMediaGifPlaceholder {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 120px;
+  max-height: 320px;
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--card-border), transparent 12%);
+  background: color-mix(in srgb, var(--panel), var(--bg) 15%);
+  color: var(--muted);
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  line-height: 1;
 }
 
 .senderName {
@@ -3276,6 +3352,8 @@ textarea:focus-visible {
   padding: 8px 14px;
   border-top: 1px solid var(--panel-border);
   background: color-mix(in srgb, var(--panel), transparent 10%);
+  max-height: 220px;
+  overflow-y: auto;
 }
 
 .emojiPicker button {

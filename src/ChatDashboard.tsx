@@ -205,6 +205,11 @@ type DmSidebarContextMenuState = {
   isPinned: boolean;
 };
 
+type DmNavContextMenuState = {
+  x: number;
+  y: number;
+};
+
 type ComposerReplyTarget = {
   messageId: number;
   senderName: string;
@@ -354,7 +359,61 @@ const PRESENCE_STALE_MS = 120_000;
 const REMOTE_SCREEN_SHARE_PROMOTE_DELAY_MS = 900;
 const REMOTE_SCREEN_SHARE_MUTE_GRACE_MS = 2500;
 const REMOTE_SCREEN_SHARE_ENDED_GRACE_MS = 800;
-const QUICK_EMOJIS = ["😀", "😂", "😍", "😭", "🔥", "👍", "👏", "🎉", "✨", "❤️"];
+const QUICK_EMOJIS = [
+  "😀",
+  "😁",
+  "😂",
+  "🤣",
+  "😅",
+  "😊",
+  "🙂",
+  "😉",
+  "😍",
+  "🥰",
+  "😘",
+  "😎",
+  "🤩",
+  "🥳",
+  "😇",
+  "🤔",
+  "🙃",
+  "😴",
+  "😭",
+  "😡",
+  "🤯",
+  "🤗",
+  "🙌",
+  "👏",
+  "👍",
+  "👎",
+  "👌",
+  "🙏",
+  "💪",
+  "🫶",
+  "👀",
+  "🔥",
+  "✨",
+  "💯",
+  "🎉",
+  "🎊",
+  "❤️",
+  "🧡",
+  "💛",
+  "💚",
+  "💙",
+  "💜",
+  "🖤",
+  "🤍",
+  "💖",
+  "⭐",
+  "🌈",
+  "🎮",
+  "🚀",
+  "🍕",
+  "☕",
+  "🎵",
+  "📸",
+];
 const REACTION_EMOJIS = [
   "👍",
   "👎",
@@ -388,6 +447,24 @@ const REACTION_EMOJIS = [
   "🤝",
   "😎",
   "🥳",
+  "🙂",
+  "😉",
+  "😁",
+  "🤗",
+  "😴",
+  "🫶",
+  "💪",
+  "✅",
+  "❌",
+  "🚀",
+  "🎮",
+  "🍕",
+  "☕",
+  "🎵",
+  "📸",
+  "⭐",
+  "🌈",
+  "💖",
 ];
 const GLYTCH_INVITE_MESSAGE_PREFIX = "[[GLYTCH_INVITE]]";
 const DM_REPLY_MESSAGE_PREFIX = "[[DM_REPLY]]";
@@ -660,6 +737,25 @@ function normalizeTextPostMode(raw: unknown): TextPostMode {
     return raw;
   }
   return "all";
+}
+
+function normalizeVideoShareKind(raw: unknown): LocalVideoShareKind | null {
+  if (raw === "camera" || raw === "screen") {
+    return raw;
+  }
+  return null;
+}
+
+function inferVideoShareKindFromTrack(track: MediaStreamTrack): LocalVideoShareKind | null {
+  if (typeof track.getSettings !== "function") {
+    return null;
+  }
+  const settings = track.getSettings() as MediaTrackSettings & { displaySurface?: string };
+  const displaySurface = settings.displaySurface;
+  if (displaySurface === "monitor" || displaySurface === "window" || displaySurface === "browser") {
+    return "screen";
+  }
+  return "camera";
 }
 
 function normalizeAppTheme(raw: unknown): AppThemePreset {
@@ -1260,11 +1356,13 @@ function buildProfileForm(profile: Profile | null): ProfileForm {
   const isLegacyLightPreset = legacyThemeValue === "light";
   const appThemeMode = isLegacyLightPreset ? "light" : normalizeAppThemeMode(theme.appThemeMode);
   const appTheme = isLegacyLightPreset ? "simplistic" : normalizeAppTheme(legacyThemeValue);
+  const profilePresenceStatus = normalizePresenceStatus(profile?.presence_status);
+  const initialPresenceStatus = profilePresenceStatus === "away" ? "active" : profilePresenceStatus;
   return {
     avatarUrl: profile?.avatar_url || "",
     bannerUrl: profile?.banner_url || "",
     bio: profile?.bio || "",
-    presenceStatus: normalizePresenceStatus(profile?.presence_status),
+    presenceStatus: initialPresenceStatus,
     speakingRingColor: typeof theme.speakingRingColor === "string" ? theme.speakingRingColor : "#00ffff",
     accentColor: typeof theme.accentColor === "string" ? theme.accentColor : "#ff2ec2",
     backgroundFrom: typeof theme.backgroundFrom === "string" ? theme.backgroundFrom : "#1a1130",
@@ -1326,6 +1424,99 @@ function buildProfileThemePayload(form: ProfileForm): Record<string, unknown> {
   };
 }
 
+const GIF_STILL_CACHE = new Map<string, string | null>();
+const GIF_STILL_PENDING = new Map<string, Promise<string | null>>();
+
+async function decodeGifStillFrame(src: string): Promise<string | null> {
+  if (typeof window === "undefined" || typeof document === "undefined") return null;
+  if (typeof window.fetch !== "function" || typeof window.createImageBitmap !== "function") return null;
+
+  const response = await fetch(src, { credentials: "omit" });
+  if (!response.ok) return null;
+  const blob = await response.blob();
+  const bitmap = await window.createImageBitmap(blob);
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    const context = canvas.getContext("2d");
+    if (!context) return null;
+    context.drawImage(bitmap, 0, 0);
+    return canvas.toDataURL("image/png");
+  } finally {
+    bitmap.close();
+  }
+}
+
+function loadGifStillFrame(src: string): Promise<string | null> {
+  if (GIF_STILL_CACHE.has(src)) {
+    return Promise.resolve(GIF_STILL_CACHE.get(src) || null);
+  }
+  const pending = GIF_STILL_PENDING.get(src);
+  if (pending) return pending;
+
+  const nextPromise = decodeGifStillFrame(src)
+    .catch(() => null)
+    .then((stillSrc) => {
+      GIF_STILL_CACHE.set(src, stillSrc);
+      GIF_STILL_PENDING.delete(src);
+      return stillSrc;
+    });
+  GIF_STILL_PENDING.set(src, nextPromise);
+  return nextPromise;
+}
+
+type HoverGifImageProps = {
+  src: string;
+  alt: string;
+  className: string;
+};
+
+function HoverGifImage({ src, alt, className }: HoverGifImageProps) {
+  const [isHovering, setIsHovering] = useState(false);
+  const [stillSrc, setStillSrc] = useState<string | null>(() => (GIF_STILL_CACHE.has(src) ? GIF_STILL_CACHE.get(src) || null : null));
+  const [stillResolved, setStillResolved] = useState<boolean>(() => GIF_STILL_CACHE.has(src));
+
+  useEffect(() => {
+    let cancelled = false;
+    setIsHovering(false);
+    if (GIF_STILL_CACHE.has(src)) {
+      setStillSrc(GIF_STILL_CACHE.get(src) || null);
+      setStillResolved(true);
+      return;
+    }
+
+    setStillSrc(null);
+    setStillResolved(false);
+    void loadGifStillFrame(src).then((nextStill) => {
+      if (cancelled) return;
+      setStillSrc(nextStill);
+      setStillResolved(true);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [src]);
+
+  const displaySrc = isHovering ? src : stillSrc;
+
+  return (
+    <span
+      className={`messageGifShell${isHovering ? " playing" : ""}`}
+      onPointerEnter={() => setIsHovering(true)}
+      onPointerLeave={() => setIsHovering(false)}
+      onPointerCancel={() => setIsHovering(false)}
+    >
+      {displaySrc ? (
+        <img src={displaySrc} alt={alt} className={className} loading="lazy" draggable={false} />
+      ) : (
+        <span className="messageMedia messageMediaGifPlaceholder">{stillResolved ? "GIF" : "Loading GIF..."}</span>
+      )}
+    </span>
+  );
+}
+
 export default function ChatDashboard({
   currentUserId,
   currentUserName = "User",
@@ -1340,6 +1531,7 @@ export default function ChatDashboard({
   const [requests, setRequests] = useState<FriendRequest[]>([]);
   const [dms, setDms] = useState<DmWithFriend[]>([]);
   const [unreadDmCounts, setUnreadDmCounts] = useState<Record<number, number>>({});
+  const [dmNavContextMenu, setDmNavContextMenu] = useState<DmNavContextMenuState | null>(null);
   const [dmSidebarContextMenu, setDmSidebarContextMenu] = useState<DmSidebarContextMenuState | null>(null);
   const [dmSidebarActionBusyKey, setDmSidebarActionBusyKey] = useState<string | null>(null);
   const [groupChats, setGroupChats] = useState<GroupChatWithMembers[]>([]);
@@ -1469,16 +1661,18 @@ export default function ChatDashboard({
   const [voiceMuted, setVoiceMuted] = useState(false);
   const [voiceDeafened, setVoiceDeafened] = useState(false);
   const [remoteUserVolumes, setRemoteUserVolumes] = useState<Record<string, number>>({});
+  const [remoteVideoShareKinds, setRemoteVideoShareKinds] = useState<Record<string, LocalVideoShareKind | null>>({});
   const [dmIncomingCallCounts, setDmIncomingCallCounts] = useState<Record<number, number>>({});
   const [screenShareBusy, setScreenShareBusy] = useState(false);
   const screenShareIncludeSystemAudio = true;
   const [screenShareAudioMuted, setScreenShareAudioMuted] = useState(false);
-  const [localVideoShareKind, setLocalVideoShareKind] = useState<LocalVideoShareKind | null>(null);
   const [desktopSourceOptions, setDesktopSourceOptions] = useState<DesktopSourceOption[]>([]);
   const [selectedDesktopSourceId, setSelectedDesktopSourceId] = useState("auto");
   const [localScreenStream, setLocalScreenStream] = useState<MediaStream | null>(null);
+  const [localCameraStream, setLocalCameraStream] = useState<MediaStream | null>(null);
   const [remoteScreenShareUserIds, setRemoteScreenShareUserIds] = useState<string[]>([]);
   const [visibleScreenShareRoomKey, setVisibleScreenShareRoomKey] = useState<string | null>(null);
+  const [cameraAutoOpenedRoomKey, setCameraAutoOpenedRoomKey] = useState<string | null>(null);
   const [activeScreenSharePresenterId, setActiveScreenSharePresenterId] = useState<string | null>(null);
   const [voiceError, setVoiceError] = useState("");
   const [voiceModerationBusyKey, setVoiceModerationBusyKey] = useState<string | null>(null);
@@ -1509,14 +1703,19 @@ export default function ChatDashboard({
   const localStreamRef = useRef<MediaStream | null>(null);
   const localScreenTrackRef = useRef<MediaStreamTrack | null>(null);
   const localScreenStreamRef = useRef<MediaStream | null>(null);
+  const localCameraTrackRef = useRef<MediaStreamTrack | null>(null);
+  const localCameraStreamRef = useRef<MediaStream | null>(null);
   const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
-  const screenTrackSendersRef = useRef<Map<string, RTCRtpSender[]>>(new Map());
+  const desktopTrackSendersRef = useRef<Map<string, RTCRtpSender[]>>(new Map());
+  const cameraTrackSendersRef = useRef<Map<string, RTCRtpSender[]>>(new Map());
   const activeNegotiationPeerIdsRef = useRef<Set<string>>(new Set());
   const queuedNegotiationPeerIdsRef = useRef<Set<string>>(new Set());
   const cameraFallbackInFlightRef = useRef(false);
   const pendingCandidatesRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
   const remoteStreamsRef = useRef<Map<string, MediaStream>>(new Map());
   const remoteScreenStreamsRef = useRef<Map<string, MediaStream>>(new Map());
+  const remoteScreenShareOwnerByIdRef = useRef<Map<string, string>>(new Map());
+  const remoteScreenShareKindByIdRef = useRef<Map<string, LocalVideoShareKind>>(new Map());
   const remoteScreenAudioStreamsRef = useRef<Map<string, MediaStream>>(new Map());
   const remoteScreenAudioElsRef = useRef<Map<string, HTMLAudioElement>>(new Map());
   const remoteScreenStreamIdsRef = useRef<Map<string, Set<string>>>(new Map());
@@ -2170,7 +2369,8 @@ export default function ChatDashboard({
     () => Object.values(dmIncomingCallCounts).reduce((sum, count) => sum + (count > 0 ? 1 : 0), 0),
     [dmIncomingCallCounts],
   );
-  const totalDmAlertCount = totalUnreadDmCount > 0 ? totalUnreadDmCount : totalIncomingDmCallCount;
+  const totalIncomingDmCallCountForNav = voiceRoomKey ? 0 : totalIncomingDmCallCount;
+  const totalDmAlertCount = totalUnreadDmCount > 0 ? totalUnreadDmCount : totalIncomingDmCallCountForNav;
   const totalDmAlertLabel = totalDmAlertCount > 99 ? "99+" : String(totalDmAlertCount);
   const incomingRequestUserIds = useMemo(() => new Set(pendingIncoming.map((req) => req.sender_id)), [pendingIncoming]);
   const outgoingRequestUserIds = useMemo(() => new Set(pendingOutgoing.map((req) => req.receiver_id)), [pendingOutgoing]);
@@ -2324,23 +2524,30 @@ export default function ChatDashboard({
     () => shouldPauseBackgroundPolling(),
     [shouldPauseBackgroundPolling],
   );
-  const isScreenSharing = Boolean(localScreenStream);
+  const isDesktopSharing = Boolean(localScreenStream);
+  const isCameraSharing = Boolean(localCameraStream);
+  const isScreenSharing = isDesktopSharing || isCameraSharing;
   const remoteScreenShares = useMemo(
     () =>
       remoteScreenShareUserIds
-        .map((userId) => {
-          const stream = remoteScreenStreamsRef.current.get(userId);
+        .map((shareId) => {
+          const stream = remoteScreenStreamsRef.current.get(shareId);
           if (!stream) return null;
           const hasLiveVideoTrack = stream.getVideoTracks().some((track) => track.readyState !== "ended");
           if (!hasLiveVideoTrack) return null;
+          const userId = remoteScreenShareOwnerByIdRef.current.get(shareId) || shareId.split(":")[0] || "";
+          if (!userId) return null;
+          const shareKind = remoteScreenShareKindByIdRef.current.get(shareId) || "screen";
           const profile = userId === currentUserId ? currentProfile : knownProfiles[userId];
           return {
+            shareId,
             userId,
+            shareKind,
             stream,
             name: profile?.username || profile?.display_name || (userId === currentUserId ? displayName : "User"),
           };
         })
-        .filter((entry): entry is { userId: string; stream: MediaStream; name: string } => Boolean(entry)),
+        .filter((entry): entry is { shareId: string; userId: string; shareKind: LocalVideoShareKind; stream: MediaStream; name: string } => Boolean(entry)),
     [remoteScreenShareUserIds, knownProfiles, currentProfile, currentUserId, displayName],
   );
   const hasRemoteScreenShares = remoteScreenShares.length > 0;
@@ -2348,12 +2555,12 @@ export default function ChatDashboard({
   const isRemoteScreenShareViewVisible =
     Boolean(voiceRoomKey && !isScreenSharing && hasRemoteScreenShares && visibleScreenShareRoomKey === voiceRoomKey);
   const presentingUserIds = useMemo(() => {
-    const ids = new Set(remoteScreenShareUserIds);
+    const ids = new Set(remoteScreenShares.map((share) => share.userId));
     if (isScreenSharing) {
       ids.add(currentUserId);
     }
     return ids;
-  }, [remoteScreenShareUserIds, isScreenSharing, currentUserId]);
+  }, [remoteScreenShares, isScreenSharing, currentUserId]);
   const shouldShowScreenSharePanel = Boolean(
     voiceRoomKey &&
       (isScreenSharing || (hasRemoteScreenShares && isRemoteScreenShareViewVisible)),
@@ -2368,34 +2575,69 @@ export default function ChatDashboard({
     if (selectedDesktopSourceId === "auto") return "Display";
     return desktopSourceOptions.find((source) => source.id === selectedDesktopSourceId)?.name || "Display";
   }, [desktopSourceOptions, selectedDesktopSourceId]);
-  const localScreenShareCaption = useMemo(() => {
-    if (localVideoShareKind === "camera") return "You (camera fallback)";
-    return selectedDesktopSourceId === "auto" ? "You (sharing)" : `You (${selectedDesktopSourceLabel})`;
-  }, [localVideoShareKind, selectedDesktopSourceId, selectedDesktopSourceLabel]);
+  const localScreenShareCaption = useMemo(
+    () => (selectedDesktopSourceId === "auto" ? "You (sharing)" : `You (${selectedDesktopSourceLabel})`),
+    [selectedDesktopSourceId, selectedDesktopSourceLabel],
+  );
   const screenSharePresenters = useMemo(
     () => [
-      ...(isScreenSharing && localScreenStream
+      ...(isDesktopSharing && localScreenStream
         ? [
             {
-              presenterId: `self:${currentUserId}`,
+              presenterId: `self:${currentUserId}:screen`,
               userId: currentUserId,
               stream: localScreenStream,
               name: displayName,
               caption: localScreenShareCaption,
+              shareKind: "screen" as LocalVideoShareKind,
               isSelf: true,
             },
           ]
         : []),
-      ...remoteScreenShares.map((share) => ({
-        presenterId: share.userId,
-        userId: share.userId,
-        stream: share.stream,
-        name: share.name,
-        caption: share.name,
-        isSelf: false,
-      })),
+      ...(isCameraSharing && localCameraStream
+        ? [
+            {
+              presenterId: `self:${currentUserId}:camera`,
+              userId: currentUserId,
+              stream: localCameraStream,
+              name: displayName,
+              caption: "You (webcam)",
+              shareKind: "camera" as LocalVideoShareKind,
+              isSelf: true,
+            },
+          ]
+        : []),
+      ...remoteScreenShares.map((share) => {
+        const shareKind = share.shareKind;
+        return {
+          presenterId: share.shareId,
+          userId: share.userId,
+          stream: share.stream,
+          name: share.name,
+          caption: shareKind === "camera" ? `${share.name} (webcam)` : share.name,
+          shareKind,
+          isSelf: false,
+        };
+      }),
     ],
-    [currentUserId, displayName, isScreenSharing, localScreenShareCaption, localScreenStream, remoteScreenShares],
+    [
+      currentUserId,
+      displayName,
+      isDesktopSharing,
+      isCameraSharing,
+      localScreenShareCaption,
+      localScreenStream,
+      localCameraStream,
+      remoteScreenShares,
+    ],
+  );
+  const hasRemoteCameraShares = useMemo(
+    () => screenSharePresenters.some((presenter) => !presenter.isSelf && presenter.shareKind === "camera"),
+    [screenSharePresenters],
+  );
+  const hasRemoteDesktopShares = useMemo(
+    () => screenSharePresenters.some((presenter) => !presenter.isSelf && presenter.shareKind === "screen"),
+    [screenSharePresenters],
   );
   const activeScreenSharePresenter = useMemo(
     () => {
@@ -2408,6 +2650,36 @@ export default function ChatDashboard({
     },
     [activeScreenSharePresenterId, screenSharePresenters],
   );
+  const mediaPanelHeading = useMemo(() => {
+    if (activeScreenSharePresenter?.shareKind === "camera") return "Webcam";
+    return "Screen Share";
+  }, [activeScreenSharePresenter]);
+  const restoreRemoteMediaViewLabel = useMemo(() => {
+    if (hasRemoteCameraShares && !hasRemoteDesktopShares) {
+      return "View webcam";
+    }
+    return "View screen share";
+  }, [hasRemoteCameraShares, hasRemoteDesktopShares]);
+  const dismissRemoteMediaViewLabel = useMemo(() => {
+    if (hasRemoteCameraShares && !hasRemoteDesktopShares) {
+      return "Leave webcam view";
+    }
+    return "Hide screen share";
+  }, [hasRemoteCameraShares, hasRemoteDesktopShares]);
+  const getLocalPrimaryVideoShareKind = useCallback((): LocalVideoShareKind | null => {
+    if (localScreenStreamRef.current) return "screen";
+    if (localCameraStreamRef.current) return "camera";
+    return null;
+  }, []);
+  const hasRemoteShareForUser = useCallback((userId: string, excludeShareId?: string) => {
+    for (const [shareId, ownerUserId] of remoteScreenShareOwnerByIdRef.current.entries()) {
+      if (ownerUserId !== userId) continue;
+      if (excludeShareId && shareId === excludeShareId) continue;
+      if (!remoteScreenStreamsRef.current.has(shareId)) continue;
+      return true;
+    }
+    return false;
+  }, []);
 
   const attachVideoStream = useCallback((videoEl: HTMLVideoElement | null, stream: MediaStream | null) => {
     if (!videoEl) return;
@@ -2456,12 +2728,27 @@ export default function ChatDashboard({
   useEffect(() => {
     if (!voiceRoomKey) {
       setVisibleScreenShareRoomKey(null);
+      setCameraAutoOpenedRoomKey(null);
       return;
     }
     if (!hasRemoteScreenShares) {
       setVisibleScreenShareRoomKey((prev) => (prev === voiceRoomKey ? null : prev));
+      setCameraAutoOpenedRoomKey((prev) => (prev === voiceRoomKey ? null : prev));
     }
   }, [hasRemoteScreenShares, voiceRoomKey]);
+
+  useEffect(() => {
+    if (!voiceRoomKey) return;
+    if (!hasRemoteCameraShares) {
+      setCameraAutoOpenedRoomKey((prev) => (prev === voiceRoomKey ? null : prev));
+      return;
+    }
+    if (cameraAutoOpenedRoomKey === voiceRoomKey) return;
+    if (isScreenSharing) return;
+
+    setVisibleScreenShareRoomKey(voiceRoomKey);
+    setCameraAutoOpenedRoomKey(voiceRoomKey);
+  }, [cameraAutoOpenedRoomKey, hasRemoteCameraShares, isScreenSharing, voiceRoomKey]);
 
   useEffect(() => {
     if (screenSharePresenters.length === 0) {
@@ -2627,6 +2914,7 @@ export default function ChatDashboard({
     setReactionPickerMessageId(null);
     setReactionBusyKey(null);
     setMessageContextMenu(null);
+    setDmNavContextMenu(null);
     setDmSidebarContextMenu(null);
     setComposerReplyTarget(null);
     setDismissedDmMessageIds({});
@@ -2663,8 +2951,33 @@ export default function ChatDashboard({
 
   useEffect(() => {
     if (viewMode === "dm" && dmPanelMode === "dms") return;
+    setDmNavContextMenu(null);
     setDmSidebarContextMenu(null);
   }, [dmPanelMode, viewMode]);
+
+  useEffect(() => {
+    if (!dmNavContextMenu) return;
+
+    const handlePointerDown = () => {
+      setDmNavContextMenu(null);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setDmNavContextMenu(null);
+      }
+    };
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("resize", handlePointerDown);
+    window.addEventListener("scroll", handlePointerDown, true);
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("resize", handlePointerDown);
+      window.removeEventListener("scroll", handlePointerDown, true);
+    };
+  }, [dmNavContextMenu]);
 
   useEffect(() => {
     if (!dmSidebarContextMenu) return;
@@ -3228,12 +3541,7 @@ export default function ChatDashboard({
       const background =
         sharedBackground ||
         personalFallback ||
-        (isForcedDefault
-          ? DEFAULT_DM_CHAT_BACKGROUND
-          : {
-              from: profileForm.dmBackgroundFrom,
-              to: profileForm.dmBackgroundTo,
-            });
+        DEFAULT_DM_CHAT_BACKGROUND;
       setQuickThemeModeDraft(background.mode === "image" && background.imageUrl ? "image" : "gradient");
       setQuickThemeFromDraft(background.from);
       setQuickThemeToDraft(background.to);
@@ -3272,8 +3580,6 @@ export default function ChatDashboard({
     forcedDefaultDmConversationIds,
     forcedDefaultGlytchChannelIds,
     profileForm.dmBackgroundByConversation,
-    profileForm.dmBackgroundFrom,
-    profileForm.dmBackgroundTo,
     profileForm.groupBackgroundByChat,
     profileForm.glytchBackgroundFrom,
     profileForm.glytchBackgroundTo,
@@ -4725,31 +5031,51 @@ export default function ChatDashboard({
           signalSinceIdRef.current = Math.max(signalSinceIdRef.current, signal.id);
 
           if (signal.sender_id === currentUserId) continue;
+          const payload =
+            signal.payload && typeof signal.payload === "object" ? (signal.payload as Record<string, unknown>) : {};
+          if (Object.prototype.hasOwnProperty.call(payload, "videoShareKind")) {
+            const nextShareKind = normalizeVideoShareKind(payload.videoShareKind);
+            setRemoteVideoShareKinds((prev) => {
+              const previousShareKind = prev[signal.sender_id] || null;
+              if (previousShareKind === nextShareKind) return prev;
+              if (!nextShareKind) {
+                if (!(signal.sender_id in prev)) return prev;
+                const next = { ...prev };
+                delete next[signal.sender_id];
+                return next;
+              }
+              return {
+                ...prev,
+                [signal.sender_id]: nextShareKind,
+              };
+            });
+          }
 
           if (signal.kind === "offer") {
             const pc = await getOrCreatePeerConnection(signal.sender_id, false);
-            const payload = signal.payload as { sdp?: RTCSessionDescriptionInit };
-            if (!payload?.sdp) continue;
-            await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+            const sdp = payload.sdp as RTCSessionDescriptionInit | undefined;
+            if (!sdp) continue;
+            await pc.setRemoteDescription(new RTCSessionDescription(sdp));
             await flushPendingCandidates(signal.sender_id, pc);
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
             await sendVoiceSignal(accessToken, voiceRoomKey, currentUserId, signal.sender_id, "answer", {
               sdp: answer,
+              videoShareKind: getLocalPrimaryVideoShareKind(),
             });
             continue;
           }
 
           if (signal.kind === "answer") {
             const pc = await getOrCreatePeerConnection(signal.sender_id, false);
-            const payload = signal.payload as { sdp?: RTCSessionDescriptionInit };
-            if (!payload?.sdp) continue;
+            const sdp = payload.sdp as RTCSessionDescriptionInit | undefined;
+            if (!sdp) continue;
             // Ignore late/duplicate answers after negotiation has already settled.
             if (pc.signalingState !== "have-local-offer") {
               continue;
             }
             try {
-              await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+              await pc.setRemoteDescription(new RTCSessionDescription(sdp));
             } catch (err) {
               const message = err instanceof Error ? err.message.toLowerCase() : "";
               if (message.includes("called in wrong state")) {
@@ -4763,16 +5089,16 @@ export default function ChatDashboard({
 
           if (signal.kind === "candidate") {
             const pc = await getOrCreatePeerConnection(signal.sender_id, false);
-            const payload = signal.payload as { candidate?: RTCIceCandidateInit };
-            if (!payload?.candidate) continue;
+            const candidate = payload.candidate as RTCIceCandidateInit | undefined;
+            if (!candidate) continue;
             if (!pc.remoteDescription) {
               const queued = pendingCandidatesRef.current.get(signal.sender_id) || [];
-              queued.push(payload.candidate);
+              queued.push(candidate);
               pendingCandidatesRef.current.set(signal.sender_id, queued);
               continue;
             }
             try {
-              await pc.addIceCandidate(new RTCIceCandidate(payload.candidate));
+              await pc.addIceCandidate(new RTCIceCandidate(candidate));
             } catch {
               // Ignore stale candidates during reconnect races.
             }
@@ -5140,6 +5466,69 @@ export default function ChatDashboard({
     });
   }, [messageContextMenu, messages]);
 
+  const openDmNavContextMenu = useCallback((event: ReactMouseEvent<HTMLElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const menuWidth = 184;
+    const menuHeight = 56;
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+
+    const safeX = Math.max(8, Math.min(event.clientX + 4, viewportWidth - menuWidth - 8));
+    const safeY = Math.max(8, Math.min(event.clientY + 4, viewportHeight - menuHeight - 8));
+
+    setMessageContextMenu(null);
+    setDmSidebarContextMenu(null);
+    setDmNavContextMenu({ x: safeX, y: safeY });
+  }, []);
+
+  const handleMarkAllDmsSeenFromNavContextMenu = useCallback(async () => {
+    const conversationIdsToMark = dms
+      .map((dm) => dm.conversationId)
+      .filter((conversationId) => (unreadDmCounts[conversationId] || 0) > 0);
+
+    setDmNavContextMenu(null);
+    if (conversationIdsToMark.length === 0) return;
+
+    const busyKey = "seen-all";
+    setDmSidebarActionBusyKey(busyKey);
+    setDmError("");
+
+    try {
+      const settled = await Promise.allSettled(
+        conversationIdsToMark.map((conversationId) => markDmConversationRead(accessToken, conversationId)),
+      );
+      const hadFailures = settled.some((result) => result.status === "rejected");
+      const deletedEmptyConversation = settled.some(
+        (result) => result.status === "fulfilled" && result.value.deleted_empty_conversation,
+      );
+
+      setUnreadDmCounts((prev) => {
+        let didChange = false;
+        const next = { ...prev };
+        conversationIdsToMark.forEach((conversationId) => {
+          if ((next[conversationId] || 0) === 0) return;
+          next[conversationId] = 0;
+          didChange = true;
+        });
+        return didChange ? next : prev;
+      });
+
+      if (deletedEmptyConversation) {
+        await loadDmSidebarData();
+      }
+
+      if (hadFailures) {
+        setDmError("Some DMs could not be marked as seen.");
+      }
+    } catch (err) {
+      setDmError(err instanceof Error ? err.message : "Could not mark all DMs as seen.");
+    } finally {
+      setDmSidebarActionBusyKey((prev) => (prev === busyKey ? null : prev));
+    }
+  }, [accessToken, dms, loadDmSidebarData, unreadDmCounts]);
+
   const openDmSidebarContextMenu = useCallback((
     event: ReactMouseEvent<HTMLElement>,
     conversationId: number,
@@ -5173,6 +5562,7 @@ export default function ChatDashboard({
     const safeY = Math.max(minLocalY, Math.min(desiredLocalY, maxLocalY));
 
     setMessageContextMenu(null);
+    setDmNavContextMenu(null);
     setDmSidebarContextMenu({
       conversationId,
       x: safeX,
@@ -6810,38 +7200,34 @@ export default function ChatDashboard({
   };
 
   const syncRemoteScreenShareUsers = useCallback(() => {
-    const nextUserIds: string[] = [];
-    for (const [userId, stream] of remoteScreenStreamsRef.current.entries()) {
+    const nextShareIds: string[] = [];
+    const maybeOrphanedUserIds = new Set<string>();
+    for (const [shareId, stream] of remoteScreenStreamsRef.current.entries()) {
       const hasLiveVideoTrack = stream.getVideoTracks().some((track) => track.readyState !== "ended");
       if (hasLiveVideoTrack) {
-        nextUserIds.push(userId);
+        nextShareIds.push(shareId);
         continue;
       }
-      remoteScreenStreamsRef.current.delete(userId);
-      remoteScreenStreamIdsRef.current.delete(userId);
-      remoteScreenAudioStreamsRef.current.delete(userId);
-      const screenAudioEl = remoteScreenAudioElsRef.current.get(userId);
-      if (screenAudioEl) {
-        screenAudioEl.pause();
-        screenAudioEl.srcObject = null;
-        remoteScreenAudioElsRef.current.delete(userId);
+      const ownerUserId = remoteScreenShareOwnerByIdRef.current.get(shareId);
+      if (ownerUserId) {
+        maybeOrphanedUserIds.add(ownerUserId);
       }
-    }
-    setRemoteScreenShareUserIds(nextUserIds);
-  }, []);
-
-  const removeRemoteScreenShare = useCallback(
-    (userId: string) => {
-      const pendingTimeoutId = remoteScreenPromoteTimeoutsRef.current.get(userId);
-      if (typeof pendingTimeoutId === "number") {
-        window.clearTimeout(pendingTimeoutId);
-        remoteScreenPromoteTimeoutsRef.current.delete(userId);
+      remoteScreenStreamsRef.current.delete(shareId);
+      remoteScreenShareOwnerByIdRef.current.delete(shareId);
+      remoteScreenShareKindByIdRef.current.delete(shareId);
+      const pendingPromoteTimeoutId = remoteScreenPromoteTimeoutsRef.current.get(shareId);
+      if (typeof pendingPromoteTimeoutId === "number") {
+        window.clearTimeout(pendingPromoteTimeoutId);
+        remoteScreenPromoteTimeoutsRef.current.delete(shareId);
       }
-      const pendingDemoteTimeoutId = remoteScreenDemoteTimeoutsRef.current.get(userId);
+      const pendingDemoteTimeoutId = remoteScreenDemoteTimeoutsRef.current.get(shareId);
       if (typeof pendingDemoteTimeoutId === "number") {
         window.clearTimeout(pendingDemoteTimeoutId);
-        remoteScreenDemoteTimeoutsRef.current.delete(userId);
+        remoteScreenDemoteTimeoutsRef.current.delete(shareId);
       }
+    }
+    for (const userId of maybeOrphanedUserIds) {
+      if (hasRemoteShareForUser(userId)) continue;
       remoteScreenStreamIdsRef.current.delete(userId);
       remoteScreenAudioStreamsRef.current.delete(userId);
       const screenAudioEl = remoteScreenAudioElsRef.current.get(userId);
@@ -6850,11 +7236,52 @@ export default function ChatDashboard({
         screenAudioEl.srcObject = null;
         remoteScreenAudioElsRef.current.delete(userId);
       }
-      const removed = remoteScreenStreamsRef.current.delete(userId);
+      setRemoteVideoShareKinds((prev) => {
+        if (!(userId in prev)) return prev;
+        const next = { ...prev };
+        delete next[userId];
+        return next;
+      });
+    }
+    setRemoteScreenShareUserIds(nextShareIds);
+  }, [hasRemoteShareForUser]);
+
+  const removeRemoteScreenShare = useCallback(
+    (shareId: string) => {
+      const ownerUserId = remoteScreenShareOwnerByIdRef.current.get(shareId) || shareId.split(":")[0] || null;
+      const pendingTimeoutId = remoteScreenPromoteTimeoutsRef.current.get(shareId);
+      if (typeof pendingTimeoutId === "number") {
+        window.clearTimeout(pendingTimeoutId);
+        remoteScreenPromoteTimeoutsRef.current.delete(shareId);
+      }
+      const pendingDemoteTimeoutId = remoteScreenDemoteTimeoutsRef.current.get(shareId);
+      if (typeof pendingDemoteTimeoutId === "number") {
+        window.clearTimeout(pendingDemoteTimeoutId);
+        remoteScreenDemoteTimeoutsRef.current.delete(shareId);
+      }
+      remoteScreenShareOwnerByIdRef.current.delete(shareId);
+      remoteScreenShareKindByIdRef.current.delete(shareId);
+      const removed = remoteScreenStreamsRef.current.delete(shareId);
       if (!removed) return;
+      if (ownerUserId && !hasRemoteShareForUser(ownerUserId)) {
+        remoteScreenStreamIdsRef.current.delete(ownerUserId);
+        remoteScreenAudioStreamsRef.current.delete(ownerUserId);
+        const screenAudioEl = remoteScreenAudioElsRef.current.get(ownerUserId);
+        if (screenAudioEl) {
+          screenAudioEl.pause();
+          screenAudioEl.srcObject = null;
+          remoteScreenAudioElsRef.current.delete(ownerUserId);
+        }
+        setRemoteVideoShareKinds((prev) => {
+          if (!(ownerUserId in prev)) return prev;
+          const next = { ...prev };
+          delete next[ownerUserId];
+          return next;
+        });
+      }
       syncRemoteScreenShareUsers();
     },
-    [syncRemoteScreenShareUsers],
+    [hasRemoteShareForUser, syncRemoteScreenShareUsers],
   );
 
   const renegotiatePeerConnection = useCallback(
@@ -6889,6 +7316,7 @@ export default function ChatDashboard({
         await pc.setLocalDescription(offer);
         await sendVoiceSignal(accessToken, voiceRoomKey, currentUserId, targetUserId, "offer", {
           sdp: offer,
+          videoShareKind: getLocalPrimaryVideoShareKind(),
         });
       } catch {
         // Ignore renegotiation races while peers reconnect.
@@ -6908,18 +7336,19 @@ export default function ChatDashboard({
         }
       }
     },
-    [accessToken, currentUserId, voiceRoomKey],
+    [accessToken, currentUserId, getLocalPrimaryVideoShareKind, voiceRoomKey],
   );
 
   const attachLocalShareTracksToPeers = useCallback(
-    (stream: MediaStream) => {
+    (stream: MediaStream, shareKind: LocalVideoShareKind) => {
+      const senderMapRef = shareKind === "screen" ? desktopTrackSendersRef : cameraTrackSendersRef;
       for (const [userId, pc] of peerConnectionsRef.current.entries()) {
         const senders: RTCRtpSender[] = [];
         stream.getTracks().forEach((streamTrack) => {
           senders.push(pc.addTrack(streamTrack, stream));
         });
         if (senders.length > 0) {
-          screenTrackSendersRef.current.set(userId, senders);
+          senderMapRef.current.set(userId, senders);
         }
         void renegotiatePeerConnection(userId, pc);
       }
@@ -6927,7 +7356,36 @@ export default function ChatDashboard({
     [renegotiatePeerConnection],
   );
 
-  const stopLocalScreenShare = useCallback(
+  const detachLocalShareTracksFromPeers = useCallback(
+    async (shareKind: LocalVideoShareKind, renegotiatePeers: boolean) => {
+      const senderMapRef = shareKind === "screen" ? desktopTrackSendersRef : cameraTrackSendersRef;
+      const peersToRenegotiate: Array<[string, RTCPeerConnection]> = [];
+      for (const [userId, senders] of senderMapRef.current.entries()) {
+        const pc = peerConnectionsRef.current.get(userId);
+        if (!pc) continue;
+        senders.forEach((sender) => {
+          try {
+            pc.removeTrack(sender);
+          } catch {
+            // Ignore remove failures for already-closed senders.
+          }
+        });
+        if (renegotiatePeers) {
+          peersToRenegotiate.push([userId, pc]);
+        }
+      }
+      senderMapRef.current.clear();
+
+      if (renegotiatePeers) {
+        for (const [userId, pc] of peersToRenegotiate) {
+          await renegotiatePeerConnection(userId, pc);
+        }
+      }
+    },
+    [renegotiatePeerConnection],
+  );
+
+  const stopLocalDesktopShare = useCallback(
     async (renegotiatePeers: boolean) => {
       const currentTrack = localScreenTrackRef.current;
       const currentStream = localScreenStreamRef.current;
@@ -6935,7 +7393,33 @@ export default function ChatDashboard({
       localScreenTrackRef.current = null;
       localScreenStreamRef.current = null;
       setLocalScreenStream(null);
-      setLocalVideoShareKind(null);
+
+      if (currentTrack) {
+        currentTrack.onended = null;
+      }
+      if (currentStream) {
+        currentStream.getTracks().forEach((track) => {
+          try {
+            track.stop();
+          } catch {
+            // Ignore track-stop errors from stale streams.
+          }
+        });
+      }
+
+      await detachLocalShareTracksFromPeers("screen", renegotiatePeers);
+    },
+    [detachLocalShareTracksFromPeers],
+  );
+
+  const stopLocalCameraShare = useCallback(
+    async (renegotiatePeers: boolean) => {
+      const currentTrack = localCameraTrackRef.current;
+      const currentStream = localCameraStreamRef.current;
+
+      localCameraTrackRef.current = null;
+      localCameraStreamRef.current = null;
+      setLocalCameraStream(null);
       cameraFallbackInFlightRef.current = false;
 
       if (currentTrack) {
@@ -6951,34 +7435,14 @@ export default function ChatDashboard({
         });
       }
 
-      const peersToRenegotiate: Array<[string, RTCPeerConnection]> = [];
-      for (const [userId, senders] of screenTrackSendersRef.current.entries()) {
-        const pc = peerConnectionsRef.current.get(userId);
-        if (!pc) continue;
-        senders.forEach((sender) => {
-          try {
-            pc.removeTrack(sender);
-          } catch {
-            // Ignore remove failures for already-closed senders.
-          }
-        });
-        if (renegotiatePeers) {
-          peersToRenegotiate.push([userId, pc]);
-        }
-      }
-      screenTrackSendersRef.current.clear();
-
-      if (renegotiatePeers) {
-        for (const [userId, pc] of peersToRenegotiate) {
-          await renegotiatePeerConnection(userId, pc);
-        }
-      }
+      await detachLocalShareTracksFromPeers("camera", renegotiatePeers);
     },
-    [renegotiatePeerConnection],
+    [detachLocalShareTracksFromPeers],
   );
 
-  const startCameraFallbackShare = useCallback(async (): Promise<boolean> => {
+  const startLocalCameraShare = useCallback(async (): Promise<boolean> => {
     if (cameraFallbackInFlightRef.current) return false;
+    if (localCameraTrackRef.current && localCameraStreamRef.current) return true;
     if (typeof navigator === "undefined" || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return false;
 
     cameraFallbackInFlightRef.current = true;
@@ -7002,30 +7466,29 @@ export default function ChatDashboard({
         // Ignore unsupported content hints.
       }
 
-      localScreenTrackRef.current = track;
-      localScreenStreamRef.current = stream;
-      setLocalScreenStream(stream);
-      setLocalVideoShareKind("camera");
+      localCameraTrackRef.current = track;
+      localCameraStreamRef.current = stream;
+      setLocalCameraStream(stream);
 
       track.onended = () => {
-        void stopLocalScreenShare(true).catch(() => undefined);
+        void stopLocalCameraShare(true).catch(() => undefined);
       };
 
-      attachLocalShareTracksToPeers(stream);
+      attachLocalShareTracksToPeers(stream, "camera");
       return true;
     } catch {
       return false;
     } finally {
       cameraFallbackInFlightRef.current = false;
     }
-  }, [attachLocalShareTracksToPeers, stopLocalScreenShare]);
+  }, [attachLocalShareTracksToPeers, stopLocalCameraShare]);
 
   const handleStartScreenShare = async () => {
     if (!voiceRoomKey) {
       setVoiceError("Join voice before starting screen share.");
       return;
     }
-    if (localScreenTrackRef.current) return;
+    if (localScreenTrackRef.current && localScreenStreamRef.current) return;
     if (typeof navigator === "undefined") {
       setVoiceError("Screen sharing unavailable: browser runtime is missing.");
       return;
@@ -7096,27 +7559,19 @@ export default function ChatDashboard({
       localScreenTrackRef.current = track;
       localScreenStreamRef.current = stream;
       setLocalScreenStream(stream);
-      setLocalVideoShareKind("screen");
 
       track.onended = () => {
-        void (async () => {
-          await stopLocalScreenShare(true).catch(() => undefined);
-          const switchedToCamera = await startCameraFallbackShare();
-          if (switchedToCamera) {
-            setVoiceError("Screen share ended. Switched to camera.");
-          } else {
-            setVoiceError("Screen share ended.");
-          }
-        })();
+        void stopLocalDesktopShare(true).catch(() => undefined);
+        setVoiceError("Screen share ended.");
       };
 
-      attachLocalShareTracksToPeers(stream);
+      attachLocalShareTracksToPeers(stream, "screen");
 
       if (screenShareIncludeSystemAudio && stream.getAudioTracks().length === 0) {
         setVoiceError("System audio is unavailable for this source. Sharing video only.");
       }
     } catch (err) {
-      await stopLocalScreenShare(false).catch(() => undefined);
+      await stopLocalDesktopShare(false).catch(() => undefined);
       setVoiceError(err instanceof Error ? err.message : "Could not start screen sharing.");
     } finally {
       setScreenShareBusy(false);
@@ -7128,9 +7583,34 @@ export default function ChatDashboard({
     setScreenShareBusy(true);
     setVoiceError("");
     try {
-      await stopLocalScreenShare(true);
+      await stopLocalDesktopShare(true);
     } catch (err) {
       setVoiceError(err instanceof Error ? err.message : "Could not stop screen sharing.");
+    } finally {
+      setScreenShareBusy(false);
+    }
+  };
+
+  const handleToggleWebcamShare = async () => {
+    if (!voiceRoomKey) {
+      setVoiceError("Join voice before starting webcam.");
+      return;
+    }
+
+    setScreenShareBusy(true);
+    setVoiceError("");
+    try {
+      if (localCameraTrackRef.current && localCameraStreamRef.current) {
+        await stopLocalCameraShare(true);
+        return;
+      }
+
+      const started = await startLocalCameraShare();
+      if (!started) {
+        throw new Error("Could not start webcam.");
+      }
+    } catch (err) {
+      setVoiceError(err instanceof Error ? err.message : "Could not update webcam.");
     } finally {
       setScreenShareBusy(false);
     }
@@ -7195,7 +7675,8 @@ export default function ChatDashboard({
       pc.close();
       peerConnectionsRef.current.delete(userId);
     }
-    screenTrackSendersRef.current.delete(userId);
+    desktopTrackSendersRef.current.delete(userId);
+    cameraTrackSendersRef.current.delete(userId);
     activeNegotiationPeerIdsRef.current.delete(userId);
     queuedNegotiationPeerIdsRef.current.delete(userId);
 
@@ -7225,19 +7706,34 @@ export default function ChatDashboard({
       speakingAnalyserCleanupRef.current.delete(userId);
     }
 
-    if (remoteScreenStreamsRef.current.delete(userId)) {
-      syncRemoteScreenShareUsers();
+    const shareIdsToRemove: string[] = [];
+    for (const [shareId, ownerUserId] of remoteScreenShareOwnerByIdRef.current.entries()) {
+      if (ownerUserId === userId) {
+        shareIdsToRemove.push(shareId);
+      }
     }
-    const pendingTimeoutId = remoteScreenPromoteTimeoutsRef.current.get(userId);
-    if (typeof pendingTimeoutId === "number") {
-      window.clearTimeout(pendingTimeoutId);
-      remoteScreenPromoteTimeoutsRef.current.delete(userId);
+    for (const shareId of shareIdsToRemove) {
+      remoteScreenStreamsRef.current.delete(shareId);
+      remoteScreenShareOwnerByIdRef.current.delete(shareId);
+      remoteScreenShareKindByIdRef.current.delete(shareId);
+      const pendingPromoteTimeoutId = remoteScreenPromoteTimeoutsRef.current.get(shareId);
+      if (typeof pendingPromoteTimeoutId === "number") {
+        window.clearTimeout(pendingPromoteTimeoutId);
+        remoteScreenPromoteTimeoutsRef.current.delete(shareId);
+      }
+      const pendingDemoteTimeoutId = remoteScreenDemoteTimeoutsRef.current.get(shareId);
+      if (typeof pendingDemoteTimeoutId === "number") {
+        window.clearTimeout(pendingDemoteTimeoutId);
+        remoteScreenDemoteTimeoutsRef.current.delete(shareId);
+      }
     }
-    const pendingDemoteTimeoutId = remoteScreenDemoteTimeoutsRef.current.get(userId);
-    if (typeof pendingDemoteTimeoutId === "number") {
-      window.clearTimeout(pendingDemoteTimeoutId);
-      remoteScreenDemoteTimeoutsRef.current.delete(userId);
-    }
+    syncRemoteScreenShareUsers();
+    setRemoteVideoShareKinds((prev) => {
+      if (!(userId in prev)) return prev;
+      const next = { ...prev };
+      delete next[userId];
+      return next;
+    });
 
     pendingCandidatesRef.current.delete(userId);
   }, [syncRemoteScreenShareUsers]);
@@ -7255,15 +7751,24 @@ export default function ChatDashboard({
       localScreenTrackRef.current.onended = null;
     }
     localScreenStreamRef.current?.getTracks().forEach((track) => track.stop());
+    if (localCameraTrackRef.current) {
+      localCameraTrackRef.current.onended = null;
+    }
+    localCameraStreamRef.current?.getTracks().forEach((track) => track.stop());
     localScreenTrackRef.current = null;
     localScreenStreamRef.current = null;
+    localCameraTrackRef.current = null;
+    localCameraStreamRef.current = null;
     setLocalScreenStream(null);
-    setLocalVideoShareKind(null);
-    screenTrackSendersRef.current.clear();
+    setLocalCameraStream(null);
+    desktopTrackSendersRef.current.clear();
+    cameraTrackSendersRef.current.clear();
     activeNegotiationPeerIdsRef.current.clear();
     queuedNegotiationPeerIdsRef.current.clear();
     cameraFallbackInFlightRef.current = false;
     remoteScreenStreamsRef.current.clear();
+    remoteScreenShareOwnerByIdRef.current.clear();
+    remoteScreenShareKindByIdRef.current.clear();
     remoteScreenAudioStreamsRef.current.clear();
     remoteScreenStreamIdsRef.current.clear();
     for (const audioEl of remoteScreenAudioElsRef.current.values()) {
@@ -7280,6 +7785,7 @@ export default function ChatDashboard({
     }
     remoteScreenDemoteTimeoutsRef.current.clear();
     setRemoteScreenShareUserIds([]);
+    setRemoteVideoShareKinds({});
     setScreenShareAudioMuted(false);
     setScreenShareBusy(false);
     signalSinceIdRef.current = 0;
@@ -7333,7 +7839,17 @@ export default function ChatDashboard({
         senders.push(pc.addTrack(streamTrack, localScreenStream));
       });
       if (senders.length > 0) {
-        screenTrackSendersRef.current.set(targetUserId, senders);
+        desktopTrackSendersRef.current.set(targetUserId, senders);
+      }
+    }
+    const localCameraStream = localCameraStreamRef.current;
+    if (localCameraStream) {
+      const senders: RTCRtpSender[] = [];
+      localCameraStream.getTracks().forEach((streamTrack) => {
+        senders.push(pc.addTrack(streamTrack, localCameraStream));
+      });
+      if (senders.length > 0) {
+        cameraTrackSendersRef.current.set(targetUserId, senders);
       }
     }
 
@@ -7341,6 +7857,7 @@ export default function ChatDashboard({
       if (!event.candidate || !voiceRoomKey) return;
       void sendVoiceSignal(accessToken, voiceRoomKey, currentUserId, targetUserId, "candidate", {
         candidate: event.candidate.toJSON(),
+        videoShareKind: getLocalPrimaryVideoShareKind(),
       });
     };
 
@@ -7354,7 +7871,7 @@ export default function ChatDashboard({
         const eventStreamHasVideo = event.streams.some((stream) =>
           stream.getVideoTracks().some((videoTrack) => videoTrack.readyState !== "ended"),
         );
-        const userHasActiveScreenShare = remoteScreenStreamsRef.current.has(targetUserId);
+        const userHasActiveScreenShare = hasRemoteShareForUser(targetUserId);
         const voiceLiveTrackCount =
           remoteStreamsRef.current
             .get(targetUserId)
@@ -7453,84 +7970,85 @@ export default function ChatDashboard({
           remoteScreenStreamIdsRef.current.set(targetUserId, knownStreamIds);
         }
         const videoTrack = event.track;
+        const inferredShareKind = inferVideoShareKindFromTrack(videoTrack);
+        const fallbackShareKind = remoteVideoShareKinds[targetUserId] || null;
+        const shareKind: LocalVideoShareKind = inferredShareKind || fallbackShareKind || "screen";
+        const primaryStreamId = streamIds[0] || videoTrack.id;
+        const shareId = `${targetUserId}:${primaryStreamId}`;
+        remoteScreenShareOwnerByIdRef.current.set(shareId, targetUserId);
+        remoteScreenShareKindByIdRef.current.set(shareId, shareKind);
+
         const clearPendingPromote = () => {
-          const pendingTimeoutId = remoteScreenPromoteTimeoutsRef.current.get(targetUserId);
+          const pendingTimeoutId = remoteScreenPromoteTimeoutsRef.current.get(shareId);
           if (typeof pendingTimeoutId === "number") {
             window.clearTimeout(pendingTimeoutId);
-            remoteScreenPromoteTimeoutsRef.current.delete(targetUserId);
+            remoteScreenPromoteTimeoutsRef.current.delete(shareId);
           }
         };
         const clearPendingDemote = () => {
-          const pendingTimeoutId = remoteScreenDemoteTimeoutsRef.current.get(targetUserId);
+          const pendingTimeoutId = remoteScreenDemoteTimeoutsRef.current.get(shareId);
           if (typeof pendingTimeoutId === "number") {
             window.clearTimeout(pendingTimeoutId);
-            remoteScreenDemoteTimeoutsRef.current.delete(targetUserId);
+            remoteScreenDemoteTimeoutsRef.current.delete(shareId);
           }
         };
-        const getVideoTrackState = () => {
-          const stream = remoteScreenStreamsRef.current.get(targetUserId);
+        const getShareVideoTrackState = () => {
+          const stream = remoteScreenStreamsRef.current.get(shareId);
           const streamVideoTracks = stream?.getVideoTracks() || [];
-          const peer = peerConnectionsRef.current.get(targetUserId);
-          const receiverVideoTracks = peer
-            ? peer
-                .getReceivers()
-                .map((receiver) => receiver.track)
-                .filter((receiverTrack): receiverTrack is MediaStreamTrack => Boolean(receiverTrack) && receiverTrack.kind === "video")
-            : [];
           const hasLiveVideoTrack =
             streamVideoTracks.some((track) => track.readyState !== "ended") ||
-            receiverVideoTracks.some((track) => track.readyState !== "ended");
+            videoTrack.readyState !== "ended";
           const hasRenderableVideoTrack =
             streamVideoTracks.some((track) => track.readyState !== "ended" && !track.muted) ||
-            receiverVideoTracks.some((track) => track.readyState !== "ended" && !track.muted);
+            (videoTrack.readyState !== "ended" && !videoTrack.muted);
           return { hasLiveVideoTrack, hasRenderableVideoTrack };
         };
         const removeIfNoLiveVideo = () => {
-          const { hasLiveVideoTrack } = getVideoTrackState();
+          const { hasLiveVideoTrack } = getShareVideoTrackState();
           if (!hasLiveVideoTrack) {
-            removeRemoteScreenShare(targetUserId);
+            removeRemoteScreenShare(shareId);
           }
         };
         const scheduleRemoveIfNoLiveVideo = (delayMs: number) => {
           clearPendingDemote();
           const timeoutId = window.setTimeout(() => {
-            remoteScreenDemoteTimeoutsRef.current.delete(targetUserId);
-            const { hasLiveVideoTrack } = getVideoTrackState();
+            remoteScreenDemoteTimeoutsRef.current.delete(shareId);
+            const { hasLiveVideoTrack } = getShareVideoTrackState();
             if (!hasLiveVideoTrack) {
-              removeRemoteScreenShare(targetUserId);
+              removeRemoteScreenShare(shareId);
             }
           }, delayMs);
-          remoteScreenDemoteTimeoutsRef.current.set(targetUserId, timeoutId);
+          remoteScreenDemoteTimeoutsRef.current.set(shareId, timeoutId);
         };
         const scheduleEnsureRemoteShareVisible = () => {
           clearPendingPromote();
           clearPendingDemote();
-          const promoteDelayMs = remoteScreenStreamsRef.current.has(targetUserId)
+          const promoteDelayMs = remoteScreenStreamsRef.current.has(shareId)
             ? 0
             : REMOTE_SCREEN_SHARE_PROMOTE_DELAY_MS;
           const timeoutId = window.setTimeout(() => {
-            remoteScreenPromoteTimeoutsRef.current.delete(targetUserId);
+            remoteScreenPromoteTimeoutsRef.current.delete(shareId);
             if (videoTrack.readyState === "ended") {
               removeIfNoLiveVideo();
               return;
             }
-            const hasExistingShare = remoteScreenStreamsRef.current.has(targetUserId);
+            const hasExistingShare = remoteScreenStreamsRef.current.has(shareId);
             if (videoTrack.muted && !hasExistingShare) {
               removeIfNoLiveVideo();
               return;
             }
-            const { hasRenderableVideoTrack } = getVideoTrackState();
+            const { hasRenderableVideoTrack } = getShareVideoTrackState();
             if (!hasRenderableVideoTrack && !hasExistingShare) {
               return;
             }
-            const existing = remoteScreenStreamsRef.current.get(targetUserId);
+            const existing = remoteScreenStreamsRef.current.get(shareId);
             const hasThisTrack = existing?.getVideoTracks().some((track) => track.id === videoTrack.id) || false;
             if (!hasThisTrack) {
-              remoteScreenStreamsRef.current.set(targetUserId, new MediaStream([videoTrack]));
+              remoteScreenStreamsRef.current.set(shareId, new MediaStream([videoTrack]));
             }
             syncRemoteScreenShareUsers();
           }, promoteDelayMs);
-          remoteScreenPromoteTimeoutsRef.current.set(targetUserId, timeoutId);
+          remoteScreenPromoteTimeoutsRef.current.set(shareId, timeoutId);
         };
         videoTrack.onunmute = () => {
           scheduleEnsureRemoteShareVisible();
@@ -7546,7 +8064,7 @@ export default function ChatDashboard({
         if (!videoTrack.muted && videoTrack.readyState !== "ended") {
           scheduleEnsureRemoteShareVisible();
         } else if (videoTrack.muted) {
-          if (remoteScreenStreamsRef.current.has(targetUserId)) {
+          if (remoteScreenStreamsRef.current.has(shareId)) {
             scheduleEnsureRemoteShareVisible();
           }
           scheduleRemoveIfNoLiveVideo(REMOTE_SCREEN_SHARE_MUTE_GRACE_MS);
@@ -7572,8 +8090,11 @@ export default function ChatDashboard({
     applyRemoteAudioOutput,
     closePeerConnection,
     currentUserId,
+    getLocalPrimaryVideoShareKind,
+    hasRemoteShareForUser,
     removeRemoteScreenShare,
     renegotiatePeerConnection,
+    remoteVideoShareKinds,
     startSpeakingMeter,
     syncRemoteScreenShareUsers,
     voiceRoomKey,
@@ -7723,12 +8244,19 @@ export default function ChatDashboard({
           : "Mute microphone";
   const deafenButtonLabel = currentUserForceDeafened ? "Force deafened by moderator" : voiceDeafened ? "Undeafen" : "Deafen";
   const shareScreenButtonLabel = screenShareBusy
-    ? isScreenSharing
+    ? isDesktopSharing
       ? "Stopping screen share..."
       : "Starting screen share..."
-    : isScreenSharing
+    : isDesktopSharing
       ? "Stop screen share"
       : "Start screen share";
+  const webcamButtonLabel = screenShareBusy
+    ? isCameraSharing
+      ? "Stopping webcam..."
+      : "Starting webcam..."
+    : isCameraSharing
+      ? "Stop webcam"
+      : "Start webcam";
   const activeDmIncomingCallCount =
     viewMode === "dm" && activeConversationId ? dmIncomingCallCounts[activeConversationId] || 0 : 0;
   const shouldShowJoinDmCallAction =
@@ -7787,12 +8315,7 @@ export default function ChatDashboard({
       const background =
         sharedOverride ||
         personalOverride ||
-        (isForcedDefaultConversation
-          ? DEFAULT_DM_CHAT_BACKGROUND
-          : {
-              from: profileForm.dmBackgroundFrom,
-              to: profileForm.dmBackgroundTo,
-            });
+        DEFAULT_DM_CHAT_BACKGROUND;
       return {
         ...resolveChatBackgroundStyle(background),
         "--chat-bg-from": background.from,
@@ -7835,8 +8358,6 @@ export default function ChatDashboard({
     activeConversationId,
     forcedDefaultDmConversationIds,
     forcedDefaultGlytchChannelIds,
-    profileForm.dmBackgroundFrom,
-    profileForm.dmBackgroundTo,
     profileForm.dmBackgroundByConversation,
     profileForm.groupBackgroundByChat,
     profileForm.glytchBackgroundFrom,
@@ -7936,12 +8457,20 @@ export default function ChatDashboard({
                 )}
                 {msg.attachmentUrl && (
                   <a href={msg.attachmentUrl} target="_blank" rel="noreferrer" className="messageMediaLink">
-                    <img
-                      src={msg.attachmentUrl}
-                      alt={`${msg.senderName} attachment`}
-                      className={msg.attachmentType === "gif" ? "messageMedia gif" : "messageMedia"}
-                      loading="lazy"
-                    />
+                    {msg.attachmentType === "gif" ? (
+                      <HoverGifImage
+                        src={msg.attachmentUrl}
+                        alt={`${msg.senderName} attachment`}
+                        className="messageMedia gif"
+                      />
+                    ) : (
+                      <img
+                        src={msg.attachmentUrl}
+                        alt={`${msg.senderName} attachment`}
+                        className="messageMedia"
+                        loading="lazy"
+                      />
+                    )}
                   </a>
                 )}
               </div>
@@ -8230,7 +8759,11 @@ export default function ChatDashboard({
           <button
             className={viewMode === "dm" ? "navOption active" : "navOption"}
             type="button"
-            onClick={() => setViewMode("dm")}
+            onClick={() => {
+              setDmNavContextMenu(null);
+              setViewMode("dm");
+            }}
+            onContextMenu={openDmNavContextMenu}
           >
             <span className="navOptionIcon" aria-hidden="true">
               <svg viewBox="0 0 24 24" role="presentation">
@@ -8247,6 +8780,26 @@ export default function ChatDashboard({
             </span>
             <span>DMs</span>
           </button>
+          {dmNavContextMenu && (
+            <div
+              className="dmNavContextMenu"
+              role="menu"
+              aria-label="DM options"
+              style={{ left: dmNavContextMenu.x, top: dmNavContextMenu.y }}
+              onPointerDown={(event) => event.stopPropagation()}
+              onContextMenu={(event) => event.preventDefault()}
+            >
+              <button
+                type="button"
+                className="dmNavContextMenuItem"
+                role="menuitem"
+                onClick={() => void handleMarkAllDmsSeenFromNavContextMenu()}
+                disabled={dmSidebarActionBusyKey === "seen-all" || Object.values(unreadDmCounts).every((count) => (count || 0) <= 0)}
+              >
+                Mark all as seen
+              </button>
+            </div>
+          )}
           <button
             className={viewMode === "glytch" || viewMode === "glytch-settings" ? "navOption active" : "navOption"}
             type="button"
@@ -9259,7 +9812,7 @@ export default function ChatDashboard({
                           <select
                             value={selectedDesktopSourceId}
                             onChange={(e) => setSelectedDesktopSourceId(e.target.value)}
-                            disabled={screenShareBusy || isScreenSharing}
+                            disabled={screenShareBusy || isDesktopSharing}
                             aria-label="Screen share source"
                           >
                             <option value="auto">Auto pick</option>
@@ -9274,7 +9827,7 @@ export default function ChatDashboard({
                           type="button"
                           className="voiceButton compact"
                           onClick={() => void refreshDesktopSourceOptions()}
-                          disabled={screenShareBusy || isScreenSharing}
+                          disabled={screenShareBusy || isDesktopSharing}
                         >
                           Refresh Sources
                         </button>
@@ -9285,8 +9838,8 @@ export default function ChatDashboard({
                         type="button"
                         className="voiceButton iconOnly"
                         onClick={handleRestoreRemoteScreenShareView}
-                        aria-label="View screen share"
-                        title="View screen share"
+                        aria-label={restoreRemoteMediaViewLabel}
+                        title={restoreRemoteMediaViewLabel}
                       >
                         <span className="voiceButtonIcon" aria-hidden="true">
                           <svg viewBox="0 0 24 24" role="presentation">
@@ -9312,8 +9865,39 @@ export default function ChatDashboard({
                     )}
                     <button
                       type="button"
-                      className={isScreenSharing ? "voiceButton iconOnly screenShareActive" : "voiceButton iconOnly"}
-                      onClick={() => void (isScreenSharing ? handleStopScreenShare() : handleStartScreenShare())}
+                      className={isCameraSharing ? "voiceButton iconOnly screenShareActive" : "voiceButton iconOnly"}
+                      onClick={() => void handleToggleWebcamShare()}
+                      disabled={screenShareBusy}
+                      aria-label={webcamButtonLabel}
+                      title={webcamButtonLabel}
+                    >
+                      <span className="voiceButtonIcon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" role="presentation">
+                          <rect
+                            x="3"
+                            y="7"
+                            width="12"
+                            height="10"
+                            rx="2"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.8"
+                          />
+                          <path
+                            d="m15 10.5 5.5-2v7l-5.5-2"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.8"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      className={isDesktopSharing ? "voiceButton iconOnly screenShareActive" : "voiceButton iconOnly"}
+                      onClick={() => void (isDesktopSharing ? handleStopScreenShare() : handleStartScreenShare())}
                       disabled={screenShareBusy}
                       aria-label={shareScreenButtonLabel}
                       title={shareScreenButtonLabel}
@@ -9443,7 +10027,9 @@ export default function ChatDashboard({
                 <div className="quickThemeControl">
                   <button
                     type="button"
-                    className={showQuickThemeEditor ? "voiceButton iconOnly active" : "voiceButton iconOnly"}
+                    className={
+                      showQuickThemeEditor ? "voiceButton iconOnly quickThemeButton active" : "voiceButton iconOnly quickThemeButton"
+                    }
                     onClick={() => {
                       setShowQuickThemeEditor((prev) => !prev);
                       setQuickThemeError("");
@@ -9482,10 +10068,10 @@ export default function ChatDashboard({
                         {quickThemeHasOverride
                           ? "Custom colors are active for this chat."
                           : quickThemeTarget.kind === "dm"
-                            ? "Using your default DM colors."
+                            ? "Using the default DM background preset."
                             : quickThemeTarget.kind === "group"
                               ? "Using your default Group Chat colors."
-                            : "Using your default Glytch text colors."}
+                              : "Using your default Glytch text colors."}
                       </p>
                       <div className="quickThemeModeRow" role="tablist" aria-label="Background type">
                         <button
@@ -10946,9 +11532,9 @@ export default function ChatDashboard({
           >
             <div ref={chatStreamColumnRef} className="chatStreamColumn">
               {shouldShowScreenSharePanel && (
-                <article className="voicePanel screenSharePanel" aria-label="Screen share">
+                <article className="voicePanel screenSharePanel" aria-label={mediaPanelHeading}>
                   <div className="screenSharePanelHeader">
-                    <p className="sectionLabel">Screen Share</p>
+                    <p className="sectionLabel">{mediaPanelHeading}</p>
                     <div className="screenSharePanelActions">
                       {hasRemoteScreenShares && (
                         <button
@@ -11004,8 +11590,8 @@ export default function ChatDashboard({
                           type="button"
                           className="voiceButton iconOnly screenShareDismissButton"
                           onClick={handleDismissRemoteScreenShareView}
-                          aria-label="Hide screen share"
-                          title="Hide screen share"
+                          aria-label={dismissRemoteMediaViewLabel}
+                          title={dismissRemoteMediaViewLabel}
                         >
                           <span className="voiceButtonIcon" aria-hidden="true">
                             <svg viewBox="0 0 24 24" role="presentation">
@@ -11050,7 +11636,11 @@ export default function ChatDashboard({
                             className={isActive ? "screenSharePresenterButton active" : "screenSharePresenterButton"}
                             onClick={() => setActiveScreenSharePresenterId(presenter.presenterId)}
                             aria-pressed={isActive}
-                            title={`View ${presenter.name}'s screen share`}
+                            title={
+                              presenter.shareKind === "camera"
+                                ? `View ${presenter.name}'s webcam`
+                                : `View ${presenter.name}'s screen share`
+                            }
                           >
                             <span className="screenSharePresenterAvatar" aria-hidden="true">
                               {initialsFromName(presenter.name)}
@@ -11076,7 +11666,11 @@ export default function ChatDashboard({
                               openVideoFullscreen(e.currentTarget);
                             }
                           }}
-                          title="Open shared screen fullscreen"
+                          title={
+                            activeScreenSharePresenter.shareKind === "camera"
+                              ? "Open webcam fullscreen"
+                              : "Open shared screen fullscreen"
+                          }
                         >
                           <button
                             type="button"
