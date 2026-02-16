@@ -275,6 +275,17 @@ textarea:focus-visible {
   box-shadow: 0 0 10px color-mix(in srgb, var(--accent-strong), transparent 78%);
 }
 
+.authProjectLogo {
+  width: 78px;
+  height: 78px;
+  object-fit: cover;
+  border-radius: 18px;
+  border: 1px solid color-mix(in srgb, var(--accent), transparent 34%);
+  display: block;
+  margin: 12px auto 8px;
+  box-shadow: 0 0 12px color-mix(in srgb, var(--accent), transparent 74%);
+}
+
 .authPage .site-title {
   margin: 0;
   font-family: "Orbitron", var(--font-display);

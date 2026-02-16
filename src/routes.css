@@ -40,6 +40,21 @@
   padding: clamp(1.6rem, 3vw, 2.8rem);
 }
 
+.landingBrand {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.landingBrandLogo {
+  width: clamp(44px, 7vw, 64px);
+  height: clamp(44px, 7vw, 64px);
+  border-radius: 14px;
+  border: 1px solid rgba(0, 255, 255, 0.42);
+  object-fit: cover;
+  box-shadow: 0 10px 18px rgba(0, 0, 0, 0.35);
+}
+
 .landingHero h1 {
   margin: 0.5rem 0 0;
   max-width: 24ch;
@@ -132,6 +147,17 @@
   max-width: 420px;
   width: 100%;
   padding: 1.5rem;
+}
+
+.guardLogo {
+  width: 58px;
+  height: 58px;
+  border-radius: 14px;
+  border: 1px solid rgba(0, 255, 255, 0.42);
+  object-fit: cover;
+  display: block;
+  margin: 0 0 0.9rem;
+  box-shadow: 0 10px 18px rgba(0, 0, 0, 0.35);
 }
 
 .guardCard h1 {

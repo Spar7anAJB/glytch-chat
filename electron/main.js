@@ -1,4 +1,5 @@
-import { app, BrowserWindow, desktopCapturer, ipcMain, session, shell } from "electron";
+import { app, BrowserWindow, desktopCapturer, ipcMain, nativeImage, session, shell } from "electron";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -8,6 +9,19 @@ const __dirname = path.dirname(__filename);
 const devServerUrl = process.env.ELECTRON_DEV_SERVER_URL;
 const isDev = Boolean(devServerUrl);
 const shouldOpenDevTools = isDev && process.env.ELECTRON_OPEN_DEVTOOLS === "1";
+const logoPath = isDev
+  ? path.join(__dirname, "..", "public", "logo.png")
+  : path.join(__dirname, "..", "dist", "logo.png");
+
+function applyRuntimeAppIcon() {
+  if (!fs.existsSync(logoPath)) return;
+  const logoImage = nativeImage.createFromPath(logoPath);
+  if (logoImage.isEmpty()) return;
+
+  if (process.platform === "darwin" && app.dock) {
+    app.dock.setIcon(logoImage);
+  }
+}
 
 if (isDev) {
   app.commandLine.appendSwitch("allow-http-screen-capture");
@@ -49,6 +63,7 @@ function createWindow() {
     height: 840,
     minWidth: 980,
     minHeight: 640,
+    icon: fs.existsSync(logoPath) ? logoPath : undefined,
     backgroundColor: "#edf2fb",
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -87,6 +102,8 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  applyRuntimeAppIcon();
+
   session.defaultSession.setDisplayMediaRequestHandler(
     async (_request, callback) => {
       try {

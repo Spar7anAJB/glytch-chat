@@ -8,7 +8,10 @@ function LandingPage({ isAuthenticated, onGoToAuth, onOpenApp }: LandingPageProp
   return (
     <main className="landingPage">
       <section className="landingHero">
-        <p className="landingKicker">Glytch Chat Platform</p>
+        <div className="landingBrand">
+          <img className="landingBrandLogo" src="/logo.png" alt="Glytch Chat logo" />
+          <p className="landingKicker">Glytch Chat Platform</p>
+        </div>
         <h1>Dedicated frontend and backend, now separated.</h1>
         <p className="landingBody">
           The client UI runs as its own frontend while a backend service handles API traffic. You can log in,

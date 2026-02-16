@@ -76,6 +76,7 @@ function AuthPage({
           Back
         </button>
 
+        <img className="authProjectLogo" src="/logo.png" alt="Glytch Chat logo" />
         <h1 className="site-title authSiteTitle">
           <span className="typing-text">{typingText}</span>
         </h1>
