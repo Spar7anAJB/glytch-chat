@@ -8,3 +8,14 @@ services:
     startCommand: npm run backend:start
     autoDeploy: true
     healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: GIPHY_API_KEY
+        sync: false
+      - key: GIPHY_RATING
+        value: pg
