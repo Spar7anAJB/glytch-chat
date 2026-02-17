@@ -42,6 +42,7 @@ function loadWorkspaceEnv() {
 loadWorkspaceEnv();
 
 const API_PORT = Number.parseInt(process.env.API_PORT ?? process.env.PORT ?? "8787", 10);
+const API_HOST = process.env.API_HOST ?? (process.env.PORT ? "0.0.0.0" : "127.0.0.1");
 const SUPABASE_URL = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "").replace(/\/+$/, "");
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || "";
 const PROFILE_BUCKET = process.env.SUPABASE_PROFILE_BUCKET || process.env.VITE_SUPABASE_PROFILE_BUCKET || "profile-media";
@@ -1263,8 +1264,8 @@ server.on("error", (error) => {
   process.exit(1);
 });
 
-server.listen(API_PORT, "127.0.0.1", () => {
-  console.log(`[backend] listening on http://127.0.0.1:${API_PORT}`);
+server.listen(API_PORT, API_HOST, () => {
+  console.log(`[backend] listening on http://${API_HOST}:${API_PORT}`);
 });
 
 process.on("SIGTERM", () => {
