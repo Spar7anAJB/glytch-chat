@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
+import { logoAssetUrl } from "../lib/assets";
 
 export type AuthMode = "login" | "signup";
 
@@ -76,7 +77,7 @@ function AuthPage({
           Back
         </button>
 
-        <img className="authProjectLogo" src="/logo.png" alt="Glytch Chat logo" />
+        <img className="authProjectLogo" src={logoAssetUrl} alt="Glytch Chat logo" />
         <h1 className="site-title authSiteTitle">
           <span className="typing-text">{typingText}</span>
         </h1>

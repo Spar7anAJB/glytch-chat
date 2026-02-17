@@ -11,9 +11,10 @@ const isDev = Boolean(devServerUrl);
 const shouldOpenDevTools = isDev && process.env.ELECTRON_OPEN_DEVTOOLS === "1";
 const appName = "Glytch Chat";
 const initialHashRoute = "/auth";
-const logoPath = isDev
-  ? path.join(__dirname, "..", "public", "logo.png")
-  : path.join(__dirname, "..", "dist", "logo.png");
+const logoPathCandidates = isDev
+  ? [path.join(__dirname, "..", "public", "logo.png"), path.join(__dirname, "..", "dist", "logo.png")]
+  : [path.join(__dirname, "..", "dist", "logo.png"), path.join(__dirname, "..", "public", "logo.png")];
+const logoPath = logoPathCandidates.find((candidate) => fs.existsSync(candidate));
 
 app.setName(appName);
 if (process.platform === "win32") {
@@ -21,7 +22,7 @@ if (process.platform === "win32") {
 }
 
 function applyRuntimeAppIcon() {
-  if (!fs.existsSync(logoPath)) return;
+  if (!logoPath) return;
   const logoImage = nativeImage.createFromPath(logoPath);
   if (logoImage.isEmpty()) return;
 
@@ -71,7 +72,7 @@ function createWindow() {
     minWidth: 980,
     minHeight: 640,
     title: appName,
-    icon: fs.existsSync(logoPath) ? logoPath : undefined,
+    icon: logoPath,
     backgroundColor: "#edf2fb",
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),

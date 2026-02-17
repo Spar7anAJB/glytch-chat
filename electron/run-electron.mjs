@@ -10,10 +10,20 @@ const BACKEND_HEALTH_URL = "http://127.0.0.1:8787/api/health";
 
 let backendProcess;
 let electronProcess;
+let managesBackendProcess = false;
 
 function terminate(processRef) {
   if (!processRef || processRef.killed || processRef.exitCode !== null) return;
   processRef.kill("SIGTERM");
+}
+
+async function isBackendReady() {
+  try {
+    const response = await fetch(BACKEND_HEALTH_URL, { method: "GET" });
+    return response.ok;
+  } catch {
+    return false;
+  }
 }
 
 function resolveElectronCommand() {
@@ -34,7 +44,7 @@ function resolveElectronCommand() {
 
 async function waitForBackend(maxAttempts = 120, intervalMs = 500) {
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    if (backendProcess?.exitCode !== null) {
+    if (backendProcess && backendProcess.exitCode !== null) {
       throw new Error("Backend exited before it was ready.");
     }
     try {
@@ -51,10 +61,22 @@ async function waitForBackend(maxAttempts = 120, intervalMs = 500) {
   throw new Error(`Timed out waiting for backend at ${BACKEND_HEALTH_URL}`);
 }
 
+async function waitForExistingBackendBoot(maxAttempts = 12, intervalMs = 250) {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    if (await isBackendReady()) {
+      return true;
+    }
+    await delay(intervalMs);
+  }
+  return false;
+}
+
 function registerSignals() {
   const onSignal = () => {
     terminate(electronProcess);
-    terminate(backendProcess);
+    if (managesBackendProcess) {
+      terminate(backendProcess);
+    }
     process.exit(0);
   };
   process.on("SIGINT", onSignal);
@@ -64,20 +86,29 @@ function registerSignals() {
 async function main() {
   registerSignals();
 
-  backendProcess = spawn("node", ["backend/server.mjs"], { stdio: "inherit" });
-  backendProcess.on("exit", (code) => {
-    if (electronProcess?.exitCode === null) {
-      terminate(electronProcess);
-    }
-    process.exit(code ?? 1);
-  });
+  if (await isBackendReady()) {
+    console.log(`[electron:start] Reusing existing backend at ${BACKEND_HEALTH_URL}`);
+  } else if (await waitForExistingBackendBoot()) {
+    console.log(`[electron:start] Reusing backend that just became ready at ${BACKEND_HEALTH_URL}`);
+  } else {
+    managesBackendProcess = true;
+    backendProcess = spawn("node", ["backend/server.mjs"], { stdio: "inherit" });
+    backendProcess.on("exit", (code) => {
+      if (electronProcess?.exitCode === null) {
+        terminate(electronProcess);
+      }
+      process.exit(code ?? 1);
+    });
+  }
   await waitForBackend();
 
   const { command, args } = resolveElectronCommand();
   electronProcess = spawn(command, args, { stdio: "inherit" });
 
   electronProcess.on("exit", (code) => {
-    terminate(backendProcess);
+    if (managesBackendProcess) {
+      terminate(backendProcess);
+    }
     process.exit(code ?? 0);
   });
 }
@@ -85,6 +116,8 @@ async function main() {
 main().catch((error) => {
   console.error(`[electron:start] ${error.message}`);
   terminate(electronProcess);
-  terminate(backendProcess);
+  if (managesBackendProcess) {
+    terminate(backendProcess);
+  }
   process.exit(1);
 });

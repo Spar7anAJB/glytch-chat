@@ -13,6 +13,7 @@ const NPX_CMD = IS_WINDOWS ? "npx.cmd" : "npx";
 let viteProcess;
 let backendProcess;
 let electronProcess;
+let managesBackendProcess = false;
 
 function spawnCommand(command, args, options = {}) {
   return spawn(command, args, {
@@ -24,6 +25,15 @@ function spawnCommand(command, args, options = {}) {
 function terminate(processRef) {
   if (!processRef || processRef.killed || processRef.exitCode !== null) return;
   processRef.kill("SIGTERM");
+}
+
+async function isBackendReady() {
+  try {
+    const response = await fetch(BACKEND_URL, { method: "GET" });
+    return response.ok;
+  } catch {
+    return false;
+  }
 }
 
 function resolveElectronCommand() {
@@ -67,7 +77,9 @@ function registerSignals() {
   const onSignal = () => {
     terminate(electronProcess);
     terminate(viteProcess);
-    terminate(backendProcess);
+    if (managesBackendProcess) {
+      terminate(backendProcess);
+    }
     process.exit(0);
   };
 
@@ -77,7 +89,7 @@ function registerSignals() {
 
 async function waitForBackend(maxAttempts = 120, intervalMs = 500) {
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    if (backendProcess?.exitCode !== null) {
+    if (backendProcess && backendProcess.exitCode !== null) {
       throw new Error("Backend exited before it was ready.");
     }
 
@@ -96,18 +108,37 @@ async function waitForBackend(maxAttempts = 120, intervalMs = 500) {
   throw new Error(`Timed out waiting for backend at ${BACKEND_URL}`);
 }
 
+async function waitForExistingBackendBoot(maxAttempts = 12, intervalMs = 250) {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    if (await isBackendReady()) {
+      return true;
+    }
+    await delay(intervalMs);
+  }
+  return false;
+}
+
 async function main() {
   registerSignals();
 
-  backendProcess = spawnCommand("node", ["backend/server.mjs"]);
-  backendProcess.on("exit", (code) => {
-    if (viteProcess?.exitCode === null || electronProcess?.exitCode === null) {
-      console.error("[electron:dev] Backend exited unexpectedly; closing app processes.");
-      terminate(electronProcess);
-      terminate(viteProcess);
-    }
-    process.exit(code ?? 1);
-  });
+  if (await isBackendReady()) {
+    console.log(`[electron:dev] Reusing existing backend at ${BACKEND_URL}`);
+  } else if (await waitForExistingBackendBoot()) {
+    console.log(`[electron:dev] Reusing backend that just became ready at ${BACKEND_URL}`);
+  } else {
+    managesBackendProcess = true;
+    backendProcess = spawnCommand("node", ["backend/server.mjs"]);
+    backendProcess.on("exit", (code) => {
+      if (viteProcess?.exitCode === null || electronProcess?.exitCode === null) {
+        console.error(
+          "[electron:dev] Backend exited unexpectedly; closing app processes.",
+        );
+        terminate(electronProcess);
+        terminate(viteProcess);
+      }
+      process.exit(code ?? 1);
+    });
+  }
 
   viteProcess = spawnCommand(NPM_CMD, [
     "run",
@@ -127,7 +158,9 @@ async function main() {
     }
 
     if (electronProcess.exitCode === null) {
-      console.error("[electron:dev] Vite exited unexpectedly; closing Electron.");
+      console.error(
+        "[electron:dev] Vite exited unexpectedly; closing Electron.",
+      );
       terminate(electronProcess);
     }
   });
@@ -145,7 +178,9 @@ async function main() {
 
   electronProcess.on("exit", (code) => {
     terminate(viteProcess);
-    terminate(backendProcess);
+    if (managesBackendProcess) {
+      terminate(backendProcess);
+    }
     process.exit(code ?? 0);
   });
 }
@@ -154,6 +189,8 @@ main().catch((error) => {
   console.error(`[electron:dev] ${error.message}`);
   terminate(electronProcess);
   terminate(viteProcess);
-  terminate(backendProcess);
+  if (managesBackendProcess) {
+    terminate(backendProcess);
+  }
   process.exit(1);
 });

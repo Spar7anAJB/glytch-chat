@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import ChatDashboard from "./ChatDashboard";
+import DownloadPage from "./pages/DownloadPage";
 import {
   claimSingleSessionLock,
   getCurrentUser,
@@ -17,6 +18,7 @@ import LandingPage from "./pages/LandingPage";
 import RouteGuardPage from "./pages/RouteGuardPage";
 import { useHashRoute } from "./routing/useHashRoute";
 import { fallbackUsername, isValidUsername, normalizeUsername } from "./lib/auth";
+import { desktopInstallerUrls } from "./lib/assets";
 import {
   clearSessionStorage,
   generateSingleSessionId,
@@ -293,6 +295,7 @@ function App() {
   useEffect(() => {
     if (!currentUser) return;
     if (route !== "/auth") return;
+    if (window.electronAPI?.isElectron) return;
     navigate("/app", true);
   }, [currentUser, route, navigate]);
 
@@ -452,12 +455,23 @@ function App() {
   if (route === "/") {
     return (
       <LandingPage
-        isAuthenticated={Boolean(currentUser)}
         onGoToAuth={() => {
           setError("");
           navigate("/auth");
         }}
-        onOpenApp={() => navigate("/app")}
+        onGoToDownload={() => navigate("/download")}
+      />
+    );
+  }
+
+  if (route === "/download") {
+    return (
+      <DownloadPage
+        macInstallerUrl={desktopInstallerUrls.mac}
+        windowsInstallerUrl={desktopInstallerUrls.windows}
+        linuxInstallerUrl={desktopInstallerUrls.linux}
+        onBackHome={() => navigate("/")}
+        onStartChatting={() => navigate("/auth")}
       />
     );
   }

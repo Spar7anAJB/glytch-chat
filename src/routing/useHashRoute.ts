@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 
-export type AppRoute = "/" | "/auth" | "/app";
+export type AppRoute = "/" | "/auth" | "/app" | "/download";
 
 function normalizeRouteFromHash(hash: string): AppRoute {
   const cleaned = hash.replace(/^#/, "") || "/";
@@ -11,6 +11,10 @@ function normalizeRouteFromHash(hash: string): AppRoute {
 
   if (cleaned === "/app" || cleaned.startsWith("/app/")) {
     return "/app";
+  }
+
+  if (cleaned === "/download" || cleaned.startsWith("/download/")) {
+    return "/download";
   }
 
   return "/";

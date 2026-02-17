@@ -85,6 +85,33 @@ const MEDIA_PROFILE_UPLOAD_PREFIX = "/api/media/profile-upload/";
 const MEDIA_GLYTCH_ICON_UPLOAD_PREFIX = "/api/media/glytch-icon-upload/";
 const MEDIA_MESSAGE_UPLOAD_PREFIX = "/api/media/message-upload/";
 const MEDIA_MESSAGE_INGEST_PATH = "/api/media/message-ingest";
+const DOWNLOADS_PREFIX = "/api/downloads/";
+const DOWNLOADS_DIR = path.join(process.cwd(), "public", "downloads");
+const RELEASE_DIR = path.join(process.cwd(), "release");
+
+const INSTALLER_FILE_MAP = {
+  mac: {
+    fileName: "glytch-chat-installer.dmg",
+    contentType: "application/x-apple-diskimage",
+    matchesReleaseArtifact: (candidateName) => candidateName.toLowerCase().endsWith(".dmg"),
+    buildCommand: "npm run electron:installer:mac",
+  },
+  windows: {
+    fileName: "glytch-chat-setup.exe",
+    contentType: "application/vnd.microsoft.portable-executable",
+    matchesReleaseArtifact: (candidateName) => {
+      const normalized = candidateName.toLowerCase();
+      return normalized.endsWith(".exe") && !normalized.includes("uninstall");
+    },
+    buildCommand: "npm run electron:installer:win",
+  },
+  linux: {
+    fileName: "glytch-chat.AppImage",
+    contentType: "application/octet-stream",
+    matchesReleaseArtifact: (candidateName) => candidateName.endsWith(".AppImage"),
+    buildCommand: "npm run electron:installer:all",
+  },
+};
 
 function parseBooleanEnv(rawValue, defaultValue) {
   if (typeof rawValue !== "string") return defaultValue;
@@ -948,6 +975,135 @@ async function handleGifSearch(res, parsedUrl) {
   await relayFetchResponse(res, upstream);
 }
 
+function normalizeInstallerPlatform(rawPlatform) {
+  const value = (rawPlatform || "").trim().toLowerCase().replace(/\/+$/, "");
+  if (!value) return null;
+  if (value === "mac" || value === "macos" || value === "darwin" || value === "osx") return "mac";
+  if (value === "windows" || value === "win" || value === "win32") return "windows";
+  if (value === "linux") return "linux";
+  return null;
+}
+
+function makeAttachmentHeader(fileName) {
+  const quoted = fileName.replace(/"/g, "");
+  return `attachment; filename="${quoted}"`;
+}
+
+function resolveInstallerPath(fileName) {
+  return path.join(DOWNLOADS_DIR, fileName);
+}
+
+function listFilesRecursive(dirPath) {
+  if (!fs.existsSync(dirPath)) return [];
+  const result = [];
+  const stack = [dirPath];
+
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current) continue;
+
+    const entries = fs.readdirSync(current, { withFileTypes: true });
+    for (const entry of entries) {
+      const entryPath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(entryPath);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      result.push({
+        path: entryPath,
+        name: entry.name,
+        mtimeMs: fs.statSync(entryPath).mtimeMs,
+      });
+    }
+  }
+
+  return result;
+}
+
+function findNewestReleaseInstaller(matchFileName) {
+  const releaseFiles = listFilesRecursive(RELEASE_DIR);
+  const matches = releaseFiles.filter((file) => matchFileName(file.name));
+  if (matches.length === 0) return null;
+  return matches.sort((a, b) => b.mtimeMs - a.mtimeMs)[0]?.path || null;
+}
+
+function resolveInstallerSource(descriptor) {
+  const downloadsPath = resolveInstallerPath(descriptor.fileName);
+  if (fs.existsSync(downloadsPath) && fs.statSync(downloadsPath).isFile()) {
+    return {
+      filePath: downloadsPath,
+      source: "public/downloads",
+    };
+  }
+
+  const releasePath = findNewestReleaseInstaller(descriptor.matchesReleaseArtifact);
+  if (releasePath && fs.existsSync(releasePath) && fs.statSync(releasePath).isFile()) {
+    return {
+      filePath: releasePath,
+      source: "release",
+    };
+  }
+
+  return null;
+}
+
+function streamInstaller(res, req, filePath, descriptor) {
+  const stats = fs.statSync(filePath);
+  res.statusCode = 200;
+  res.setHeader("Content-Type", descriptor.contentType);
+  res.setHeader("Content-Length", String(stats.size));
+  res.setHeader("Content-Disposition", makeAttachmentHeader(descriptor.fileName));
+  res.setHeader("Cache-Control", "no-store");
+
+  if (req.method === "HEAD") {
+    res.end();
+    return;
+  }
+
+  const stream = fs.createReadStream(filePath);
+  stream.on("error", (error) => {
+    sendJson(res, 500, {
+      error: "Failed to stream installer file.",
+      message: error instanceof Error ? error.message : "Unknown file streaming error.",
+    });
+  });
+  stream.pipe(res);
+}
+
+function handleInstallerDownload(req, res, pathname) {
+  const method = req.method || "GET";
+  if (method !== "GET" && method !== "HEAD") {
+    sendJson(res, 405, { error: "Method not allowed." });
+    return;
+  }
+
+  const platformSuffix = pathname.slice(DOWNLOADS_PREFIX.length);
+  const platform = normalizeInstallerPlatform(platformSuffix);
+  if (!platform) {
+    sendJson(res, 404, {
+      error: "Unknown installer platform.",
+      supported: ["mac", "windows", "linux"],
+    });
+    return;
+  }
+
+  const descriptor = INSTALLER_FILE_MAP[platform];
+  const resolved = resolveInstallerSource(descriptor);
+  if (!resolved) {
+    sendJson(res, 404, {
+      error: "Installer is not available yet.",
+      platform,
+      expectedFile: `public/downloads/${descriptor.fileName}`,
+      fallbackScanDir: "release/",
+      buildCommand: descriptor.buildCommand,
+    });
+    return;
+  }
+
+  streamInstaller(res, req, resolved.filePath, descriptor);
+}
+
 const server = createServer(async (req, res) => {
   applyCors(req, res);
 
@@ -972,6 +1128,11 @@ const server = createServer(async (req, res) => {
 
   if (pathname === "/api/gifs/search") {
     await handleGifSearch(res, parsedUrl);
+    return;
+  }
+
+  if (pathname.startsWith(DOWNLOADS_PREFIX)) {
+    handleInstallerDownload(req, res, pathname);
     return;
   }
 

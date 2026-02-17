@@ -1,46 +1,44 @@
+import { logoAssetUrl } from "../lib/assets";
+
 type LandingPageProps = {
-  isAuthenticated: boolean;
   onGoToAuth: () => void;
-  onOpenApp: () => void;
+  onGoToDownload: () => void;
 };
 
-function LandingPage({ isAuthenticated, onGoToAuth, onOpenApp }: LandingPageProps) {
+function LandingPage({ onGoToAuth, onGoToDownload }: LandingPageProps) {
   return (
     <main className="landingPage">
       <section className="landingHero">
         <div className="landingBrand">
-          <img className="landingBrandLogo" src="/logo.png" alt="Glytch Chat logo" />
+          <img className="landingBrandLogo" src={logoAssetUrl} alt="Glytch Chat logo" />
           <p className="landingKicker">Glytch Chat Platform</p>
         </div>
-        <h1>Dedicated frontend and backend, now separated.</h1>
+        <h1>Welcome to Glytch Chat</h1>
         <p className="landingBody">
-          The client UI runs as its own frontend while a backend service handles API traffic. You can log in,
-          launch the app workspace, and keep transport concerns off the UI layer.
+          Start chatting in your browser or download the desktop app installer for your device.
         </p>
         <div className="landingActions">
-          <button type="button" className="landingPrimary" onClick={isAuthenticated ? onOpenApp : onGoToAuth}>
-            {isAuthenticated ? "Open workspace" : "Get started"}
+          <button type="button" className="landingPrimary" onClick={onGoToAuth}>
+            Start chatting
           </button>
-          {!isAuthenticated && (
-            <button type="button" className="landingSecondary" onClick={onGoToAuth}>
-              Login / Sign up
-            </button>
-          )}
+          <button type="button" className="landingSecondary" onClick={onGoToDownload}>
+            Download desktop app
+          </button>
         </div>
       </section>
 
-      <section className="landingGrid" aria-label="Architecture overview">
+      <section className="landingGrid" aria-label="Start options">
         <article>
-          <h2>Frontend</h2>
-          <p>Route-based UI with dedicated screens for landing, auth, and app workspace.</p>
+          <h2>Web app</h2>
+          <p>Use Start chatting to open the web sign-in page, then continue into the chat workspace.</p>
         </article>
         <article>
-          <h2>Backend</h2>
-          <p>Node service that proxies Supabase APIs through a single backend entrypoint.</p>
+          <h2>Desktop app</h2>
+          <p>Use Download desktop app to get the Electron installer and run Glytch Chat locally.</p>
         </article>
         <article>
-          <h2>Desktop Ready</h2>
-          <p>Electron dev and start scripts now boot backend automatically before opening the app.</p>
+          <h2>Single account flow</h2>
+          <p>Both web and desktop use the same login/signup system and route into the same app experience.</p>
         </article>
       </section>
     </main>
