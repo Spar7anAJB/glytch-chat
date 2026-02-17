@@ -29,3 +29,6 @@ dist-ssr
 *.sw?
 
 *.dmg
+*.exe
+*.AppImage
+public/downloads/*

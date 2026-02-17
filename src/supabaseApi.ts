@@ -300,7 +300,9 @@ export type VoiceSignal = {
 };
 
 const apiBase = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/+$/, "");
-const usingBackendRoutes = Boolean(apiBase);
+const isElectronRuntime =
+  typeof window !== "undefined" && Boolean(window.electronAPI?.isElectron) && window.location.protocol === "file:";
+const usingBackendRoutes = Boolean(apiBase) && !isElectronRuntime;
 const supabaseBaseUrl = (import.meta.env.VITE_SUPABASE_URL as string | undefined)?.replace(/\/+$/, "");
 const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
 const profileBucket = (import.meta.env.VITE_SUPABASE_PROFILE_BUCKET as string | undefined) || "profile-media";
