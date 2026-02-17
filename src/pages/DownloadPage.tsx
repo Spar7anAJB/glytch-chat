@@ -8,6 +8,34 @@ type DownloadPageProps = {
   onStartChatting: () => void;
 };
 
+type DownloadCardProps = {
+  title: string;
+  description: string;
+  ctaLabel: string;
+  installerUrl: string;
+};
+
+function DownloadCard({ title, description, ctaLabel, installerUrl }: DownloadCardProps) {
+  const normalizedInstallerUrl = installerUrl.trim();
+  const hasInstaller = normalizedInstallerUrl.length > 0;
+
+  return (
+    <article className="downloadCard">
+      <h2>{title}</h2>
+      <p>{description}</p>
+      {hasInstaller ? (
+        <a className="downloadButton" href={normalizedInstallerUrl} target="_blank" rel="noreferrer">
+          {ctaLabel}
+        </a>
+      ) : (
+        <p className="downloadUnavailable" role="status">
+          Installer is not available yet.
+        </p>
+      )}
+    </article>
+  );
+}
+
 function DownloadPage({
   macInstallerUrl,
   windowsInstallerUrl,
@@ -35,27 +63,24 @@ function DownloadPage({
       </section>
 
       <section className="downloadGrid" aria-label="Desktop installers">
-        <article className="downloadCard">
-          <h2>macOS</h2>
-          <p>Download the `.dmg` installer for Apple Silicon or Intel Macs.</p>
-          <a className="downloadButton" href={macInstallerUrl}>
-            Download for macOS
-          </a>
-        </article>
-        <article className="downloadCard">
-          <h2>Windows</h2>
-          <p>Download the `.exe` installer for Windows 10 and 11.</p>
-          <a className="downloadButton" href={windowsInstallerUrl}>
-            Download for Windows
-          </a>
-        </article>
-        <article className="downloadCard">
-          <h2>Linux</h2>
-          <p>Download the `.AppImage` package for desktop Linux.</p>
-          <a className="downloadButton" href={linuxInstallerUrl}>
-            Download for Linux
-          </a>
-        </article>
+        <DownloadCard
+          title="macOS"
+          description="Download the `.dmg` installer for Apple Silicon or Intel Macs."
+          ctaLabel="Download for macOS"
+          installerUrl={macInstallerUrl}
+        />
+        <DownloadCard
+          title="Windows"
+          description="Download the `.exe` installer for Windows 10 and 11."
+          ctaLabel="Download for Windows"
+          installerUrl={windowsInstallerUrl}
+        />
+        <DownloadCard
+          title="Linux"
+          description="Download the `.AppImage` package for desktop Linux."
+          ctaLabel="Download for Linux"
+          installerUrl={linuxInstallerUrl}
+        />
       </section>
     </main>
   );

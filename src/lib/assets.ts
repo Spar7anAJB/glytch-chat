@@ -5,6 +5,15 @@ function toPublicAssetUrl(assetPath: string): string {
   return `${normalizedBase}${normalizedPath}`;
 }
 
+function isLocalHostEnvironment() {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  const host = window.location.hostname.toLowerCase();
+  return host === "localhost" || host === "127.0.0.1" || host === "::1";
+}
+
 function resolvePlatformKey() {
   const userAgent = navigator.userAgent.toLowerCase();
   if (userAgent.includes("windows")) {
@@ -24,11 +33,24 @@ const windowsInstallerUrl = (import.meta.env.VITE_ELECTRON_INSTALLER_URL_WIN as 
 const linuxInstallerUrl = (import.meta.env.VITE_ELECTRON_INSTALLER_URL_LINUX as string | undefined)?.trim();
 const apiBase = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/+$/, "");
 const backendDownloadsBase = apiBase ? `${apiBase}/api/downloads` : "/api/downloads";
+const canFallbackToBackendDownloads = Boolean(apiBase) || isLocalHostEnvironment();
+
+const fallbackInstallerUrls = canFallbackToBackendDownloads
+  ? {
+      mac: `${backendDownloadsBase}/mac`,
+      windows: `${backendDownloadsBase}/windows`,
+      linux: `${backendDownloadsBase}/linux`,
+    }
+  : {
+      mac: "",
+      windows: "",
+      linux: "",
+    };
 
 export const desktopInstallerUrls = {
-  mac: macInstallerUrl || genericInstallerUrl || `${backendDownloadsBase}/mac`,
-  windows: windowsInstallerUrl || genericInstallerUrl || `${backendDownloadsBase}/windows`,
-  linux: linuxInstallerUrl || genericInstallerUrl || `${backendDownloadsBase}/linux`,
+  mac: macInstallerUrl || genericInstallerUrl || fallbackInstallerUrls.mac,
+  windows: windowsInstallerUrl || genericInstallerUrl || fallbackInstallerUrls.windows,
+  linux: linuxInstallerUrl || genericInstallerUrl || fallbackInstallerUrls.linux,
 };
 
 export const recommendedDesktopInstallerUrl = desktopInstallerUrls[resolvePlatformKey()];

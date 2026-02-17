@@ -155,6 +155,10 @@ Those endpoints serve installers from:
 
 If an installer file is missing, the backend returns a 404 JSON error instead of serving a fallback HTML file.
 
+For static-only deployments (Cloudflare Pages/Workers assets without the Node backend), set explicit installer URLs via
+`VITE_ELECTRON_INSTALLER_URL_MAC`, `VITE_ELECTRON_INSTALLER_URL_WIN`, and optionally `VITE_ELECTRON_INSTALLER_URL_LINUX`.
+Otherwise, the download buttons are shown as unavailable.
+
 ### macOS launch note
 
 Installer builds are ad-hoc signed for local use. If macOS still blocks launch after download, clear quarantine attributes:
