@@ -4,7 +4,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 
 const rootDir = process.cwd();
-const tmpBuildRoot = fs.mkdtempSync(path.join(os.tmpdir(), "glytch-mac-build-"));
+const tmpBuildRoot = fs.mkdtempSync(path.join(os.tmpdir(), "glytch-win-build-"));
 const stageDir = path.join(tmpBuildRoot, "workspace");
 
 function readEnvKey(filePath, key) {
@@ -61,10 +61,10 @@ function isLocalApiUrl(urlString) {
 function assertInstallerApiUrl(workspaceRoot) {
   const apiUrl = resolveApiUrl(workspaceRoot);
   if (!apiUrl) {
-    throw new Error("[installer:mac] Missing VITE_API_URL. Set it to your hosted backend URL before building installers.");
+    throw new Error("[installer:win] Missing VITE_API_URL. Set it to your hosted backend URL before building installers.");
   }
   if (isLocalApiUrl(apiUrl)) {
-    throw new Error("[installer:mac] VITE_API_URL points to localhost. Use your deployed backend URL for distributable installers.");
+    throw new Error("[installer:win] VITE_API_URL points to localhost. Use your deployed backend URL for distributable installers.");
   }
 }
 
@@ -76,7 +76,7 @@ function run(command, args, options = {}) {
 }
 
 function copyWorkspaceWithFallback() {
-  const excludes = new Set([".git", "dist", "release", "public/downloads", "node_modules"]);
+  const excludes = new Set([".git", "dist", "release", "release-test", "public/downloads", "node_modules"]);
 
   try {
     run("rsync", [
@@ -88,6 +88,8 @@ function copyWorkspaceWithFallback() {
       "dist",
       "--exclude",
       "release",
+      "--exclude",
+      "release-test",
       "--exclude",
       "public/downloads",
       "--exclude",
@@ -114,7 +116,7 @@ function copyWorkspaceWithFallback() {
 function copyReleaseBack() {
   const stagedReleaseDir = path.join(stageDir, "release");
   if (!fs.existsSync(stagedReleaseDir)) {
-    throw new Error("[installer:mac] Missing staged release directory after build.");
+    throw new Error("[installer:win] Missing staged release directory after build.");
   }
 
   const rootReleaseDir = path.join(rootDir, "release");
@@ -123,27 +125,40 @@ function copyReleaseBack() {
 }
 
 function main() {
-  console.log(`[installer:mac] staging workspace in ${stageDir}`);
+  console.log(`[installer:win] staging workspace in ${stageDir}`);
   fs.mkdirSync(stageDir, { recursive: true });
 
   copyWorkspaceWithFallback();
   assertInstallerApiUrl(stageDir);
 
   run("npm", ["ci"], { cwd: stageDir });
-
   run("npm", ["run", "build"], { cwd: stageDir });
-  run("npx", ["--yes", "electron-builder@26", "--config", "electron/builder.config.json", "--mac", "dmg", "--publish", "never"], {
-    cwd: stageDir,
-    env: {
-      ...process.env,
-      COPYFILE_DISABLE: "1",
+  run(
+    "npx",
+    [
+      "--yes",
+      "electron-builder@26",
+      "--config",
+      "electron/builder.config.json",
+      "--win",
+      "nsis",
+      "--x64",
+      "--publish",
+      "never",
+    ],
+    {
+      cwd: stageDir,
+      env: {
+        ...process.env,
+        COPYFILE_DISABLE: "1",
+      },
     },
-  });
+  );
 
   copyReleaseBack();
   run("node", ["electron/sync-installers.mjs"], { cwd: rootDir });
 
-  console.log("[installer:mac] Done.");
+  console.log("[installer:win] Done.");
 }
 
 try {

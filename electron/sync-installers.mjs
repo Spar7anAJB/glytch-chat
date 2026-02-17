@@ -9,20 +9,33 @@ const installers = [
   {
     id: "mac",
     outputName: "glytch-chat-installer.dmg",
-    test: (fileName) => fileName.toLowerCase().endsWith(".dmg"),
+    test: (file) => file.name.toLowerCase().endsWith(".dmg"),
   },
   {
     id: "windows",
     outputName: "glytch-chat-setup.exe",
-    test: (fileName) => {
-      const normalized = fileName.toLowerCase();
-      return normalized.endsWith(".exe") && !normalized.includes("uninstall");
+    test: (file) => {
+      const normalizedName = file.name.toLowerCase();
+      const normalizedPath = file.relativePath.toLowerCase();
+      const looksLikeInstaller =
+        normalizedName.includes("setup") || /-win-(x64|arm64|ia32)\.exe$/.test(normalizedName);
+      const looksLikeUninstaller = normalizedName.includes("uninstall") || normalizedName.includes(".__uninstaller");
+      const fromUnpackedDir = normalizedPath.includes("win-unpacked/");
+      const minimumExpectedSizeBytes = 5 * 1024 * 1024;
+
+      return (
+        normalizedName.endsWith(".exe") &&
+        looksLikeInstaller &&
+        !looksLikeUninstaller &&
+        !fromUnpackedDir &&
+        file.sizeBytes >= minimumExpectedSizeBytes
+      );
     },
   },
   {
     id: "linux",
     outputName: "glytch-chat.AppImage",
-    test: (fileName) => fileName.endsWith(".AppImage"),
+    test: (file) => file.name.endsWith(".AppImage"),
   },
 ];
 
@@ -45,8 +58,10 @@ function collectReleaseFiles(dirPath) {
         const stats = fs.statSync(entryPath);
         collected.push({
           path: entryPath,
+          relativePath: path.relative(releaseDir, entryPath).replace(/\\/g, "/"),
           name: entry.name,
           mtimeMs: stats.mtimeMs,
+          sizeBytes: stats.size,
         });
       }
     }
@@ -56,7 +71,7 @@ function collectReleaseFiles(dirPath) {
 }
 
 function newestMatch(files, test) {
-  const matches = files.filter((file) => test(file.name));
+  const matches = files.filter((file) => test(file));
   if (matches.length === 0) return null;
   return matches.sort((a, b) => b.mtimeMs - a.mtimeMs)[0];
 }
@@ -85,7 +100,9 @@ function main() {
     const targetPath = path.join(downloadsDir, installer.outputName);
     fs.copyFileSync(match.path, targetPath);
     copiedAny = true;
-    console.log(`[sync-installers] ${installer.id}: ${match.name} -> public/downloads/${installer.outputName}`);
+    console.log(
+      `[sync-installers] ${installer.id}: ${match.relativePath} (${Math.round(match.sizeBytes / 1024)} KiB) -> public/downloads/${installer.outputName}`,
+    );
   }
 
   if (!copiedAny) {

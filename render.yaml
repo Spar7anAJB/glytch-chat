@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: glytch-chat-backend
+    runtime: node
+    plan: free
+    rootDir: .
+    buildCommand: npm ci
+    startCommand: npm run backend:start
+    autoDeploy: true
+    healthCheckPath: /api/health

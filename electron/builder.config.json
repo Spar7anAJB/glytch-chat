@@ -6,6 +6,7 @@
   },
   "files": [
     "dist/**/*",
+    "!dist/downloads/**/*",
     "electron/main.js",
     "electron/preload.js",
     "package.json"
@@ -46,7 +47,9 @@
   },
   "nsis": {
     "oneClick": false,
-    "allowToChangeInstallationDirectory": true
+    "allowToChangeInstallationDirectory": true,
+    "include": "electron/nsis-recovery.nsh",
+    "differentialPackage": false
   },
   "publish": null
 }

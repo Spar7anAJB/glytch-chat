@@ -300,28 +300,32 @@ export type VoiceSignal = {
 };
 
 const apiBase = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/+$/, "");
-const isElectronRuntime =
-  typeof window !== "undefined" && Boolean(window.electronAPI?.isElectron) && window.location.protocol === "file:";
-const usingBackendRoutes = Boolean(apiBase) && !isElectronRuntime;
+const usingBackendRoutes = true;
 const supabaseBaseUrl = (import.meta.env.VITE_SUPABASE_URL as string | undefined)?.replace(/\/+$/, "");
-const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
 const profileBucket = (import.meta.env.VITE_SUPABASE_PROFILE_BUCKET as string | undefined) || "profile-media";
 const glytchBucket = (import.meta.env.VITE_SUPABASE_GLYTCH_BUCKET as string | undefined) || "glytch-media";
 const messageBucket = (import.meta.env.VITE_SUPABASE_MESSAGE_BUCKET as string | undefined) || "message-media";
-const giphyApiBase = (import.meta.env.VITE_GIPHY_API_BASE as string | undefined) || "https://api.giphy.com/v1/gifs";
-const giphyApiKey = (import.meta.env.VITE_GIPHY_API_KEY as string | undefined) || "";
-const giphyRating = (import.meta.env.VITE_GIPHY_RATING as string | undefined) || "pg";
 const MESSAGE_SIGN_URL_TTL_SECONDS = 3600;
 const MESSAGE_SIGN_URL_REFRESH_BUFFER_MS = 30_000;
 const MESSAGE_SIGN_URL_FAILURE_TTL_MS = 2 * 60 * 1000;
 const messageSignedUrlCache = new Map<string, { signedUrl: string | null; expiresAt: number }>();
 
-function assertConfig() {
-  if (!usingBackendRoutes && !supabaseBaseUrl) {
-    throw new Error("Supabase env vars missing. Set VITE_SUPABASE_URL.");
+function isLocalApiHost(value: string) {
+  try {
+    const parsed = new URL(value);
+    const host = parsed.hostname.toLowerCase();
+    return host === "localhost" || host === "127.0.0.1" || host === "::1";
+  } catch {
+    return false;
   }
-  if (!usingBackendRoutes && !anonKey) {
-    throw new Error("Supabase env vars missing. Set VITE_SUPABASE_ANON_KEY.");
+}
+
+function assertConfig() {
+  if (!apiBase) {
+    throw new Error("Backend env vars missing. Set VITE_API_URL.");
+  }
+  if (import.meta.env.PROD && isLocalApiHost(apiBase)) {
+    throw new Error("Invalid VITE_API_URL for production build. Use your deployed backend URL.");
   }
 }
 
@@ -356,18 +360,11 @@ function buildBackendSupabasePath(path: string): string {
 }
 
 function resolveSupabaseEndpoint(path: string) {
-  if (usingBackendRoutes) {
-    if (!apiBase) {
-      throw new Error("Supabase env vars missing. Set VITE_API_URL.");
-    }
-    return `${apiBase}${buildBackendSupabasePath(path)}`;
+  if (!apiBase) {
+    throw new Error("Backend env vars missing. Set VITE_API_URL.");
   }
 
-  if (!supabaseBaseUrl) {
-    throw new Error("Supabase env vars missing. Set VITE_SUPABASE_URL.");
-  }
-
-  return `${supabaseBaseUrl}${path}`;
+  return `${apiBase}${buildBackendSupabasePath(path)}`;
 }
 
 async function supabaseFetch(path: string, init?: RequestInit) {
@@ -379,9 +376,6 @@ function supabaseHeaders(accessToken?: string): HeadersInit {
   const base: HeadersInit = {
     "Content-Type": "application/json",
   };
-  if (anonKey && !usingBackendRoutes) {
-    base.apikey = anonKey;
-  }
 
   if (!accessToken) return base;
 
@@ -715,44 +709,18 @@ function normalizeGiphyResponse(data: unknown): { results: GifResult[]; next: st
 }
 
 async function fetchGiphyGifs(query: string, limit: number): Promise<{ results: GifResult[]; next: string | null }> {
-  if (usingBackendRoutes) {
-    const params = new URLSearchParams({
-      limit: String(limit),
-    });
-    if (query.trim()) {
-      params.set("q", query.trim());
-    }
-
-    const res = await fetch(`${apiBase}/api/gifs/search?${params.toString()}`, {
-      headers: {
-        Accept: "application/json",
-      },
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      const message = messageFromUnknownJson(data);
-      throw new Error(message || "Could not load GIFs.");
-    }
-    return normalizeGiphyResponse(data);
+  if (!apiBase) {
+    throw new Error("Backend env vars missing. Set VITE_API_URL.");
   }
 
-  if (!giphyApiKey) {
-    throw new Error("GIF service unavailable. Set VITE_GIPHY_API_KEY in your frontend environment.");
-  }
-
-  const endpoint = query.trim() ? "search" : "trending";
   const params = new URLSearchParams({
-    api_key: giphyApiKey,
     limit: String(limit),
-    rating: giphyRating,
-    bundle: "messaging_non_clips",
   });
   if (query.trim()) {
     params.set("q", query.trim());
-    params.set("lang", "en");
   }
 
-  const res = await fetch(`${giphyApiBase}/${endpoint}?${params.toString()}`, {
+  const res = await fetch(`${apiBase}/api/gifs/search?${params.toString()}`, {
     headers: {
       Accept: "application/json",
     },

@@ -1,6 +1,7 @@
 import { app, BrowserWindow, desktopCapturer, ipcMain, nativeImage, session, shell } from "electron";
 import fs from "node:fs";
 import path from "node:path";
+import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -80,6 +81,7 @@ function createWindow() {
       nodeIntegration: false,
       spellcheck: false,
       devTools: isDev,
+      webSecurity: true,
     },
   });
 

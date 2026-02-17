@@ -32,3 +32,5 @@ dist-ssr
 *.exe
 *.AppImage
 public/downloads/*
+
+release-test/

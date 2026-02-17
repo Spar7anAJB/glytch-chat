@@ -2,6 +2,10 @@ import { createServer } from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 function loadEnvFile(filePath) {
   if (!fs.existsSync(filePath)) return;
@@ -28,14 +32,16 @@ function loadEnvFile(filePath) {
 }
 
 function loadWorkspaceEnv() {
-  const root = process.cwd();
-  loadEnvFile(path.join(root, ".env"));
-  loadEnvFile(path.join(root, ".env.local"));
+  const roots = new Set([process.cwd(), path.resolve(__dirname, "..")]);
+  for (const root of roots) {
+    loadEnvFile(path.join(root, ".env"));
+    loadEnvFile(path.join(root, ".env.local"));
+  }
 }
 
 loadWorkspaceEnv();
 
-const API_PORT = Number.parseInt(process.env.API_PORT ?? "8787", 10);
+const API_PORT = Number.parseInt(process.env.API_PORT ?? process.env.PORT ?? "8787", 10);
 const SUPABASE_URL = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "").replace(/\/+$/, "");
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || "";
 const PROFILE_BUCKET = process.env.SUPABASE_PROFILE_BUCKET || process.env.VITE_SUPABASE_PROFILE_BUCKET || "profile-media";
@@ -93,22 +99,35 @@ const INSTALLER_FILE_MAP = {
   mac: {
     fileName: "glytch-chat-installer.dmg",
     contentType: "application/x-apple-diskimage",
-    matchesReleaseArtifact: (candidateName) => candidateName.toLowerCase().endsWith(".dmg"),
+    matchesReleaseArtifact: (candidate) => candidate.name.toLowerCase().endsWith(".dmg"),
     buildCommand: "npm run electron:installer:mac",
   },
   windows: {
     fileName: "glytch-chat-setup.exe",
     contentType: "application/vnd.microsoft.portable-executable",
-    matchesReleaseArtifact: (candidateName) => {
-      const normalized = candidateName.toLowerCase();
-      return normalized.endsWith(".exe") && !normalized.includes("uninstall");
+    minBytes: 5 * 1024 * 1024,
+    matchesReleaseArtifact: (candidate) => {
+      const normalizedName = candidate.name.toLowerCase();
+      const normalizedPath = candidate.relativePath.toLowerCase();
+      const looksLikeInstaller =
+        normalizedName.includes("setup") || /-win-(x64|arm64|ia32)\.exe$/.test(normalizedName);
+      const looksLikeUninstaller = normalizedName.includes("uninstall") || normalizedName.includes(".__uninstaller");
+      const fromUnpackedDir = normalizedPath.includes("win-unpacked/");
+
+      return (
+        normalizedName.endsWith(".exe") &&
+        looksLikeInstaller &&
+        !looksLikeUninstaller &&
+        !fromUnpackedDir &&
+        candidate.sizeBytes >= 5 * 1024 * 1024
+      );
     },
     buildCommand: "npm run electron:installer:win",
   },
   linux: {
     fileName: "glytch-chat.AppImage",
     contentType: "application/octet-stream",
-    matchesReleaseArtifact: (candidateName) => candidateName.endsWith(".AppImage"),
+    matchesReleaseArtifact: (candidate) => candidate.name.endsWith(".AppImage"),
     buildCommand: "npm run electron:installer:all",
   },
 };
@@ -1010,10 +1029,13 @@ function listFilesRecursive(dirPath) {
         continue;
       }
       if (!entry.isFile()) continue;
+      const stats = fs.statSync(entryPath);
       result.push({
         path: entryPath,
+        relativePath: path.relative(RELEASE_DIR, entryPath).replace(/\\/g, "/"),
         name: entry.name,
-        mtimeMs: fs.statSync(entryPath).mtimeMs,
+        mtimeMs: stats.mtimeMs,
+        sizeBytes: stats.size,
       });
     }
   }
@@ -1021,9 +1043,9 @@ function listFilesRecursive(dirPath) {
   return result;
 }
 
-function findNewestReleaseInstaller(matchFileName) {
+function findNewestReleaseInstaller(matchReleaseArtifact) {
   const releaseFiles = listFilesRecursive(RELEASE_DIR);
-  const matches = releaseFiles.filter((file) => matchFileName(file.name));
+  const matches = releaseFiles.filter((file) => matchReleaseArtifact(file));
   if (matches.length === 0) return null;
   return matches.sort((a, b) => b.mtimeMs - a.mtimeMs)[0]?.path || null;
 }
@@ -1031,21 +1053,52 @@ function findNewestReleaseInstaller(matchFileName) {
 function resolveInstallerSource(descriptor) {
   const downloadsPath = resolveInstallerPath(descriptor.fileName);
   if (fs.existsSync(downloadsPath) && fs.statSync(downloadsPath).isFile()) {
-    return {
-      filePath: downloadsPath,
-      source: "public/downloads",
-    };
+    const downloadStats = fs.statSync(downloadsPath);
+    if (!descriptor.minBytes || downloadStats.size >= descriptor.minBytes) {
+      return {
+        filePath: downloadsPath,
+        source: "public/downloads",
+      };
+    }
   }
 
   const releasePath = findNewestReleaseInstaller(descriptor.matchesReleaseArtifact);
   if (releasePath && fs.existsSync(releasePath) && fs.statSync(releasePath).isFile()) {
-    return {
-      filePath: releasePath,
-      source: "release",
-    };
+    const releaseStats = fs.statSync(releasePath);
+    if (!descriptor.minBytes || releaseStats.size >= descriptor.minBytes) {
+      return {
+        filePath: releasePath,
+        source: "release",
+      };
+    }
   }
 
   return null;
+}
+
+function expectedInstallerSizeHint(descriptor) {
+  if (!descriptor.minBytes) return null;
+  return `${Math.round(descriptor.minBytes / (1024 * 1024))}MB`;
+}
+
+function installerMissingPayloadHint(platform) {
+  if (platform !== "windows") return null;
+  return "Windows installer must be a full setup .exe (not a tiny bootstrap).";
+}
+
+function handleInstallerNotFound(res, platform, descriptor) {
+  const expectedMinSize = expectedInstallerSizeHint(descriptor);
+  const hint = installerMissingPayloadHint(platform);
+
+  sendJson(res, 404, {
+    error: "Installer is not available yet.",
+    platform,
+    expectedFile: `public/downloads/${descriptor.fileName}`,
+    fallbackScanDir: "release/",
+    buildCommand: descriptor.buildCommand,
+    ...(expectedMinSize ? { expectedMinSize } : {}),
+    ...(hint ? { hint } : {}),
+  });
 }
 
 function streamInstaller(res, req, filePath, descriptor) {
@@ -1091,13 +1144,7 @@ function handleInstallerDownload(req, res, pathname) {
   const descriptor = INSTALLER_FILE_MAP[platform];
   const resolved = resolveInstallerSource(descriptor);
   if (!resolved) {
-    sendJson(res, 404, {
-      error: "Installer is not available yet.",
-      platform,
-      expectedFile: `public/downloads/${descriptor.fileName}`,
-      fallbackScanDir: "release/",
-      buildCommand: descriptor.buildCommand,
-    });
+    handleInstallerNotFound(res, platform, descriptor);
     return;
   }
 

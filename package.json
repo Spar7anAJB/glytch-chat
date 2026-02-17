@@ -16,8 +16,8 @@
     "electron:start": "npm run build && node electron/run-electron.mjs",
     "electron:installer:clean": "node -e \"require('node:fs').rmSync('release',{recursive:true,force:true})\"",
     "electron:installer:mac": "node electron/build-mac-installer.mjs",
-    "electron:installer:win": "npm run electron:installer:clean && npm run build && npx --yes electron-builder@26 --config electron/builder.config.json --win nsis --publish never && node electron/sync-installers.mjs",
-    "electron:installer:all": "npm run electron:installer:clean && npm run build && env COPYFILE_DISABLE=1 npx --yes electron-builder@26 --config electron/builder.config.json --mac dmg --win nsis --publish never && node electron/sync-installers.mjs",
+    "electron:installer:win": "node electron/build-win-installer.mjs",
+    "electron:installer:all": "npm run electron:installer:clean && npm run build && env COPYFILE_DISABLE=1 npx --yes electron-builder@26 --config electron/builder.config.json --mac dmg --win nsis --x64 --publish never && node electron/sync-installers.mjs",
     "electron:installer:sync": "node electron/sync-installers.mjs",
     "lint": "eslint .",
     "preview": "vite preview"
