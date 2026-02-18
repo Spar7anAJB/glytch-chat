@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ChangeEvent, CSSProperties, FormEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
+import type {
+  ChangeEvent,
+  CSSProperties,
+  FormEvent,
+  MouseEvent as ReactMouseEvent,
+  PointerEvent as ReactPointerEvent,
+  ReactNode,
+} from "react";
 import {
   addDmMessageReaction,
   addGroupChatMembers,
@@ -128,7 +135,7 @@ type ChatDashboardProps = {
   onLogout?: () => void;
 };
 
-type ViewMode = "dm" | "group" | "glytch" | "glytch-settings" | "settings";
+type ViewMode = "dm" | "group" | "glytch" | "glytch-settings" | "settings" | "patch-notes";
 type GlytchActionMode = "none" | "create" | "join";
 type DmPanelMode = "dms" | "friends";
 type SettingsSection = "profile" | "system";
@@ -385,6 +392,9 @@ const SHOWCASE_MAX_MODULES = 6;
 const SHOWCASE_MAX_ENTRIES = 32;
 const MAX_RENDERED_MESSAGES = 120;
 const PROFILE_COMMENT_MAX_LENGTH = 400;
+const SOUNDBOARD_MAX_CLIPS = 6;
+const SOUNDBOARD_MAX_CLIP_BYTES = 2 * 1024 * 1024;
+const SOUNDBOARD_STORAGE_KEY = "glytch.soundboard.clips.v1";
 const LEGACY_DEFAULT_DM_CHAT_BACKGROUND: BackgroundGradient = {
   from: "#122341",
   to: "#0a162b",
@@ -845,6 +855,7 @@ const ROLE_PERMISSION_OPTIONS: Array<{ key: GlytchRolePermissionKey; label: stri
 ];
 
 type VoiceAudioConstraints = MediaTrackConstraints & {
+  latency?: number | ConstrainDouble;
   voiceIsolation?: ConstrainBoolean;
   googAutoGainControl?: boolean;
   googEchoCancellation?: boolean;
@@ -880,8 +891,43 @@ type DesktopSourceOption = {
   kind: "screen" | "window";
 };
 
+type SoundboardClip = {
+  id: string;
+  name: string;
+  dataUrl: string;
+};
+
 function formatTime(date: Date): string {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function formatMessageTimestamp(date: Date): string {
+  const ageMs = Date.now() - date.getTime();
+  if (ageMs > 24 * 60 * 60 * 1000) {
+    return date.toLocaleString([], {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  }
+  return formatTime(date);
+}
+
+function formatMessageDateDivider(date: Date): string {
+  return date.toLocaleDateString([], {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+function messageDateKey(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function getFriendId(conversation: DmConversation, me: string) {
@@ -1744,6 +1790,7 @@ function buildVoiceAudioConstraints(): VoiceAudioConstraints {
     noiseSuppression: { ideal: true },
     autoGainControl: { ideal: true },
     channelCount: { ideal: 1 },
+    latency: { ideal: 0.01, max: 0.08 },
     sampleRate: { ideal: 48000 },
     sampleSize: { ideal: 16 },
     // Non-standard but supported by some engines (ignored where unsupported).
@@ -1964,6 +2011,20 @@ type HoverGifImageProps = {
   className: string;
 };
 
+type DesktopUpdatePlatform = "windows" | "mac" | "linux";
+
+type DesktopUpdatePayload = {
+  platform: DesktopUpdatePlatform;
+  version: string;
+  downloadPath: string;
+  downloadUrl: string;
+  fileName: string;
+  sizeBytes: number;
+  source: string;
+  publishedAt: string | null;
+  sha256: string | null;
+};
+
 function HoverGifImage({ src, alt, className }: HoverGifImageProps) {
   const [isHovering, setIsHovering] = useState(false);
   const [stillSrc, setStillSrc] = useState<string | null>(() => (GIF_STILL_CACHE.has(src) ? GIF_STILL_CACHE.get(src) || null : null));
@@ -2007,6 +2068,112 @@ function HoverGifImage({ src, alt, className }: HoverGifImageProps) {
       )}
     </span>
   );
+}
+
+function normalizeDesktopUpdatePlatform(platform: string | undefined): DesktopUpdatePlatform | null {
+  if (!platform) return null;
+  if (platform === "win32") return "windows";
+  if (platform === "darwin") return "mac";
+  if (platform === "linux") return "linux";
+  return null;
+}
+
+function parseVersionParts(version: string): number[] {
+  const clean = version.trim().replace(/^v/i, "");
+  if (!clean) return [0];
+  const segments = clean.split(".");
+  return segments.map((segment) => {
+    const match = segment.match(/^(\d+)/);
+    if (!match || !match[1]) return 0;
+    const parsed = Number.parseInt(match[1], 10);
+    return Number.isFinite(parsed) ? parsed : 0;
+  });
+}
+
+function compareSemanticVersions(a: string, b: string): number {
+  const aParts = parseVersionParts(a);
+  const bParts = parseVersionParts(b);
+  const maxLength = Math.max(aParts.length, bParts.length);
+  for (let index = 0; index < maxLength; index += 1) {
+    const aValue = aParts[index] ?? 0;
+    const bValue = bParts[index] ?? 0;
+    if (aValue > bValue) return 1;
+    if (aValue < bValue) return -1;
+  }
+  return 0;
+}
+
+function formatLocalDateTime(rawIso: string | null): string {
+  if (!rawIso) return "Unknown";
+  const parsed = new Date(rawIso);
+  if (Number.isNaN(parsed.getTime())) return "Unknown";
+  return parsed.toLocaleString();
+}
+
+type PatchNoteEntry = {
+  date: string;
+  title: string;
+  bullets: string[];
+};
+
+const PATCH_NOTES: PatchNoteEntry[] = [
+  {
+    date: "2026-02-18",
+    title: "v0.1.1",
+    bullets: [
+      "Windows desktop media improvements for screen share and webcam fallback behavior.",
+      "Voice stability hardening to reduce random disconnects and false kick states.",
+      "DM voice UX upgrades: per-user volume control and message date separators.",
+      "Desktop polish: in-app updates, version visibility, uninstall shortcut, and cleaner window chrome.",
+    ],
+  },
+];
+
+function loadSoundboardFromStorage(): SoundboardClip[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(SOUNDBOARD_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((entry) => entry && typeof entry === "object")
+      .map((entry) => ({
+        id: typeof entry.id === "string" ? entry.id : String(Date.now()),
+        name: typeof entry.name === "string" ? entry.name : "Sound",
+        dataUrl: typeof entry.dataUrl === "string" ? entry.dataUrl : "",
+      }))
+      .filter((entry) => entry.dataUrl.startsWith("data:audio/"))
+      .slice(0, SOUNDBOARD_MAX_CLIPS);
+  } catch {
+    return [];
+  }
+}
+
+function persistSoundboardToStorage(clips: SoundboardClip[]) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(SOUNDBOARD_STORAGE_KEY, JSON.stringify(clips.slice(0, SOUNDBOARD_MAX_CLIPS)));
+  } catch {
+    // Ignore localStorage quota failures.
+  }
+}
+
+function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") {
+        resolve(reader.result);
+        return;
+      }
+      reject(new Error("Could not read audio file."));
+    };
+    reader.onerror = () => {
+      reject(new Error("Could not read audio file."));
+    };
+    reader.readAsDataURL(file);
+  });
 }
 
 export default function ChatDashboard({
@@ -2143,6 +2310,16 @@ export default function ChatDashboard({
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("edit");
   const [currentProfile, setCurrentProfile] = useState<Profile | null>(null);
   const [profileForm, setProfileForm] = useState<ProfileForm>(buildProfileForm(null));
+  const [desktopAppVersion, setDesktopAppVersion] = useState("");
+  const [desktopLatestVersion, setDesktopLatestVersion] = useState("");
+  const [desktopUpdateDownloadUrl, setDesktopUpdateDownloadUrl] = useState("");
+  const [desktopUpdatePublishedAt, setDesktopUpdatePublishedAt] = useState<string | null>(null);
+  const [desktopUpdateLastCheckedAt, setDesktopUpdateLastCheckedAt] = useState<string | null>(null);
+  const [desktopUpdateBusy, setDesktopUpdateBusy] = useState(false);
+  const [desktopUpdateInstallBusy, setDesktopUpdateInstallBusy] = useState(false);
+  const [desktopUninstallBusy, setDesktopUninstallBusy] = useState(false);
+  const [desktopUpdateNotice, setDesktopUpdateNotice] = useState("");
+  const [desktopUpdateError, setDesktopUpdateError] = useState("");
   const [isUserIdle, setIsUserIdle] = useState(false);
   const [profileSaveError, setProfileSaveError] = useState("");
   const [profileSaveBusy, setProfileSaveBusy] = useState(false);
@@ -2183,6 +2360,10 @@ export default function ChatDashboard({
   const [voiceMuted, setVoiceMuted] = useState(false);
   const [voiceDeafened, setVoiceDeafened] = useState(false);
   const [remoteUserVolumes, setRemoteUserVolumes] = useState<Record<string, number>>({});
+  const [soundboardClips, setSoundboardClips] = useState<SoundboardClip[]>(() => loadSoundboardFromStorage());
+  const [soundboardBusy, setSoundboardBusy] = useState(false);
+  const [soundboardPlayingId, setSoundboardPlayingId] = useState<string | null>(null);
+  const [soundboardError, setSoundboardError] = useState("");
   const [remoteVideoShareKinds, setRemoteVideoShareKinds] = useState<Record<string, LocalVideoShareKind | null>>({});
   const [dmIncomingCallCounts, setDmIncomingCallCounts] = useState<Record<number, number>>({});
   const [screenShareBusy, setScreenShareBusy] = useState(false);
@@ -2230,6 +2411,7 @@ export default function ChatDashboard({
   const localCameraTrackRef = useRef<MediaStreamTrack | null>(null);
   const localCameraStreamRef = useRef<MediaStream | null>(null);
   const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
+  const peerDisconnectTimeoutsRef = useRef<Map<string, number>>(new Map());
   const desktopTrackSendersRef = useRef<Map<string, RTCRtpSender[]>>(new Map());
   const cameraTrackSendersRef = useRef<Map<string, RTCRtpSender[]>>(new Map());
   const activeNegotiationPeerIdsRef = useRef<Set<string>>(new Set());
@@ -2249,6 +2431,7 @@ export default function ChatDashboard({
   const speakingAnalyserCleanupRef = useRef<Map<string, () => void>>(new Map());
   const signalSinceIdRef = useRef(0);
   const previousVoiceParticipantIdsRef = useRef<string[]>([]);
+  const missingSelfParticipantCountRef = useRef(0);
   const soundContextRef = useRef<AudioContext | null>(null);
   const notificationSoundLastPlayedAtRef = useRef(0);
   const incomingCallRingLastPlayedAtRef = useRef(0);
@@ -2271,6 +2454,7 @@ export default function ChatDashboard({
   const groupLastLoadedMessageIdRef = useRef(0);
   const glytchLastLoadedChannelIdRef = useRef<number | null>(null);
   const glytchLastLoadedMessageIdRef = useRef(0);
+  const desktopUpdateAutoCheckRef = useRef(false);
   const messageSnapshotKeyByContextRef = useRef<Record<string, string>>({});
   const activeMessageContextKeyRef = useRef<string | null>(null);
   const [membersPanelWidth, setMembersPanelWidth] = useState(() => {
@@ -2792,6 +2976,17 @@ export default function ChatDashboard({
       playSound?: boolean;
       onClick?: () => void;
     }) => {
+      if (
+        typeof window !== "undefined" &&
+        window.electronAPI?.isElectron &&
+        typeof document !== "undefined" &&
+        document.visibilityState === "visible" &&
+        typeof document.hasFocus === "function" &&
+        document.hasFocus()
+      ) {
+        return;
+      }
+
       const permission =
         typeof window !== "undefined" && "Notification" in window && window.Notification.permission === "granted"
           ? "granted"
@@ -2886,6 +3081,80 @@ export default function ChatDashboard({
       }
     },
     [screenShareAudioMuted, voiceDeafened],
+  );
+
+  useEffect(() => {
+    persistSoundboardToStorage(soundboardClips);
+  }, [soundboardClips]);
+
+  const handleUploadSoundboardClip = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      event.target.value = "";
+      if (!file) return;
+
+      if (soundboardClips.length >= SOUNDBOARD_MAX_CLIPS) {
+        setSoundboardError(`Soundboard is full (max ${SOUNDBOARD_MAX_CLIPS} sounds).`);
+        return;
+      }
+      if (!file.type.startsWith("audio/")) {
+        setSoundboardError("Only audio files are supported.");
+        return;
+      }
+      if (file.size > SOUNDBOARD_MAX_CLIP_BYTES) {
+        setSoundboardError("Sound must be 2MB or smaller.");
+        return;
+      }
+
+      setSoundboardBusy(true);
+      setSoundboardError("");
+      try {
+        const dataUrl = await fileToDataUrl(file);
+        const clipName = file.name.replace(/\.[^.]+$/, "").trim() || "Sound";
+        setSoundboardClips((prev) => [
+          ...prev,
+          {
+            id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+            name: clipName.slice(0, 42),
+            dataUrl,
+          },
+        ]);
+      } catch (err) {
+        setSoundboardError(err instanceof Error ? err.message : "Could not upload sound.");
+      } finally {
+        setSoundboardBusy(false);
+      }
+    },
+    [soundboardClips.length],
+  );
+
+  const handleRemoveSoundboardClip = useCallback((clipId: string) => {
+    setSoundboardClips((prev) => prev.filter((clip) => clip.id !== clipId));
+    setSoundboardError("");
+  }, []);
+
+  const handlePlaySoundboardClip = useCallback(
+    async (clip: SoundboardClip) => {
+      if (!voiceRoomKey) {
+        setSoundboardError("Join voice before using soundboard clips.");
+        return;
+      }
+
+      try {
+        setSoundboardError("");
+        setSoundboardPlayingId(clip.id);
+        const audio = new Audio(clip.dataUrl);
+        audio.volume = 1;
+        audio.onended = () => {
+          setSoundboardPlayingId((prev) => (prev === clip.id ? null : prev));
+        };
+        await audio.play();
+      } catch (err) {
+        setSoundboardPlayingId((prev) => (prev === clip.id ? null : prev));
+        setSoundboardError(err instanceof Error ? err.message : "Could not play sound.");
+      }
+    },
+    [voiceRoomKey],
   );
 
   const playVoiceLeaveSound = () => {
@@ -3104,6 +3373,146 @@ export default function ChatDashboard({
     profileForm.notificationsEnabled && profileForm.notifyFriendRequestAccepted;
   const thirdPartyIntegrationsEnabled = profileForm.thirdPartyIntegrationsEnabled;
   const isElectronRuntime = typeof window !== "undefined" && Boolean(window.electronAPI?.isElectron);
+  const electronDesktopPlatform =
+    typeof window === "undefined" ? null : normalizeDesktopUpdatePlatform(window.electronAPI?.platform);
+  const supportsInAppInstallerUpdates = isElectronRuntime && electronDesktopPlatform === "windows";
+  const isDesktopUpdateAvailable =
+    desktopLatestVersion.length > 0 &&
+    desktopUpdateDownloadUrl.length > 0 &&
+    compareSemanticVersions(desktopLatestVersion, desktopAppVersion || "0.0.0") > 0;
+
+  const checkForDesktopAppUpdate = useCallback(async () => {
+    if (!isElectronRuntime) return;
+    if (!electronDesktopPlatform) {
+      setDesktopUpdateError("Desktop update checks are not supported on this platform.");
+      return;
+    }
+
+    const apiBase = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/+$/, "");
+    if (!apiBase) {
+      setDesktopUpdateError("Update checks require VITE_API_URL to point to your backend.");
+      return;
+    }
+
+    setDesktopUpdateBusy(true);
+    setDesktopUpdateError("");
+    setDesktopUpdateNotice("");
+
+    try {
+      let installedVersion = desktopAppVersion;
+      if (!installedVersion && window.electronAPI?.getAppVersion) {
+        installedVersion = await window.electronAPI.getAppVersion();
+        setDesktopAppVersion(installedVersion || "0.0.0");
+      }
+
+      const response = await fetch(`${apiBase}/api/updates/${electronDesktopPlatform}/latest`, {
+        method: "GET",
+        headers: {
+          Accept: "application/json",
+        },
+      });
+      const payload = (await response.json().catch(() => ({}))) as Partial<DesktopUpdatePayload> & { error?: string };
+      if (!response.ok) {
+        throw new Error(payload.error || "Could not check for desktop updates.");
+      }
+
+      const latestVersion = typeof payload.version === "string" ? payload.version.trim() : "";
+      const downloadUrl = typeof payload.downloadUrl === "string" ? payload.downloadUrl : "";
+      const publishedAt = typeof payload.publishedAt === "string" ? payload.publishedAt : null;
+      if (!latestVersion || !downloadUrl) {
+        throw new Error("Updater response is missing version or download URL.");
+      }
+
+      setDesktopLatestVersion(latestVersion);
+      setDesktopUpdateDownloadUrl(downloadUrl);
+      setDesktopUpdatePublishedAt(publishedAt);
+      setDesktopUpdateNotice(
+        compareSemanticVersions(latestVersion, installedVersion || "0.0.0") > 0
+          ? `Update ${latestVersion} is available.`
+          : `You are up to date (v${installedVersion || latestVersion}).`,
+      );
+    } catch (err) {
+      setDesktopUpdateError(err instanceof Error ? err.message : "Could not check for desktop updates.");
+    } finally {
+      setDesktopUpdateLastCheckedAt(new Date().toISOString());
+      setDesktopUpdateBusy(false);
+    }
+  }, [desktopAppVersion, electronDesktopPlatform, isElectronRuntime]);
+
+  const handleInstallDesktopUpdate = useCallback(async () => {
+    if (!supportsInAppInstallerUpdates || !window.electronAPI?.downloadAndInstallUpdate) {
+      setDesktopUpdateError("In-app installer updates are only available for the Windows desktop app.");
+      return;
+    }
+    if (!desktopUpdateDownloadUrl) {
+      setDesktopUpdateError("No update download URL is available yet.");
+      return;
+    }
+
+    setDesktopUpdateInstallBusy(true);
+    setDesktopUpdateError("");
+    setDesktopUpdateNotice("Downloading update installer...");
+    try {
+      await window.electronAPI.downloadAndInstallUpdate(desktopUpdateDownloadUrl);
+      setDesktopUpdateNotice("Installer launched. Glytch Chat will close so the update can be applied.");
+    } catch (err) {
+      setDesktopUpdateError(err instanceof Error ? err.message : "Could not install update.");
+    } finally {
+      setDesktopUpdateInstallBusy(false);
+    }
+  }, [desktopUpdateDownloadUrl, supportsInAppInstallerUpdates]);
+
+  const handleOpenDesktopUninstall = useCallback(async () => {
+    if (!isElectronRuntime || !window.electronAPI?.openUninstall) {
+      setDesktopUpdateError("Desktop uninstall shortcuts are only available in Electron builds.");
+      return;
+    }
+
+    setDesktopUninstallBusy(true);
+    setDesktopUpdateError("");
+    setDesktopUpdateNotice("");
+    try {
+      const result = await window.electronAPI.openUninstall();
+      setDesktopUpdateNotice(
+        result?.launched
+          ? "Uninstaller launched."
+          : "Could not find the uninstaller executable. Opened Apps & Features instead.",
+      );
+    } catch (err) {
+      setDesktopUpdateError(err instanceof Error ? err.message : "Could not open uninstall options.");
+    } finally {
+      setDesktopUninstallBusy(false);
+    }
+  }, [isElectronRuntime]);
+
+  useEffect(() => {
+    if (!isElectronRuntime || !window.electronAPI?.getAppVersion) return;
+    let mounted = true;
+    void window.electronAPI
+      .getAppVersion()
+      .then((version) => {
+        if (!mounted) return;
+        setDesktopAppVersion(version || "0.0.0");
+      })
+      .catch(() => {
+        if (!mounted) return;
+        setDesktopAppVersion("0.0.0");
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, [isElectronRuntime]);
+
+  useEffect(() => {
+    if (!isElectronRuntime) return;
+    if (electronDesktopPlatform !== "windows") return;
+    if (!desktopAppVersion) return;
+    if (desktopUpdateAutoCheckRef.current) return;
+    desktopUpdateAutoCheckRef.current = true;
+    void checkForDesktopAppUpdate();
+  }, [checkForDesktopAppUpdate, desktopAppVersion, electronDesktopPlatform, isElectronRuntime]);
+
   const isComposerInputFocused = useCallback(
     () =>
       typeof document !== "undefined" &&
@@ -5549,10 +5958,15 @@ export default function ChatDashboard({
 
         const myParticipantRow = rows.find((row) => row.user_id === currentUserId) || null;
         if (voiceRoomKey && !myParticipantRow) {
-          await stopVoiceSession(false);
-          if (!mounted) return;
-          setVoiceError("You were removed from this voice channel.");
-          return;
+          missingSelfParticipantCountRef.current += 1;
+          if (missingSelfParticipantCountRef.current >= 3) {
+            await stopVoiceSession(false);
+            if (!mounted) return;
+            setVoiceError("You were removed from this voice channel.");
+            return;
+          }
+        } else {
+          missingSelfParticipantCountRef.current = 0;
         }
         if (myParticipantRow) {
           const nextMuted = myParticipantRow.muted || myParticipantRow.deafened;
@@ -5824,6 +6238,7 @@ export default function ChatDashboard({
   /* eslint-disable react-hooks/exhaustive-deps */
   useEffect(() => {
     if (!voiceRoomKey) return;
+    if (!selectedVoiceRoomKey) return;
     if (selectedVoiceRoomKey === voiceRoomKey) return;
     void stopVoiceSession(true);
   }, [selectedVoiceRoomKey, voiceRoomKey]);
@@ -5831,6 +6246,7 @@ export default function ChatDashboard({
 
   useEffect(() => {
     previousVoiceParticipantIdsRef.current = [];
+    missingSelfParticipantCountRef.current = 0;
   }, [presenceRoomKey]);
 
   // Intentional mount/unmount cleanup effect.
@@ -8489,12 +8905,20 @@ export default function ChatDashboard({
 
     cameraFallbackInFlightRef.current = true;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          frameRate: { ideal: 30, max: 60 },
-        },
-        audio: false,
-      });
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            frameRate: { ideal: 30, max: 60 },
+          },
+          audio: false,
+        });
+      } catch {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: false,
+        });
+      }
 
       const [track] = stream.getVideoTracks();
       if (!track) {
@@ -8550,8 +8974,12 @@ export default function ChatDashboard({
         window.electronAPI.getDesktopSourceId &&
         typeof navigator.mediaDevices.getUserMedia === "function",
     );
+    const shouldPreferElectronDesktopCapture =
+      window.electronAPI?.isElectron && window.electronAPI.platform === "win32" && canUseElectronFallback;
     const preferredDesktopSourceId = selectedDesktopSourceId === "auto" ? null : selectedDesktopSourceId;
-    const shouldUseElectronSourceSelection = Boolean(preferredDesktopSourceId && canUseElectronFallback);
+    const shouldUseElectronSourceSelection = Boolean(
+      (preferredDesktopSourceId && canUseElectronFallback) || shouldPreferElectronDesktopCapture,
+    );
     if (!canUseDisplayMedia && !canUseElectronFallback) {
       if (window.electronAPI?.isElectron) {
         setVoiceError("Screen sharing unavailable: missing capture APIs in Electron runtime.");
@@ -8675,6 +9103,9 @@ export default function ChatDashboard({
     const data = new Uint8Array(analyser.frequencyBinCount);
     let rafId = 0;
     let active = true;
+    let smoothedLevel = 0;
+    let speakingState = false;
+    let holdUntilMs = 0;
 
     const tick = () => {
       if (!active) return;
@@ -8682,12 +9113,22 @@ export default function ChatDashboard({
       let sum = 0;
       for (let i = 0; i < data.length; i += 1) sum += data[i];
       const avg = sum / data.length;
-      const isSpeaking = avg > 22;
+      smoothedLevel = smoothedLevel * 0.82 + avg * 0.18;
+      const nowMs = Date.now();
+      const activateThreshold = 23;
+      const deactivateThreshold = 14;
+
+      if (smoothedLevel >= activateThreshold) {
+        speakingState = true;
+        holdUntilMs = nowMs + 240;
+      } else if (speakingState && smoothedLevel <= deactivateThreshold && nowMs > holdUntilMs) {
+        speakingState = false;
+      }
 
       setSpeakingUserIds((prev) => {
         const has = prev.includes(userId);
-        if (isSpeaking && !has) return [...prev, userId];
-        if (!isSpeaking && has) return prev.filter((id) => id !== userId);
+        if (speakingState && !has) return [...prev, userId];
+        if (!speakingState && has) return prev.filter((id) => id !== userId);
         return prev;
       });
 
@@ -8709,6 +9150,12 @@ export default function ChatDashboard({
   }, []);
 
   const closePeerConnection = useCallback((userId: string) => {
+    const pendingDisconnectTimeoutId = peerDisconnectTimeoutsRef.current.get(userId);
+    if (typeof pendingDisconnectTimeoutId === "number") {
+      window.clearTimeout(pendingDisconnectTimeoutId);
+      peerDisconnectTimeoutsRef.current.delete(userId);
+    }
+
     const pc = peerConnectionsRef.current.get(userId);
     if (pc) {
       pc.onicecandidate = null;
@@ -8805,6 +9252,10 @@ export default function ChatDashboard({
     setLocalCameraStream(null);
     desktopTrackSendersRef.current.clear();
     cameraTrackSendersRef.current.clear();
+    for (const timeoutId of peerDisconnectTimeoutsRef.current.values()) {
+      window.clearTimeout(timeoutId);
+    }
+    peerDisconnectTimeoutsRef.current.clear();
     activeNegotiationPeerIdsRef.current.clear();
     queuedNegotiationPeerIdsRef.current.clear();
     cameraFallbackInFlightRef.current = false;
@@ -8839,6 +9290,7 @@ export default function ChatDashboard({
     teardownVoice();
     setVoiceParticipants([]);
     setVoiceRoomKey(null);
+    missingSelfParticipantCountRef.current = 0;
     setVoiceError("");
 
     if (notifyServer && roomToLeave) {
@@ -9115,7 +9567,41 @@ export default function ChatDashboard({
     };
 
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === "failed" || pc.connectionState === "disconnected" || pc.connectionState === "closed") {
+      const state = pc.connectionState;
+      if (state === "connected") {
+        const pendingDisconnectTimeoutId = peerDisconnectTimeoutsRef.current.get(targetUserId);
+        if (typeof pendingDisconnectTimeoutId === "number") {
+          window.clearTimeout(pendingDisconnectTimeoutId);
+          peerDisconnectTimeoutsRef.current.delete(targetUserId);
+        }
+        return;
+      }
+
+      if (state === "failed") {
+        try {
+          pc.restartIce();
+        } catch {
+          // Ignore browsers that do not support explicit ICE restart.
+        }
+        void renegotiatePeerConnection(targetUserId, pc);
+      }
+
+      if (state === "disconnected" || state === "failed") {
+        if (!peerDisconnectTimeoutsRef.current.has(targetUserId)) {
+          const timeoutId = window.setTimeout(() => {
+            peerDisconnectTimeoutsRef.current.delete(targetUserId);
+            const activePc = peerConnectionsRef.current.get(targetUserId);
+            if (!activePc) return;
+            if (activePc.connectionState === "disconnected" || activePc.connectionState === "failed") {
+              closePeerConnection(targetUserId);
+            }
+          }, 9000);
+          peerDisconnectTimeoutsRef.current.set(targetUserId, timeoutId);
+        }
+        return;
+      }
+
+      if (state === "closed") {
         closePeerConnection(targetUserId);
       }
     };
@@ -9428,10 +9914,23 @@ export default function ChatDashboard({
       const visibleMessages =
         (messages.length > MAX_RENDERED_MESSAGES ? messages.slice(messages.length - MAX_RENDERED_MESSAGES) : messages)
           .filter((msg) => !(viewMode === "dm" && dismissedDmMessageIds[msg.id]));
-      return visibleMessages.map((msg) => {
+      const rows: ReactNode[] = [];
+      const shouldRenderDateDividers = viewMode === "dm";
+      let previousDateDividerKey = "";
+      for (const msg of visibleMessages) {
+        const currentDateDividerKey = messageDateKey(msg.timestamp);
+        if (shouldRenderDateDividers && currentDateDividerKey !== previousDateDividerKey) {
+          previousDateDividerKey = currentDateDividerKey;
+          rows.push(
+            <div key={`date-divider-${currentDateDividerKey}-${msg.id}`} className="messageDateDivider" data-message-date-divider="true">
+              <span>{formatMessageDateDivider(msg.timestamp)}</span>
+            </div>,
+          );
+        }
+
         const invitePayload = viewMode === "dm" ? parseGlytchInviteMessage(msg.text || "") : null;
         const replyPayload = viewMode === "dm" ? parseDmReplyMessage(msg.text || "") : null;
-        return (
+        rows.push(
           <article
             key={msg.id}
             className={`messageRow ${msg.sender === "me" ? "fromMe" : "fromOther"}`}
@@ -9577,13 +10076,14 @@ export default function ChatDashboard({
                 )}
               </div>
               <div className="msgMeta">
-                <time className="msgTime">{formatTime(msg.timestamp)}</time>
+                <time className="msgTime">{shouldRenderDateDividers ? formatMessageTimestamp(msg.timestamp) : formatTime(msg.timestamp)}</time>
                 {msg.sender === "me" && latestSeenOutgoingMessageId === msg.id && <span className="msgSeen">Seen</span>}
               </div>
             </div>
-          </article>
+          </article>,
         );
-      });
+      }
+      return rows;
     },
     [
       handleJoinInviteFromDmMessage,
@@ -10137,6 +10637,25 @@ export default function ChatDashboard({
             </span>
             <span>Group Chats</span>
           </button>
+          <button
+            className={viewMode === "patch-notes" ? "navOption active" : "navOption"}
+            type="button"
+            onClick={() => setViewMode("patch-notes")}
+          >
+            <span className="navOptionIcon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" role="presentation">
+                <path
+                  d="M6 4.5h9l3 3V19a1.5 1.5 0 0 1-1.5 1.5h-10A1.5 1.5 0 0 1 5 19V6A1.5 1.5 0 0 1 6.5 4.5Z"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.6"
+                  strokeLinejoin="round"
+                />
+                <path d="M9 10h6M9 13h6M9 16h4" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+              </svg>
+            </span>
+            <span>Patch Notes</span>
+          </button>
 
           <div className="railIdentity">
             <button
@@ -10554,6 +11073,23 @@ export default function ChatDashboard({
                   </section>
                 )}
               </>
+            ) : viewMode === "patch-notes" ? (
+              <section className="requestSection">
+                <p className="sectionLabel">Release Stream</p>
+                {PATCH_NOTES.map((entry) => (
+                  <article key={`${entry.date}:${entry.title}`} className="requestCard">
+                    <p>
+                      <strong>{entry.title}</strong>
+                    </p>
+                    <p className="smallMuted">{entry.date}</p>
+                    {entry.bullets.map((item) => (
+                      <p key={`${entry.title}:${item}`} className="smallMuted">
+                        - {item}
+                      </p>
+                    ))}
+                  </article>
+                ))}
+              </section>
             ) : viewMode === "glytch" || viewMode === "glytch-settings" ? (
               <>
                 {glytchError && <p className="chatError">{glytchError}</p>}
@@ -11000,6 +11536,8 @@ export default function ChatDashboard({
               </span>
             ) : viewMode === "group" ? (
               <span>{activeGroupChat ? `Group Chat / ${activeGroupChat.name}` : "Group Chats"}</span>
+            ) : viewMode === "patch-notes" ? (
+              <span>Patch Notes</span>
             ) : viewMode === "glytch-settings" ? (
               <span>{activeGlytch ? `${formatGlytchNameWithId(activeGlytch.name, activeGlytch.id)} / Settings` : "Glytch Settings"}</span>
             ) : (
@@ -12245,6 +12783,39 @@ export default function ChatDashboard({
                 <p className="smallMuted">
                   Accessibility settings apply immediately and are saved to your profile for future sessions.
                 </p>
+                {isElectronRuntime && (
+                  <section className="requestSection" aria-label="Desktop app updates">
+                    <p className="sectionLabel">Desktop App Version</p>
+                    <p className="smallMuted">Installed: v{desktopAppVersion || "0.0.0"}</p>
+                    <p className="smallMuted">Latest: {desktopLatestVersion ? `v${desktopLatestVersion}` : "Not checked yet"}</p>
+                    <p className="smallMuted">Latest build: {formatLocalDateTime(desktopUpdatePublishedAt)}</p>
+                    <p className="smallMuted">Last check: {formatLocalDateTime(desktopUpdateLastCheckedAt)}</p>
+                    {desktopUpdateNotice && <p className="smallMuted">{desktopUpdateNotice}</p>}
+                    {desktopUpdateError && <p className="chatError">{desktopUpdateError}</p>}
+                    <div className="moderationActionRow">
+                      <button type="button" onClick={() => void checkForDesktopAppUpdate()} disabled={desktopUpdateBusy}>
+                        {desktopUpdateBusy ? "Checking..." : "Check for Updates"}
+                      </button>
+                      {supportsInAppInstallerUpdates && (
+                        <button
+                          type="button"
+                          onClick={() => void handleInstallDesktopUpdate()}
+                          disabled={!isDesktopUpdateAvailable || desktopUpdateBusy || desktopUpdateInstallBusy}
+                        >
+                          {desktopUpdateInstallBusy ? "Installing..." : "Install Update"}
+                        </button>
+                      )}
+                      {electronDesktopPlatform === "windows" && (
+                        <button type="button" onClick={() => void handleOpenDesktopUninstall()} disabled={desktopUninstallBusy}>
+                          {desktopUninstallBusy ? "Opening..." : "Uninstall App"}
+                        </button>
+                      )}
+                    </div>
+                    {!supportsInAppInstallerUpdates && (
+                      <p className="smallMuted">In-app installer updates are currently enabled for Windows desktop builds.</p>
+                    )}
+                  </section>
+                )}
 
                 <button type="submit" disabled={profileSaveBusy}>
                   {profileSaveBusy ? "Saving..." : "Save Accessibility Settings"}
@@ -12267,7 +12838,7 @@ export default function ChatDashboard({
                   className="profileBanner"
                   style={
                     profileForm.bannerUrl
-                      ? { backgroundImage: `url(${profileForm.bannerUrl})`, backgroundSize: "cover" }
+                      ? { backgroundImage: `url(${profileForm.bannerUrl})` }
                       : undefined
                   }
                 />
@@ -12308,6 +12879,30 @@ export default function ChatDashboard({
                 </button>
               </div>
             )}
+          </section>
+        ) : viewMode === "patch-notes" ? (
+          <section className="settingsPage" aria-label="Patch notes">
+            <div className="settingsTabs">
+              <button className="tab active" type="button">
+                v0.1.1
+              </button>
+            </div>
+            <section className="requestSection">
+              <p className="sectionLabel">Recent Updates</p>
+              {PATCH_NOTES.map((entry) => (
+                <article key={`main-${entry.date}-${entry.title}`} className="requestCard">
+                  <p>
+                    <strong>{entry.title}</strong>
+                  </p>
+                  <p className="smallMuted">{entry.date}</p>
+                  {entry.bullets.map((item) => (
+                    <p key={`${entry.title}-main-${item}`} className="smallMuted">
+                      - {item}
+                    </p>
+                  ))}
+                </article>
+              ))}
+            </section>
           </section>
         ) : viewMode === "glytch-settings" ? (
           <section className="settingsPage" aria-label="Glytch settings">
@@ -13528,6 +14123,7 @@ export default function ChatDashboard({
                       {voiceParticipants.length === 0 ? (
                         <p className="smallMuted">No one is in voice right now.</p>
                       ) : viewMode === "dm" ? (
+                    <>
                     <div className="voiceParticipants avatarOnly">
                       {voiceParticipants.map((participant) => {
                         const participantIsMe = participant.userId === currentUserId;
@@ -13648,6 +14244,37 @@ export default function ChatDashboard({
                         );
                       })}
                     </div>
+                    <div className="voiceParticipants">
+                      {voiceParticipants
+                        .filter((participant) => participant.userId !== currentUserId)
+                        .map((participant) => {
+                          const volumePercent = Math.round(
+                            clampVoiceVolume(remoteUserVolumes[participant.userId] ?? 1) * 100,
+                          );
+                          return (
+                            <div key={`dm-volume-${participant.userId}`} className="voiceParticipant">
+                              <span className="voiceParticipantName">{participant.name}</span>
+                              <div className="voiceParticipantControls">
+                                <label className="voiceVolumeControl">
+                                  <span className="voiceVolumeLabel">Volume</span>
+                                  <input
+                                    type="range"
+                                    min={0}
+                                    max={100}
+                                    step={5}
+                                    value={volumePercent}
+                                    onChange={(e) =>
+                                      handleSetRemoteUserVolume(participant.userId, Number(e.target.value) / 100)
+                                    }
+                                  />
+                                  <span className="voiceVolumeValue">{volumePercent}%</span>
+                                </label>
+                              </div>
+                            </div>
+                          );
+                        })}
+                    </div>
+                    </>
                   ) : (
                     <div className="voiceParticipants">
                       {voiceParticipants.map((participant) => {
@@ -13848,6 +14475,47 @@ export default function ChatDashboard({
                       })}
                     </div>
                       )}
+                      <section className="requestSection" aria-label="Soundboard">
+                        <p className="sectionLabel">Soundboard (max {SOUNDBOARD_MAX_CLIPS})</p>
+                        <label className="uploadButton">
+                          {soundboardBusy ? "Uploading..." : "Upload Sound"}
+                          <input
+                            type="file"
+                            accept="audio/*"
+                            onChange={handleUploadSoundboardClip}
+                            disabled={soundboardBusy || soundboardClips.length >= SOUNDBOARD_MAX_CLIPS}
+                          />
+                        </label>
+                        {soundboardError && <p className="chatError">{soundboardError}</p>}
+                        {soundboardClips.length === 0 ? (
+                          <p className="smallMuted">Upload short audio clips to build your soundboard.</p>
+                        ) : (
+                          <div className="voiceParticipants">
+                            {soundboardClips.map((clip) => (
+                              <div key={clip.id} className="voiceParticipant">
+                                <span className="voiceParticipantName">{clip.name}</span>
+                                <div className="voiceParticipantControls">
+                                  <button
+                                    type="button"
+                                    className="voiceModerationButton"
+                                    onClick={() => void handlePlaySoundboardClip(clip)}
+                                    disabled={soundboardPlayingId === clip.id}
+                                  >
+                                    {soundboardPlayingId === clip.id ? "Playing..." : "Play"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="voiceModerationButton danger"
+                                    onClick={() => handleRemoveSoundboardClip(clip.id)}
+                                  >
+                                    Remove
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </section>
                     </>
                   ) : activeDm ? (
                     <div className="voiceParticipants avatarOnly">
@@ -14274,14 +14942,14 @@ export default function ChatDashboard({
                 } as CSSProperties
               }
             >
-              <div
-                className="profileBanner"
-                style={
-                  viewedProfile.banner_url
-                    ? { backgroundImage: `url(${viewedProfile.banner_url})`, backgroundSize: "cover" }
+                <div
+                  className="profileBanner"
+                  style={
+                    viewedProfile.banner_url
+                    ? { backgroundImage: `url(${viewedProfile.banner_url})` }
                     : undefined
-                }
-              />
+                  }
+                />
               <div
                 className="profileAvatarLarge withPresence"
                 style={{ borderColor: viewedAccent }}

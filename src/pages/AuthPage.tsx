@@ -22,6 +22,7 @@ type AuthPageProps = {
   onRememberMeChange: (remember: boolean) => void;
   onSubmit: (event: FormEvent) => void;
   onBack: () => void;
+  showBackButton?: boolean;
 };
 
 function AuthPage({
@@ -35,6 +36,7 @@ function AuthPage({
   onRememberMeChange,
   onSubmit,
   onBack,
+  showBackButton = true,
 }: AuthPageProps) {
   const typingPhrases = useMemo(() => ["Welcome to", "Glytch Chat"], []);
   const [typingPhraseIndex, setTypingPhraseIndex] = useState(0);
@@ -73,9 +75,11 @@ function AuthPage({
   return (
     <main className="authPage">
       <section className="authCard" aria-label="Authentication">
-        <button className="authBackButton" type="button" onClick={onBack}>
-          Back
-        </button>
+        {showBackButton && (
+          <button className="authBackButton" type="button" onClick={onBack}>
+            Back
+          </button>
+        )}
 
         <img className="authProjectLogo" src={logoAssetUrl} alt="Glytch Chat logo" />
         <h1 className="site-title authSiteTitle">

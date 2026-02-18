@@ -53,7 +53,14 @@ const GIPHY_API_BASE = (process.env.GIPHY_API_BASE || process.env.VITE_GIPHY_API
   "",
 );
 const GIPHY_API_KEY = process.env.GIPHY_API_KEY || process.env.VITE_GIPHY_API_KEY || "";
+const GIPHY_LEGACY_PUBLIC_API_KEY = "dc6zaTOxFJmzC";
 const GIPHY_RATING = process.env.GIPHY_RATING || process.env.VITE_GIPHY_RATING || "pg";
+const TENOR_API_BASE = (process.env.TENOR_API_BASE || process.env.VITE_TENOR_API_BASE || "https://tenor.googleapis.com/v2").replace(
+  /\/+$/,
+  "",
+);
+const TENOR_API_KEY = process.env.TENOR_API_KEY || process.env.VITE_TENOR_API_KEY || "";
+const TENOR_CLIENT_KEY = process.env.TENOR_CLIENT_KEY || process.env.VITE_TENOR_CLIENT_KEY || "glytch-chat";
 const MAX_MEDIA_UPLOAD_BYTES = Number.parseInt(process.env.MAX_MEDIA_UPLOAD_BYTES ?? "8388608", 10);
 const MEDIA_MODERATION_ENABLED = parseBooleanEnv(
   process.env.MEDIA_MODERATION_ENABLED,
@@ -92,9 +99,12 @@ const MEDIA_PROFILE_UPLOAD_PREFIX = "/api/media/profile-upload/";
 const MEDIA_GLYTCH_ICON_UPLOAD_PREFIX = "/api/media/glytch-icon-upload/";
 const MEDIA_MESSAGE_UPLOAD_PREFIX = "/api/media/message-upload/";
 const MEDIA_MESSAGE_INGEST_PATH = "/api/media/message-ingest";
+const UPDATES_PREFIX = "/api/updates/";
 const DOWNLOADS_PREFIX = "/api/downloads/";
 const DOWNLOADS_DIR = path.join(process.cwd(), "public", "downloads");
 const RELEASE_DIR = path.join(process.cwd(), "release");
+const DOWNLOADS_UPDATES_MANIFEST_PATH = path.join(DOWNLOADS_DIR, "updates.json");
+const PACKAGE_JSON_PATH = path.join(process.cwd(), "package.json");
 
 const INSTALLER_FILE_MAP = {
   mac: {
@@ -953,33 +963,68 @@ async function forwardSupabase(req, res, targetPath) {
 }
 
 async function handleGifSearch(res, parsedUrl) {
-  if (!GIPHY_API_KEY) {
+  const query = parsedUrl.searchParams.get("q")?.trim() || "";
+  const rawLimit = Number.parseInt(parsedUrl.searchParams.get("limit") || "24", 10);
+  const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 1), 50) : 24;
+  const giphyApiKey = GIPHY_API_KEY || GIPHY_LEGACY_PUBLIC_API_KEY;
+
+  if (giphyApiKey) {
+    const endpoint = query ? "search" : "trending";
+    const params = new URLSearchParams({
+      api_key: giphyApiKey,
+      limit: String(limit),
+      rating: GIPHY_RATING,
+      bundle: "messaging_non_clips",
+    });
+    if (query) {
+      params.set("q", query);
+      params.set("lang", "en");
+    }
+
+    let upstream;
+    try {
+      upstream = await fetch(`${GIPHY_API_BASE}/${endpoint}?${params.toString()}`, {
+        headers: {
+          Accept: "application/json",
+        },
+      });
+    } catch (error) {
+      sendJson(res, 502, {
+        error: "Could not reach GIF upstream.",
+        message: error instanceof Error ? error.message : "Unknown upstream error.",
+      });
+      return;
+    }
+
+    if (upstream.ok) {
+      await relayFetchResponse(res, upstream);
+      return;
+    }
+  }
+
+  if (!TENOR_API_KEY) {
     sendJson(res, 503, {
       error: "GIF service unavailable.",
-      message: "Set GIPHY_API_KEY (or VITE_GIPHY_API_KEY) on the backend.",
+      message:
+        "Set GIPHY_API_KEY (or VITE_GIPHY_API_KEY). Optional fallback: TENOR_API_KEY.",
     });
     return;
   }
 
-  const query = parsedUrl.searchParams.get("q")?.trim() || "";
-  const rawLimit = Number.parseInt(parsedUrl.searchParams.get("limit") || "24", 10);
-  const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 1), 50) : 24;
-  const endpoint = query ? "search" : "trending";
-
-  const params = new URLSearchParams({
-    api_key: GIPHY_API_KEY,
+  const tenorEndpoint = query ? "search" : "featured";
+  const tenorParams = new URLSearchParams({
+    key: TENOR_API_KEY,
+    client_key: TENOR_CLIENT_KEY,
     limit: String(limit),
-    rating: GIPHY_RATING,
-    bundle: "messaging_non_clips",
+    media_filter: "gif,tinygif,nanogif",
   });
   if (query) {
-    params.set("q", query);
-    params.set("lang", "en");
+    tenorParams.set("q", query);
   }
 
-  let upstream;
+  let tenorUpstream;
   try {
-    upstream = await fetch(`${GIPHY_API_BASE}/${endpoint}?${params.toString()}`, {
+    tenorUpstream = await fetch(`${TENOR_API_BASE}/${tenorEndpoint}?${tenorParams.toString()}`, {
       headers: {
         Accept: "application/json",
       },
@@ -992,7 +1037,72 @@ async function handleGifSearch(res, parsedUrl) {
     return;
   }
 
-  await relayFetchResponse(res, upstream);
+  const tenorData = await tenorUpstream.json().catch(() => ({}));
+  if (!tenorUpstream.ok) {
+    sendJson(res, tenorUpstream.status || 502, {
+      error: "GIF service unavailable.",
+      message: getUnknownMessage(tenorData) || "GIF provider returned an error.",
+    });
+    return;
+  }
+
+  const results = Array.isArray(tenorData.results) ? tenorData.results : [];
+  const normalized = results
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") return null;
+      const formats = entry.media_formats && typeof entry.media_formats === "object" ? entry.media_formats : {};
+      const original = formats.gif && typeof formats.gif === "object" ? formats.gif : null;
+      const tiny = formats.tinygif && typeof formats.tinygif === "object" ? formats.tinygif : null;
+      const nano = formats.nanogif && typeof formats.nanogif === "object" ? formats.nanogif : null;
+      const originalUrl = typeof original?.url === "string" ? original.url : "";
+      const tinyUrl = typeof tiny?.url === "string" ? tiny.url : "";
+      const nanoUrl = typeof nano?.url === "string" ? nano.url : "";
+      const previewUrl = tinyUrl || nanoUrl || originalUrl;
+      if (!originalUrl && !previewUrl) return null;
+
+      const dims = Array.isArray(original?.dims) ? original.dims : [];
+      const tinyDims = Array.isArray(tiny?.dims) ? tiny.dims : dims;
+      const nanoDims = Array.isArray(nano?.dims) ? nano.dims : tinyDims;
+      const width = Number.isFinite(Number(dims[0])) ? Number(dims[0]) : Number(tinyDims[0]) || Number(nanoDims[0]) || 0;
+      const height = Number.isFinite(Number(dims[1])) ? Number(dims[1]) : Number(tinyDims[1]) || Number(nanoDims[1]) || 0;
+      const id = typeof entry.id === "string" && entry.id ? entry.id : previewUrl;
+      const title =
+        typeof entry.content_description === "string" && entry.content_description.trim()
+          ? entry.content_description.trim()
+          : "GIF";
+
+      return {
+        id,
+        title,
+        images: {
+          original: {
+            url: originalUrl || previewUrl,
+            width: String(width || 0),
+            height: String(height || 0),
+          },
+          fixed_width: {
+            url: previewUrl,
+            width: String(width || 0),
+            height: String(height || 0),
+          },
+          fixed_width_small: {
+            url: previewUrl,
+            width: String(width || 0),
+            height: String(height || 0),
+          },
+        },
+      };
+    })
+    .filter(Boolean);
+
+  sendJson(res, 200, {
+    data: normalized,
+    pagination: {
+      offset: 0,
+      count: normalized.length,
+      total_count: normalized.length,
+    },
+  });
 }
 
 function normalizeInstallerPlatform(rawPlatform) {
@@ -1077,6 +1187,88 @@ function resolveInstallerSource(descriptor) {
   return null;
 }
 
+let cachedPackageVersion = null;
+
+function readPackageVersion() {
+  if (cachedPackageVersion) return cachedPackageVersion;
+
+  try {
+    const packageJsonRaw = fs.readFileSync(PACKAGE_JSON_PATH, "utf8");
+    const packageJson = JSON.parse(packageJsonRaw);
+    if (packageJson && typeof packageJson.version === "string" && packageJson.version.trim()) {
+      cachedPackageVersion = packageJson.version.trim();
+      return cachedPackageVersion;
+    }
+  } catch {
+    // Fall through to safe default.
+  }
+
+  cachedPackageVersion = "0.0.0";
+  return cachedPackageVersion;
+}
+
+function inferVersionFromInstallerArtifact(filePath, fallbackVersion) {
+  const fileName = path.basename(filePath);
+  const match = fileName.match(/glytch-chat-([0-9A-Za-z.+-]+)-(?:mac|darwin|osx|win|linux)/i);
+  if (!match || !match[1]) return fallbackVersion;
+  return match[1];
+}
+
+function readInstallerUpdatesManifest() {
+  if (!fs.existsSync(DOWNLOADS_UPDATES_MANIFEST_PATH)) return null;
+
+  try {
+    const raw = fs.readFileSync(DOWNLOADS_UPDATES_MANIFEST_PATH, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function detectRequestOrigin(req) {
+  const forwardedProtoHeader = req.headers["x-forwarded-proto"];
+  const forwardedProto = Array.isArray(forwardedProtoHeader)
+    ? forwardedProtoHeader[0]
+    : forwardedProtoHeader;
+  const proto = forwardedProto && typeof forwardedProto === "string"
+    ? forwardedProto.split(",")[0].trim()
+    : "http";
+
+  const forwardedHostHeader = req.headers["x-forwarded-host"];
+  const forwardedHost = Array.isArray(forwardedHostHeader)
+    ? forwardedHostHeader[0]
+    : forwardedHostHeader;
+  const host = (typeof forwardedHost === "string" && forwardedHost) || req.headers.host;
+  if (!host || typeof host !== "string") return null;
+
+  return `${proto}://${host}`;
+}
+
+function absoluteUrlForPath(req, routePath) {
+  const origin = detectRequestOrigin(req);
+  if (!origin) return routePath;
+  return `${origin}${routePath}`;
+}
+
+function resolveManifestVersionForPlatform(platform, fallbackVersion) {
+  const updatesManifest = readInstallerUpdatesManifest();
+  if (!updatesManifest || typeof updatesManifest !== "object") return fallbackVersion;
+
+  const maybePlatforms = updatesManifest.platforms;
+  if (!maybePlatforms || typeof maybePlatforms !== "object") return fallbackVersion;
+
+  const platformEntry = maybePlatforms[platform];
+  if (!platformEntry || typeof platformEntry !== "object") return fallbackVersion;
+
+  if (typeof platformEntry.version === "string" && platformEntry.version.trim()) {
+    return platformEntry.version.trim();
+  }
+
+  return fallbackVersion;
+}
+
 function expectedInstallerSizeHint(descriptor) {
   if (!descriptor.minBytes) return null;
   return `${Math.round(descriptor.minBytes / (1024 * 1024))}MB`;
@@ -1152,6 +1344,82 @@ function handleInstallerDownload(req, res, pathname) {
   streamInstaller(res, req, resolved.filePath, descriptor);
 }
 
+function handleInstallerUpdateCheck(req, res, pathname) {
+  const method = req.method || "GET";
+  if (method !== "GET" && method !== "HEAD") {
+    sendJson(res, 405, { error: "Method not allowed." });
+    return;
+  }
+
+  const updateSuffix = pathname.slice(UPDATES_PREFIX.length);
+  const routeParts = updateSuffix
+    .split("/")
+    .filter(Boolean);
+
+  if (routeParts.length !== 2 || routeParts[1] !== "latest") {
+    sendJson(res, 404, {
+      error: "Unknown update route.",
+      expected: "/api/updates/{platform}/latest",
+      supported: ["mac", "windows", "linux"],
+    });
+    return;
+  }
+
+  const platform = normalizeInstallerPlatform(routeParts[0]);
+  if (!platform) {
+    sendJson(res, 404, {
+      error: "Unknown update platform.",
+      supported: ["mac", "windows", "linux"],
+    });
+    return;
+  }
+
+  const descriptor = INSTALLER_FILE_MAP[platform];
+  const resolved = resolveInstallerSource(descriptor);
+  if (!resolved) {
+    handleInstallerNotFound(res, platform, descriptor);
+    return;
+  }
+
+  const stats = fs.statSync(resolved.filePath);
+  const packageVersion = readPackageVersion();
+  const inferredVersion = inferVersionFromInstallerArtifact(resolved.filePath, packageVersion);
+  const latestVersion = resolveManifestVersionForPlatform(platform, inferredVersion);
+  const downloadPath = `${DOWNLOADS_PREFIX}${platform}`;
+  const downloadUrl = absoluteUrlForPath(req, downloadPath);
+  const updatesManifest = readInstallerUpdatesManifest();
+  const manifestPlatform = updatesManifest?.platforms?.[platform];
+
+  const payload = {
+    platform,
+    version: latestVersion,
+    downloadPath,
+    downloadUrl,
+    fileName: descriptor.fileName,
+    sizeBytes: stats.size,
+    source: resolved.source,
+    publishedAt:
+      typeof manifestPlatform?.updatedAt === "string" && manifestPlatform.updatedAt
+        ? manifestPlatform.updatedAt
+        : new Date(stats.mtimeMs).toISOString(),
+    sha256:
+      typeof manifestPlatform?.sha256 === "string" && manifestPlatform.sha256
+        ? manifestPlatform.sha256
+        : null,
+  };
+
+  res.setHeader("Cache-Control", "no-store");
+  if (method === "HEAD") {
+    res.writeHead(200, {
+      "Content-Type": "application/json; charset=utf-8",
+    });
+    res.end();
+    return;
+  }
+
+  sendJson(res, 200, payload);
+}
+
 const server = createServer(async (req, res) => {
   applyCors(req, res);
 
@@ -1176,6 +1444,11 @@ const server = createServer(async (req, res) => {
 
   if (pathname === "/api/gifs/search") {
     await handleGifSearch(res, parsedUrl);
+    return;
+  }
+
+  if (pathname.startsWith(UPDATES_PREFIX)) {
+    handleInstallerUpdateCheck(req, res, pathname);
     return;
   }
 

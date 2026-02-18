@@ -26,6 +26,7 @@ Backend API routes:
 - `/api/media/message-upload/*` (message image upload with moderation gate)
 - `/api/media/message-ingest` (remote image/GIF ingestion with moderation gate)
 - `/api/gifs/search` (GIF search/trending)
+- `/api/updates/{platform}/latest` (desktop app update manifest for in-app updater)
 
 ## Environment
 
@@ -135,6 +136,7 @@ npm run electron:installer:all
 ```
 
 Builds both targets and syncs any produced artifacts into `public/downloads/`.
+The sync step now also writes `public/downloads/updates.json` with per-platform version/checksum metadata.
 
 ### Installer download fallback
 
@@ -143,6 +145,9 @@ If explicit installer URLs are not set, the web app uses backend download routes
 - `/api/downloads/mac`
 - `/api/downloads/windows`
 - `/api/downloads/linux`
+- `/api/updates/mac/latest`
+- `/api/updates/windows/latest`
+- `/api/updates/linux/latest`
 
 Those endpoints serve installers from:
 
@@ -158,6 +163,17 @@ If an installer file is missing, the backend returns a 404 JSON error instead of
 For static-only deployments (Cloudflare Pages/Workers assets without the Node backend), set explicit installer URLs via
 `VITE_ELECTRON_INSTALLER_URL_MAC`, `VITE_ELECTRON_INSTALLER_URL_WIN`, and optionally `VITE_ELECTRON_INSTALLER_URL_LINUX`.
 Otherwise, the download buttons are shown as unavailable.
+
+### Desktop in-app updater (Windows)
+
+The desktop app now exposes a **System Settings -> Accessibility -> Desktop App Version** panel in Electron builds.
+On Windows it can:
+
+1. Check `/api/updates/windows/latest` for newer versions.
+2. Download the installer from `/api/downloads/windows`.
+3. Launch the installer and close the current app so update can proceed.
+
+For update detection to work, bump `package.json` version before building installers.
 
 ### macOS launch note
 

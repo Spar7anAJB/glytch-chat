@@ -1,9 +1,12 @@
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 
 const rootDir = process.cwd();
 const releaseDir = path.join(rootDir, "release");
 const downloadsDir = path.join(rootDir, "public", "downloads");
+const updatesManifestPath = path.join(downloadsDir, "updates.json");
+const packageJsonPath = path.join(rootDir, "package.json");
 
 const installers = [
   {
@@ -80,6 +83,32 @@ function ensureDownloadsDir() {
   fs.mkdirSync(downloadsDir, { recursive: true });
 }
 
+function readPackageVersion() {
+  if (!fs.existsSync(packageJsonPath)) return "0.0.0";
+  try {
+    const parsed = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
+    if (parsed && typeof parsed.version === "string" && parsed.version.trim()) {
+      return parsed.version.trim();
+    }
+  } catch {
+    // Fall back to a safe default if package.json is malformed.
+  }
+  return "0.0.0";
+}
+
+function inferVersionFromArtifactName(fileName, fallbackVersion) {
+  const match = fileName.match(/glytch-chat-([0-9A-Za-z.+-]+)-(?:mac|darwin|osx|win|linux)/i);
+  if (!match || !match[1]) return fallbackVersion;
+  return match[1];
+}
+
+function sha256ForFile(filePath) {
+  const hash = createHash("sha256");
+  const fileBuffer = fs.readFileSync(filePath);
+  hash.update(fileBuffer);
+  return hash.digest("hex");
+}
+
 function main() {
   const files = collectReleaseFiles(releaseDir);
   if (files.length === 0) {
@@ -88,6 +117,13 @@ function main() {
   }
 
   ensureDownloadsDir();
+  const packageVersion = readPackageVersion();
+  const updatesManifest = {
+    app: "Glytch Chat",
+    generatedAt: new Date().toISOString(),
+    version: packageVersion,
+    platforms: {},
+  };
 
   let copiedAny = false;
   for (const installer of installers) {
@@ -100,14 +136,29 @@ function main() {
     const targetPath = path.join(downloadsDir, installer.outputName);
     fs.copyFileSync(match.path, targetPath);
     copiedAny = true;
+    updatesManifest.platforms[installer.id] = {
+      version: inferVersionFromArtifactName(match.name, packageVersion),
+      fileName: installer.outputName,
+      sourceArtifact: match.name,
+      sizeBytes: match.sizeBytes,
+      sha256: sha256ForFile(match.path),
+      updatedAt: new Date(match.mtimeMs).toISOString(),
+    };
     console.log(
       `[sync-installers] ${installer.id}: ${match.relativePath} (${Math.round(match.sizeBytes / 1024)} KiB) -> public/downloads/${installer.outputName}`,
     );
   }
 
   if (!copiedAny) {
+    if (fs.existsSync(updatesManifestPath)) {
+      fs.rmSync(updatesManifestPath, { force: true });
+    }
     console.log("[sync-installers] No supported installer artifacts found.");
+    return;
   }
+
+  fs.writeFileSync(updatesManifestPath, `${JSON.stringify(updatesManifest, null, 2)}\n`);
+  console.log("[sync-installers] wrote public/downloads/updates.json");
 }
 
 main();

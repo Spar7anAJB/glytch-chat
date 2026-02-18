@@ -17,6 +17,7 @@
   "afterPack": "electron/after-pack.cjs",
   "artifactName": "glytch-chat-${version}-${os}-${arch}.${ext}",
   "asar": true,
+  "compression": "maximum",
   "mac": {
     "target": [
       {
@@ -36,6 +37,7 @@
     "sign": false
   },
   "win": {
+    "icon": "public/logo.png",
     "target": [
       {
         "target": "nsis",
@@ -48,7 +50,14 @@
   "nsis": {
     "oneClick": false,
     "allowToChangeInstallationDirectory": true,
+    "allowElevation": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "Glytch Chat",
+    "uninstallDisplayName": "Glytch Chat",
+    "runAfterFinish": true,
     "include": "electron/nsis-recovery.nsh",
+    "deleteAppDataOnUninstall": false,
     "differentialPackage": false
   },
   "publish": null

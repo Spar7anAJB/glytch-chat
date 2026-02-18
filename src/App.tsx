@@ -117,7 +117,9 @@ function App() {
       singleSessionId: existing.singleSessionId,
     });
 
-    await claimSingleSessionLock(next.accessToken, next.singleSessionId);
+    await claimSingleSessionLock(next.accessToken, next.singleSessionId, {
+      allowTakeover: true,
+    });
     return next;
   }, []);
 
@@ -203,7 +205,9 @@ function App() {
         });
 
         if (maybeRefreshed === existing) {
-          await claimSingleSessionLock(next.accessToken, next.singleSessionId);
+          await claimSingleSessionLock(next.accessToken, next.singleSessionId, {
+            allowTakeover: true,
+          });
         }
 
         saveSession(next, sessionPersistenceRef.current);
@@ -370,7 +374,9 @@ function App() {
         );
 
         const singleSessionId = generateSingleSessionId();
-        await claimSingleSessionLock(result.session.access_token, singleSessionId);
+        await claimSingleSessionLock(result.session.access_token, singleSessionId, {
+          allowTakeover: true,
+        });
 
         const sessionUser = withSessionExpiry({
           id: result.session.user.id,
@@ -412,7 +418,9 @@ function App() {
       );
 
       const singleSessionId = generateSingleSessionId();
-      await claimSingleSessionLock(session.access_token, singleSessionId);
+      await claimSingleSessionLock(session.access_token, singleSessionId, {
+        allowTakeover: true,
+      });
 
       const sessionUser = withSessionExpiry({
         id: session.user.id,
@@ -495,6 +503,7 @@ function App() {
           setError("");
           navigate(window.electronAPI?.isElectron ? "/auth" : "/");
         }}
+        showBackButton={!window.electronAPI?.isElectron}
       />
     );
   }

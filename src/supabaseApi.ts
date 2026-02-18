@@ -771,21 +771,59 @@ export async function signIn(email: string, password: string) {
   return (await readJsonOrThrow(res)) as AuthSession;
 }
 
-export async function claimSingleSessionLock(accessToken: string, sessionId: string) {
+type ClaimSingleSessionOptions = {
+  allowTakeover?: boolean;
+};
+
+function isSingleSessionConflictError(error: unknown) {
+  if (!(error instanceof Error)) return false;
+  const message = error.message.toLowerCase();
+  return (
+    message.includes("already active in another session") ||
+    message.includes("another active session") ||
+    message.includes("single session")
+  );
+}
+
+export async function claimSingleSessionLock(
+  accessToken: string,
+  sessionId: string,
+  options: ClaimSingleSessionOptions = {},
+) {
   assertConfig();
   const normalizedSessionId = sessionId.trim();
   if (!normalizedSessionId) {
     throw new Error("Session key is required.");
   }
 
-  const res = await supabaseFetch(`/rest/v1/rpc/claim_single_session_login`, {
-    method: "POST",
-    headers: supabaseHeaders(accessToken),
-    body: JSON.stringify({ p_session_id: normalizedSessionId }),
-  });
+  const claimBody = JSON.stringify({ p_session_id: normalizedSessionId });
 
-  await readJsonOrThrow(res);
-  return true;
+  try {
+    const res = await supabaseFetch(`/rest/v1/rpc/claim_single_session_login`, {
+      method: "POST",
+      headers: supabaseHeaders(accessToken),
+      body: claimBody,
+    });
+
+    await readJsonOrThrow(res);
+    return true;
+  } catch (error) {
+    if (!options.allowTakeover || !isSingleSessionConflictError(error)) {
+      throw error;
+    }
+
+    // Manual login can recover from stale locks by clearing prior lock and retrying once.
+    await releaseSingleSessionLock(accessToken, null);
+
+    const retryRes = await supabaseFetch(`/rest/v1/rpc/claim_single_session_login`, {
+      method: "POST",
+      headers: supabaseHeaders(accessToken),
+      body: claimBody,
+    });
+
+    await readJsonOrThrow(retryRes);
+    return true;
+  }
 }
 
 export async function releaseSingleSessionLock(accessToken: string, sessionId?: string | null) {
