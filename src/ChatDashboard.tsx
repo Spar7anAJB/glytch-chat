@@ -2438,6 +2438,7 @@ export default function ChatDashboard({
   const groupMessagesPollingInFlightRef = useRef(false);
   const glytchMessagesPollingInFlightRef = useRef(false);
   const glytchNotificationPollingInFlightRef = useRef(false);
+  const voiceSignalsPollingInFlightRef = useRef(false);
   const messageDisplayRef = useRef<HTMLElement | null>(null);
   const chatStreamColumnRef = useRef<HTMLDivElement | null>(null);
   const dmSidebarListRef = useRef<HTMLElement | null>(null);
@@ -6393,6 +6394,8 @@ export default function ChatDashboard({
     let mounted = true;
 
     const refreshSignals = async () => {
+      if (voiceSignalsPollingInFlightRef.current) return;
+      voiceSignalsPollingInFlightRef.current = true;
       try {
         const rows = await listVoiceSignals(accessToken, voiceRoomKey, currentUserId, signalSinceIdRef.current);
         if (!mounted || rows.length === 0) return;
@@ -6447,11 +6450,25 @@ export default function ChatDashboard({
               pc = await getOrCreatePeerConnection(signal.sender_id, false);
               await pc.setRemoteDescription(new RTCSessionDescription(sdp));
             }
+            if (pc.signalingState !== "have-remote-offer") {
+              continue;
+            }
             await flushPendingCandidates(signal.sender_id, pc);
             const answer = await pc.createAnswer();
-            await pc.setLocalDescription(answer);
+            if (pc.signalingState !== "have-remote-offer") {
+              continue;
+            }
+            try {
+              await pc.setLocalDescription(answer);
+            } catch (err) {
+              const message = err instanceof Error ? err.message.toLowerCase() : "";
+              if (message.includes("wrong state") || message.includes("called in wrong state")) {
+                continue;
+              }
+              throw err;
+            }
             await sendVoiceSignal(accessToken, voiceRoomKey, currentUserId, signal.sender_id, "answer", {
-              sdp: answer,
+              sdp: pc.localDescription || answer,
               videoShareKind: getLocalPrimaryVideoShareKind(),
             });
             continue;
@@ -6498,6 +6515,8 @@ export default function ChatDashboard({
       } catch (err) {
         if (!mounted) return;
         setVoiceError(err instanceof Error ? err.message : "Could not sync voice.");
+      } finally {
+        voiceSignalsPollingInFlightRef.current = false;
       }
     };
 
@@ -9050,9 +9069,25 @@ export default function ChatDashboard({
       try {
         queuedNegotiationPeerIdsRef.current.delete(targetUserId);
         const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
+        if (pc.signalingState !== "stable") {
+          queuedNegotiationPeerIdsRef.current.add(targetUserId);
+          return;
+        }
+        try {
+          await pc.setLocalDescription(offer);
+        } catch (err) {
+          const message = err instanceof Error ? err.message.toLowerCase() : "";
+          if (message.includes("wrong state") || message.includes("called in wrong state")) {
+            queuedNegotiationPeerIdsRef.current.add(targetUserId);
+            return;
+          }
+          throw err;
+        }
+        if (!pc.localDescription || pc.localDescription.type !== "offer") {
+          return;
+        }
         await sendVoiceSignal(accessToken, voiceRoomKey, currentUserId, targetUserId, "offer", {
-          sdp: offer,
+          sdp: pc.localDescription,
           videoShareKind: getLocalPrimaryVideoShareKind(),
         });
       } catch {
@@ -12701,6 +12736,40 @@ export default function ChatDashboard({
                 <p className="smallMuted">
                   DM and channel backgrounds are now edited in-chat from the header gear icon.
                 </p>
+
+                {isElectronRuntime && (
+                  <section className="requestSection" aria-label="Desktop app updates">
+                    <p className="sectionLabel">Desktop App Version</p>
+                    <p className="smallMuted">Installed: v{desktopAppVersion || "0.0.0"}</p>
+                    <p className="smallMuted">Latest: {desktopLatestVersion ? `v${desktopLatestVersion}` : "Not checked yet"}</p>
+                    <p className="smallMuted">Latest build: {formatLocalDateTime(desktopUpdatePublishedAt)}</p>
+                    <p className="smallMuted">Last check: {formatLocalDateTime(desktopUpdateLastCheckedAt)}</p>
+                    {desktopUpdateNotice && <p className="smallMuted">{desktopUpdateNotice}</p>}
+                    {desktopUpdateError && <p className="chatError">{desktopUpdateError}</p>}
+                    <div className="moderationActionRow">
+                      <button type="button" onClick={() => void checkForDesktopAppUpdate()} disabled={desktopUpdateBusy}>
+                        {desktopUpdateBusy ? "Checking..." : "Check for Updates"}
+                      </button>
+                      {supportsInAppInstallerUpdates && (
+                        <button
+                          type="button"
+                          onClick={() => void handleInstallDesktopUpdate()}
+                          disabled={!isDesktopUpdateAvailable || desktopUpdateBusy || desktopUpdateInstallBusy}
+                        >
+                          {desktopUpdateInstallBusy ? "Installing..." : "Install Update"}
+                        </button>
+                      )}
+                      {electronDesktopPlatform === "windows" && (
+                        <button type="button" onClick={() => void handleOpenDesktopUninstall()} disabled={desktopUninstallBusy}>
+                          {desktopUninstallBusy ? "Opening..." : "Uninstall App"}
+                        </button>
+                      )}
+                    </div>
+                    {!supportsInAppInstallerUpdates && (
+                      <p className="smallMuted">In-app installer updates are currently enabled for Windows desktop builds.</p>
+                    )}
+                  </section>
+                )}
 
                 <button type="submit" disabled={profileSaveBusy}>
                   {profileSaveBusy ? "Saving..." : "Save Theme Settings"}
