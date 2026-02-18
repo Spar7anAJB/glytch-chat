@@ -1868,15 +1868,17 @@ function buildVoiceAudioConstraints(settings: VoiceMicSettings): VoiceAudioConst
   const selectedDeviceId = normalizeMicInputDeviceId(settings.inputDeviceId);
   const isStrong = settings.suppressionProfile === "strong" || settings.suppressionProfile === "ultra";
   const isUltra = settings.suppressionProfile === "ultra";
+  // AGC often amplifies room playback/echo on speaker setups; disable it in Max profile.
+  const effectiveAutoGainControl = isUltra ? false : settings.autoGainControl;
   return {
     // Request stronger AEC/NS paths on Chromium while preserving standards fallbacks.
     deviceId: selectedDeviceId === "default" ? undefined : { ideal: selectedDeviceId },
     echoCancellation: settings.echoCancellation,
     echoCancellationType: "system",
     noiseSuppression: settings.noiseSuppression,
-    autoGainControl: settings.autoGainControl,
+    autoGainControl: effectiveAutoGainControl,
     voiceIsolation: settings.voiceIsolation ? { ideal: true } : false,
-    googAutoGainControl: settings.autoGainControl,
+    googAutoGainControl: effectiveAutoGainControl,
     googEchoCancellation: settings.echoCancellation,
     googEchoCancellation2: settings.echoCancellation && isStrong,
     googDAEchoCancellation: settings.echoCancellation && isUltra,
@@ -1895,11 +1897,12 @@ function buildVoiceAudioConstraints(settings: VoiceMicSettings): VoiceAudioConst
 
 function buildStrictVoiceAudioConstraints(settings: VoiceMicSettings): VoiceAudioConstraints {
   const selectedDeviceId = normalizeMicInputDeviceId(settings.inputDeviceId);
+  const effectiveAutoGainControl = settings.suppressionProfile === "ultra" ? false : settings.autoGainControl;
   return {
     deviceId: selectedDeviceId === "default" ? undefined : { exact: selectedDeviceId },
     echoCancellation: { exact: settings.echoCancellation },
     noiseSuppression: { exact: settings.noiseSuppression },
-    autoGainControl: { exact: settings.autoGainControl },
+    autoGainControl: { exact: effectiveAutoGainControl },
     echoCancellationType: "system",
     voiceIsolation: settings.voiceIsolation ? { ideal: true } : false,
     channelCount: { ideal: 1, max: 1 },
@@ -2663,6 +2666,8 @@ export default function ChatDashboard({
   const voiceEnhancementDestinationNodeRef = useRef<MediaStreamAudioDestinationNode | null>(null);
   const voiceEnhancementInputStreamRef = useRef<MediaStream | null>(null);
   const voiceEnhancementOutputGainNodeRef = useRef<GainNode | null>(null);
+  const voiceEnhancementGateIntervalRef = useRef<number | null>(null);
+  const voiceEnhancementAnalyserRef = useRef<AnalyserNode | null>(null);
   const micTestStreamRef = useRef<MediaStream | null>(null);
   const micTestMonitorAudioRef = useRef<HTMLAudioElement | null>(null);
   const micTestMeterAudioContextRef = useRef<AudioContext | null>(null);
@@ -3530,12 +3535,20 @@ export default function ChatDashboard({
     const sourceNode = voiceEnhancementSourceNodeRef.current;
     const destinationNode = voiceEnhancementDestinationNodeRef.current;
     const inputStream = voiceEnhancementInputStreamRef.current;
+    const analyserNode = voiceEnhancementAnalyserRef.current;
+    const gateIntervalId = voiceEnhancementGateIntervalRef.current;
 
     voiceEnhancementAudioContextRef.current = null;
     voiceEnhancementSourceNodeRef.current = null;
     voiceEnhancementDestinationNodeRef.current = null;
     voiceEnhancementInputStreamRef.current = null;
     voiceEnhancementOutputGainNodeRef.current = null;
+    voiceEnhancementAnalyserRef.current = null;
+    voiceEnhancementGateIntervalRef.current = null;
+
+    if (typeof gateIntervalId === "number") {
+      window.clearInterval(gateIntervalId);
+    }
 
     try {
       sourceNode?.disconnect();
@@ -3544,6 +3557,11 @@ export default function ChatDashboard({
     }
     try {
       destinationNode?.disconnect();
+    } catch {
+      // Ignore disconnect failures.
+    }
+    try {
+      analyserNode?.disconnect();
     } catch {
       // Ignore disconnect failures.
     }
@@ -3574,6 +3592,8 @@ export default function ChatDashboard({
         const deEssNode = audioContext.createBiquadFilter();
         const compressorNode = audioContext.createDynamicsCompressor();
         const limiterNode = audioContext.createDynamicsCompressor();
+        const gateGainNode = audioContext.createGain();
+        const gateAnalyser = audioContext.createAnalyser();
         const outputGainNode = audioContext.createGain();
         const destinationNode = audioContext.createMediaStreamDestination();
 
@@ -3610,6 +3630,10 @@ export default function ChatDashboard({
         limiterNode.attack.value = 0.001;
         limiterNode.release.value = 0.12;
 
+        gateAnalyser.fftSize = 1024;
+        gateAnalyser.smoothingTimeConstant = 0.86;
+        gateGainNode.gain.value = 1;
+
         outputGainNode.gain.value = normalizeMicInputGainPercent(settings.inputGainPercent) / 100;
 
         sourceNode.connect(highpassNode);
@@ -3618,8 +3642,49 @@ export default function ChatDashboard({
         presenceNode.connect(deEssNode);
         deEssNode.connect(compressorNode);
         compressorNode.connect(limiterNode);
-        limiterNode.connect(outputGainNode);
+        limiterNode.connect(gateGainNode);
+        limiterNode.connect(gateAnalyser);
+        gateGainNode.connect(outputGainNode);
         outputGainNode.connect(destinationNode);
+
+        // Aggressive speech gate: keep low-level room/speaker leakage from being sent when you're not speaking.
+        const gateData = new Uint8Array(gateAnalyser.fftSize);
+        let smoothedRms = 0;
+        let gateOpen = false;
+        let gateHoldUntil = 0;
+        const openThreshold = profileIsUltra ? 0.018 : profileIsBalanced ? 0.024 : 0.021;
+        const closeThreshold = openThreshold * 0.68;
+        const closedGain = profileIsUltra ? 0.03 : profileIsBalanced ? 0.16 : 0.1;
+        const holdMs = profileIsUltra ? 210 : 180;
+
+        const updateGate = () => {
+          gateAnalyser.getByteTimeDomainData(gateData);
+          let rms = 0;
+          for (let i = 0; i < gateData.length; i += 1) {
+            const normalized = (gateData[i] - 128) / 128;
+            rms += normalized * normalized;
+          }
+          rms = Math.sqrt(rms / gateData.length);
+          smoothedRms = smoothedRms * 0.84 + rms * 0.16;
+
+          const nowMs = Date.now();
+          if (smoothedRms >= openThreshold) {
+            gateOpen = true;
+            gateHoldUntil = nowMs + holdMs;
+          } else if (gateOpen && smoothedRms <= closeThreshold && nowMs > gateHoldUntil) {
+            gateOpen = false;
+          }
+
+          const targetGain = gateOpen ? 1 : closedGain;
+          try {
+            gateGainNode.gain.setTargetAtTime(targetGain, audioContext.currentTime, 0.02);
+          } catch {
+            gateGainNode.gain.value = targetGain;
+          }
+        };
+
+        updateGate();
+        voiceEnhancementGateIntervalRef.current = window.setInterval(updateGate, 34);
 
         if (audioContext.state !== "running") {
           await audioContext.resume().catch(() => undefined);
@@ -3630,6 +3695,7 @@ export default function ChatDashboard({
         voiceEnhancementDestinationNodeRef.current = destinationNode;
         voiceEnhancementInputStreamRef.current = inputStream;
         voiceEnhancementOutputGainNodeRef.current = outputGainNode;
+        voiceEnhancementAnalyserRef.current = gateAnalyser;
 
         return destinationNode.stream;
       } catch {
@@ -14052,7 +14118,7 @@ export default function ChatDashboard({
                   >
                     <option value="balanced">Balanced</option>
                     <option value="strong">Strong</option>
-                    <option value="ultra">Krisp-like (Max)</option>
+                    <option value="ultra">Max</option>
                   </select>
                 </label>
                 <label className="permissionToggle settingsToggle">
@@ -14124,7 +14190,7 @@ export default function ChatDashboard({
                   />
                 </label>
                 <p className="smallMuted">
-                  Krisp-like mode combines RNNoise with speech-focused EQ, compression, and limiter tuning for clearer voice.
+                  Max mode combines RNNoise with aggressive speech gating, voice-focused EQ, compression, and limiting.
                 </p>
                 <p className="smallMuted">For best echo reduction, use headphones instead of open speakers.</p>
                 <div className="moderationActionRow">
