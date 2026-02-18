@@ -3835,11 +3835,13 @@ export default function ChatDashboard({
     );
     try {
       if (electronDesktopPlatform === "windows") {
-        if (!window.electronAPI?.downloadAndInstallUpdate) {
-          throw new Error("In-app installer updates are unavailable in this build.");
+        if (window.electronAPI?.downloadAndInstallUpdate) {
+          await window.electronAPI.downloadAndInstallUpdate(desktopUpdateDownloadUrl);
+          setDesktopUpdateNotice("Installer launched. Glytch Chat will close so the update can be applied.");
+        } else if (typeof window !== "undefined") {
+          window.open(desktopUpdateDownloadUrl, "_blank", "noopener,noreferrer");
+          setDesktopUpdateNotice("Opened update download. Run the installer to update Glytch Chat.");
         }
-        await window.electronAPI.downloadAndInstallUpdate(desktopUpdateDownloadUrl);
-        setDesktopUpdateNotice("Installer launched. Glytch Chat will close so the update can be applied.");
       } else if (electronDesktopPlatform === "mac") {
         if (window.electronAPI?.downloadAndInstallUpdate) {
           await window.electronAPI.downloadAndInstallUpdate(desktopUpdateDownloadUrl);
