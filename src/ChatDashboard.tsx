@@ -2670,7 +2670,7 @@ export default function ChatDashboard({
   const livekitInputStreamRef = useRef<MediaStream | null>(null);
   const livekitUnavailableLoggedRef = useRef(false);
   const livekitKrispCredentialsRef = useRef<LivekitKrispSessionCredentials | null>(null);
-  const rnnoiseNodeRef = useRef<RnnoiseWorkletNode | null>(null);
+  const rnnoiseNodesRef = useRef<RnnoiseWorkletNode[]>([]);
   const rnnoiseAudioContextRef = useRef<AudioContext | null>(null);
   const rnnoiseSourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const rnnoiseDestinationNodeRef = useRef<MediaStreamAudioDestinationNode | null>(null);
@@ -3430,13 +3430,13 @@ export default function ChatDashboard({
   );
 
   const disposeRnnoiseVoicePipeline = useCallback(async () => {
-    const rnnoiseNode = rnnoiseNodeRef.current;
+    const rnnoiseNodes = rnnoiseNodesRef.current;
     const audioContext = rnnoiseAudioContextRef.current;
     const sourceNode = rnnoiseSourceNodeRef.current;
     const destinationNode = rnnoiseDestinationNodeRef.current;
     const inputStream = rnnoiseInputStreamRef.current;
 
-    rnnoiseNodeRef.current = null;
+    rnnoiseNodesRef.current = [];
     rnnoiseAudioContextRef.current = null;
     rnnoiseSourceNodeRef.current = null;
     rnnoiseDestinationNodeRef.current = null;
@@ -3447,20 +3447,24 @@ export default function ChatDashboard({
     } catch {
       // Ignore disconnect failures.
     }
-    try {
-      rnnoiseNode?.disconnect();
-    } catch {
-      // Ignore disconnect failures.
+    for (const node of rnnoiseNodes) {
+      try {
+        node.disconnect();
+      } catch {
+        // Ignore disconnect failures.
+      }
     }
     try {
       destinationNode?.disconnect();
     } catch {
       // Ignore disconnect failures.
     }
-    try {
-      rnnoiseNode?.destroy();
-    } catch {
-      // Ignore RNNoise destroy failures.
+    for (const node of rnnoiseNodes) {
+      try {
+        node.destroy();
+      } catch {
+        // Ignore RNNoise destroy failures.
+      }
     }
     try {
       await audioContext?.close();
@@ -3484,7 +3488,7 @@ export default function ChatDashboard({
   }, []);
 
   const buildRnnoiseNoiseSuppressedStream = useCallback(
-    async (inputStream: MediaStream): Promise<MediaStream | null> => {
+    async (inputStream: MediaStream, settings?: VoiceMicSettings): Promise<MediaStream | null> => {
       if (!RNNOISE_ENABLED) {
         logRnnoiseFallbackReason("disabled by VITE_RNNOISE_ENABLED.");
         return null;
@@ -3519,19 +3523,25 @@ export default function ChatDashboard({
           1,
           Math.min(2, Number(inputStream.getAudioTracks()[0]?.getSettings()?.channelCount || 1)),
         );
-        const rnnoiseNode = new RnnoiseWorkletNode(audioContext, {
-          maxChannels: inputChannelCount,
-          wasmBinary: wasmBinary.slice(0),
-        });
-
-        sourceNode.connect(rnnoiseNode);
-        rnnoiseNode.connect(destinationNode);
+        const passes = settings?.suppressionProfile === "ultra" ? 2 : 1;
+        const rnnoiseNodes: RnnoiseWorkletNode[] = [];
+        let previousNode: AudioNode = sourceNode;
+        for (let pass = 0; pass < passes; pass += 1) {
+          const rnnoiseNode = new RnnoiseWorkletNode(audioContext, {
+            maxChannels: inputChannelCount,
+            wasmBinary: wasmBinary.slice(0),
+          });
+          previousNode.connect(rnnoiseNode);
+          previousNode = rnnoiseNode;
+          rnnoiseNodes.push(rnnoiseNode);
+        }
+        previousNode.connect(destinationNode);
 
         if (audioContext.state !== "running") {
           await audioContext.resume().catch(() => undefined);
         }
 
-        rnnoiseNodeRef.current = rnnoiseNode;
+        rnnoiseNodesRef.current = rnnoiseNodes;
         rnnoiseAudioContextRef.current = audioContext;
         rnnoiseSourceNodeRef.current = sourceNode;
         rnnoiseDestinationNodeRef.current = destinationNode;
@@ -3603,11 +3613,8 @@ export default function ChatDashboard({
         const audioContext = new AudioContext({ latencyHint: "interactive", sampleRate: 48000 });
         const sourceNode = audioContext.createMediaStreamSource(inputStream);
         const highpassNode = audioContext.createBiquadFilter();
-        const rumbleCutNode = audioContext.createBiquadFilter();
         const lowpassNode = audioContext.createBiquadFilter();
-        const mudCutNode = audioContext.createBiquadFilter();
         const presenceNode = audioContext.createBiquadFilter();
-        const clarityNode = audioContext.createBiquadFilter();
         const deEssNode = audioContext.createBiquadFilter();
         const compressorNode = audioContext.createDynamicsCompressor();
         const limiterNode = audioContext.createDynamicsCompressor();
@@ -3621,61 +3628,44 @@ export default function ChatDashboard({
         const profileIsUltra = profile === "ultra";
 
         highpassNode.type = "highpass";
-        highpassNode.frequency.value = profileIsBalanced ? 85 : profileIsUltra ? 125 : 105;
-        highpassNode.Q.value = 0.8;
-
-        rumbleCutNode.type = "lowshelf";
-        rumbleCutNode.frequency.value = 180;
-        rumbleCutNode.gain.value = profileIsBalanced ? -1.2 : profileIsUltra ? -4.8 : -3.1;
+        highpassNode.frequency.value = profileIsBalanced ? 80 : profileIsUltra ? 115 : 96;
+        highpassNode.Q.value = 0.75;
 
         lowpassNode.type = "lowpass";
-        lowpassNode.frequency.value = profileIsBalanced ? 9800 : profileIsUltra ? 6900 : 8000;
-        lowpassNode.Q.value = 0.7;
-
-        mudCutNode.type = "peaking";
-        mudCutNode.frequency.value = 280;
-        mudCutNode.Q.value = 0.95;
-        mudCutNode.gain.value = profileIsBalanced ? -0.8 : profileIsUltra ? -2.9 : -1.8;
+        lowpassNode.frequency.value = profileIsBalanced ? 11200 : profileIsUltra ? 7600 : 9000;
+        lowpassNode.Q.value = 0.72;
 
         presenceNode.type = "peaking";
-        presenceNode.frequency.value = 2600;
-        presenceNode.Q.value = 1.1;
-        presenceNode.gain.value = profileIsBalanced ? 1.2 : profileIsUltra ? 4.1 : 2.8;
-
-        clarityNode.type = "peaking";
-        clarityNode.frequency.value = 3600;
-        clarityNode.Q.value = 1.15;
-        clarityNode.gain.value = profileIsBalanced ? 0.8 : profileIsUltra ? 2.2 : 1.4;
+        presenceNode.frequency.value = 2550;
+        presenceNode.Q.value = 1.05;
+        presenceNode.gain.value = profileIsBalanced ? 1.3 : profileIsUltra ? 3.5 : 2.5;
 
         deEssNode.type = "highshelf";
-        deEssNode.frequency.value = 5800;
-        deEssNode.gain.value = profileIsBalanced ? -0.6 : profileIsUltra ? -2.9 : -1.9;
+        deEssNode.frequency.value = 6400;
+        deEssNode.gain.value = profileIsBalanced ? -0.8 : profileIsUltra ? -2.5 : -1.7;
 
-        compressorNode.threshold.value = profileIsBalanced ? -24 : profileIsUltra ? -36 : -32;
+        compressorNode.threshold.value = profileIsBalanced ? -25 : profileIsUltra ? -35 : -31;
         compressorNode.knee.value = 24;
-        compressorNode.ratio.value = profileIsBalanced ? 3.3 : profileIsUltra ? 7.2 : 5.1;
-        compressorNode.attack.value = 0.002;
-        compressorNode.release.value = profileIsUltra ? 0.2 : 0.16;
+        compressorNode.ratio.value = profileIsBalanced ? 3.2 : profileIsUltra ? 6.2 : 4.6;
+        compressorNode.attack.value = 0.003;
+        compressorNode.release.value = profileIsUltra ? 0.2 : 0.18;
 
-        limiterNode.threshold.value = -8;
+        limiterNode.threshold.value = -7;
         limiterNode.knee.value = 0;
-        limiterNode.ratio.value = 24;
+        limiterNode.ratio.value = 20;
         limiterNode.attack.value = 0.001;
-        limiterNode.release.value = 0.1;
+        limiterNode.release.value = 0.12;
 
-        gateAnalyser.fftSize = 2048;
-        gateAnalyser.smoothingTimeConstant = 0.9;
+        gateAnalyser.fftSize = 1024;
+        gateAnalyser.smoothingTimeConstant = 0.88;
         gateGainNode.gain.value = 1;
 
         outputGainNode.gain.value = normalizeMicInputGainPercent(settings.inputGainPercent) / 100;
 
         sourceNode.connect(highpassNode);
-        highpassNode.connect(rumbleCutNode);
-        rumbleCutNode.connect(lowpassNode);
-        lowpassNode.connect(mudCutNode);
-        mudCutNode.connect(presenceNode);
-        presenceNode.connect(clarityNode);
-        clarityNode.connect(deEssNode);
+        highpassNode.connect(lowpassNode);
+        lowpassNode.connect(presenceNode);
+        presenceNode.connect(deEssNode);
         deEssNode.connect(compressorNode);
         compressorNode.connect(limiterNode);
         limiterNode.connect(gateGainNode);
@@ -3683,30 +3673,22 @@ export default function ChatDashboard({
         gateGainNode.connect(outputGainNode);
         outputGainNode.connect(destinationNode);
 
-        // Voice-aware gate: combine amplitude and speech-band energy to cut room echo/leakage.
+        // Adaptive gate: calibrates to room noise floor to reduce background hum/echo leakage.
         const gateData = new Uint8Array(gateAnalyser.fftSize);
-        const gateFrequencyData = new Uint8Array(gateAnalyser.frequencyBinCount);
         let smoothedRms = 0;
-        let smoothedSpeechRatio = 1;
+        let ambientFloor = profileIsUltra ? 0.0075 : profileIsBalanced ? 0.0095 : 0.0085;
         let gateOpen = false;
         let gateHoldUntil = 0;
-        const openThreshold = profileIsUltra ? 0.02 : profileIsBalanced ? 0.024 : 0.022;
-        const closeThreshold = profileIsUltra ? 0.013 : profileIsBalanced ? 0.016 : 0.0145;
-        const openSpeechRatio = profileIsUltra ? 1.4 : profileIsBalanced ? 1.16 : 1.28;
-        const closeSpeechRatio = profileIsUltra ? 1.08 : profileIsBalanced ? 0.96 : 1.02;
-        const closedGain = profileIsUltra ? 0.006 : profileIsBalanced ? 0.12 : 0.04;
-        const holdMs = profileIsUltra ? 250 : profileIsBalanced ? 170 : 210;
-
-        const nyquist = audioContext.sampleRate / 2;
-        const binWidthHz = nyquist / gateFrequencyData.length;
-        const speechStartBin = Math.max(1, Math.floor(140 / binWidthHz));
-        const speechEndBin = Math.min(gateFrequencyData.length - 1, Math.ceil(4200 / binWidthHz));
-        const lowNoiseEndBin = Math.max(2, Math.ceil(120 / binWidthHz));
-        const highNoiseStartBin = Math.min(gateFrequencyData.length - 2, Math.floor(5600 / binWidthHz));
+        const calibrationEndsAt = Date.now() + (profileIsUltra ? 2000 : 1400);
+        const minimumOpenThreshold = profileIsUltra ? 0.0175 : profileIsBalanced ? 0.024 : 0.0205;
+        const minimumCloseThreshold = minimumOpenThreshold * 0.6;
+        const floorOpenMultiplier = profileIsUltra ? 2.7 : profileIsBalanced ? 2.05 : 2.35;
+        const floorCloseMultiplier = profileIsUltra ? 1.9 : profileIsBalanced ? 1.45 : 1.65;
+        const closedGain = profileIsUltra ? 0.02 : profileIsBalanced ? 0.14 : 0.075;
+        const holdMs = profileIsUltra ? 260 : profileIsBalanced ? 180 : 220;
 
         const updateGate = () => {
           gateAnalyser.getByteTimeDomainData(gateData);
-          gateAnalyser.getByteFrequencyData(gateFrequencyData);
           let rms = 0;
           for (let i = 0; i < gateData.length; i += 1) {
             const normalized = (gateData[i] - 128) / 128;
@@ -3715,40 +3697,30 @@ export default function ChatDashboard({
           rms = Math.sqrt(rms / gateData.length);
           smoothedRms = smoothedRms * 0.84 + rms * 0.16;
 
-          let speechEnergy = 0;
-          let noiseEnergy = 0;
-          for (let i = speechStartBin; i <= speechEndBin; i += 1) {
-            const sample = gateFrequencyData[i] || 0;
-            speechEnergy += sample * sample;
-          }
-          for (let i = 0; i <= lowNoiseEndBin; i += 1) {
-            const sample = gateFrequencyData[i] || 0;
-            noiseEnergy += sample * sample;
-          }
-          for (let i = highNoiseStartBin; i < gateFrequencyData.length; i += 1) {
-            const sample = gateFrequencyData[i] || 0;
-            noiseEnergy += sample * sample;
-          }
-          const speechRatio = speechEnergy / (noiseEnergy + 1);
-          smoothedSpeechRatio = smoothedSpeechRatio * 0.82 + speechRatio * 0.18;
-
           const nowMs = Date.now();
-          const loudVoiceOverride = smoothedRms >= openThreshold * 1.35;
-          if ((smoothedRms >= openThreshold && smoothedSpeechRatio >= openSpeechRatio) || loudVoiceOverride) {
+          if (!gateOpen) {
+            if (nowMs < calibrationEndsAt) {
+              ambientFloor = ambientFloor * 0.9 + smoothedRms * 0.1;
+            } else if (smoothedRms < ambientFloor * 1.4) {
+              ambientFloor = ambientFloor * 0.97 + smoothedRms * 0.03;
+            }
+          }
+
+          const dynamicOpenThreshold = Math.max(minimumOpenThreshold, ambientFloor * floorOpenMultiplier);
+          const dynamicCloseCandidate = Math.max(minimumCloseThreshold, ambientFloor * floorCloseMultiplier);
+          const dynamicCloseThreshold = Math.min(dynamicOpenThreshold * 0.82, dynamicCloseCandidate);
+          const loudVoiceOverride = smoothedRms >= dynamicOpenThreshold * 1.38;
+
+          if (smoothedRms >= dynamicOpenThreshold || loudVoiceOverride) {
             gateOpen = true;
             gateHoldUntil = nowMs + holdMs;
-          } else if (
-            gateOpen &&
-            smoothedRms <= closeThreshold &&
-            smoothedSpeechRatio <= closeSpeechRatio &&
-            nowMs > gateHoldUntil
-          ) {
+          } else if (gateOpen && smoothedRms <= dynamicCloseThreshold && nowMs > gateHoldUntil) {
             gateOpen = false;
           }
 
           const targetGain = gateOpen ? 1 : closedGain;
           try {
-            gateGainNode.gain.setTargetAtTime(targetGain, audioContext.currentTime, gateOpen ? 0.012 : 0.028);
+            gateGainNode.gain.setTargetAtTime(targetGain, audioContext.currentTime, gateOpen ? 0.012 : 0.04);
           } catch {
             gateGainNode.gain.value = targetGain;
           }
@@ -10356,7 +10328,7 @@ export default function ChatDashboard({
           );
       }
 
-      const rnnoiseProcessedStream = await buildRnnoiseNoiseSuppressedStream(capturedStream);
+      const rnnoiseProcessedStream = await buildRnnoiseNoiseSuppressedStream(capturedStream, voiceMicSettings);
       const enhancedBaseStream = rnnoiseProcessedStream || capturedStream;
       const voiceEnhancedStream = await buildVoiceEnhancementStream(enhancedBaseStream, voiceMicSettings);
       const micStream = voiceEnhancedStream || enhancedBaseStream;
@@ -11060,7 +11032,7 @@ export default function ChatDashboard({
       const livekitProcessedStream = await buildLivekitNoiseSuppressedStream(capturedStream, room);
       const rnnoiseProcessedStream = livekitProcessedStream
         ? null
-        : await buildRnnoiseNoiseSuppressedStream(capturedStream);
+        : await buildRnnoiseNoiseSuppressedStream(capturedStream, voiceMicSettings);
       const enhancementInputStream = livekitProcessedStream || rnnoiseProcessedStream || capturedStream;
       const voiceEnhancedStream = await buildVoiceEnhancementStream(enhancementInputStream, voiceMicSettings);
       const stream = voiceEnhancedStream || enhancementInputStream;
@@ -14267,7 +14239,7 @@ export default function ChatDashboard({
                   />
                 </label>
                 <p className="smallMuted">
-                  Max mode combines RNNoise with aggressive speech gating, voice-focused EQ, compression, and limiting.
+                  Max mode uses dual-pass RNNoise plus adaptive speech gating, voice-focused EQ, compression, and limiting.
                 </p>
                 <p className="smallMuted">For best echo reduction, use headphones instead of open speakers.</p>
                 <div className="moderationActionRow">
