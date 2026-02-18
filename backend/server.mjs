@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const WORKSPACE_ROOT = path.resolve(__dirname, "..");
 
 function loadEnvFile(filePath) {
   if (!fs.existsSync(filePath)) return;
@@ -109,10 +110,10 @@ const MEDIA_MESSAGE_INGEST_PATH = "/api/media/message-ingest";
 const LIVEKIT_KRISP_TOKEN_PATH = "/api/voice/livekit-token";
 const UPDATES_PREFIX = "/api/updates/";
 const DOWNLOADS_PREFIX = "/api/downloads/";
-const DOWNLOADS_DIR = path.join(process.cwd(), "public", "downloads");
-const RELEASE_DIR = path.join(process.cwd(), "release");
+const DOWNLOADS_DIR = path.join(WORKSPACE_ROOT, "public", "downloads");
+const RELEASE_DIR = path.join(WORKSPACE_ROOT, "release");
 const DOWNLOADS_UPDATES_MANIFEST_PATH = path.join(DOWNLOADS_DIR, "updates.json");
-const PACKAGE_JSON_PATH = path.join(process.cwd(), "package.json");
+const PACKAGE_JSON_PATH = path.join(WORKSPACE_ROOT, "package.json");
 
 const INSTALLER_FILE_MAP = {
   mac: {
@@ -1593,6 +1594,8 @@ const server = createServer(async (req, res) => {
     sendJson(res, 200, {
       ok: true,
       service: "glytch-backend",
+      version: readPackageVersion(),
+      renderCommit: process.env.RENDER_GIT_COMMIT || null,
       supabaseConfigured: Boolean(SUPABASE_URL),
       livekitKrispConfigured: isLivekitKrispConfigured(),
       giphyConfigured: Boolean(GIPHY_API_KEY),
