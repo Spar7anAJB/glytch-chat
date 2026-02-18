@@ -128,6 +128,10 @@ import {
   type VoiceParticipant,
   type VoiceSignal,
 } from "./supabaseApi";
+import { RnnoiseWorkletNode, loadRnnoise } from "@sapphi-red/web-noise-suppressor";
+import rnnoiseWorkletPath from "@sapphi-red/web-noise-suppressor/rnnoiseWorklet.js?url";
+import rnnoiseWasmPath from "@sapphi-red/web-noise-suppressor/rnnoise.wasm?url";
+import rnnoiseSimdWasmPath from "@sapphi-red/web-noise-suppressor/rnnoise_simd.wasm?url";
 
 type ChatDashboardProps = {
   currentUserId: string;
@@ -543,15 +547,7 @@ const REACTION_EMOJIS = [
 const GLYTCH_INVITE_MESSAGE_PREFIX = "[[GLYTCH_INVITE]]";
 const DM_REPLY_MESSAGE_PREFIX = "[[DM_REPLY]]";
 const MISSING_SELF_PARTICIPANT_MAX_MISSES = 8;
-const KRISP_ENABLED = String(import.meta.env.VITE_KRISP_ENABLED || "").toLowerCase() === "true";
-const KRISP_MODULE_URL = (import.meta.env.VITE_KRISP_MODULE_URL as string | undefined)?.trim() || "/krisp/dist/krispsdk.mjs";
-const KRISP_MODEL_NC_URL =
-  (import.meta.env.VITE_KRISP_MODEL_NC_URL as string | undefined)?.trim() || "/krisp/dist/models/model_nc.kef";
-const KRISP_MODEL_8_URL =
-  (import.meta.env.VITE_KRISP_MODEL_8_URL as string | undefined)?.trim() || "/krisp/dist/models/model_8.kef";
-const KRISP_MODEL_BVC_URL = (import.meta.env.VITE_KRISP_MODEL_BVC_URL as string | undefined)?.trim() || "";
-const KRISP_BVC_ALLOWED_DEVICES_URL =
-  (import.meta.env.VITE_KRISP_BVC_ALLOWED_DEVICES_URL as string | undefined)?.trim() || "";
+const RNNOISE_ENABLED = String(import.meta.env.VITE_RNNOISE_ENABLED || "true").toLowerCase() !== "false";
 const SHOWCASE_KIND_LABELS: Record<ShowcaseKind, string> = {
   text: "Text",
   links: "Links",
@@ -880,38 +876,6 @@ type VoiceAudioConstraints = MediaTrackConstraints & {
   googAudioMirroring?: boolean;
   googAudioNetworkAdaptor?: boolean;
   googTypingNoiseDetection?: boolean;
-};
-
-type KrispNoiseFilterNode = AudioNode & {
-  enable?: () => void;
-  disable?: () => void;
-  dispose?: () => Promise<void> | void;
-};
-
-type KrispSDKInstance = {
-  init: () => Promise<void>;
-  createNoiseFilter: (
-    options: {
-      audioContext: AudioContext;
-      stream: MediaStream;
-      isInbound: boolean;
-      useBVC?: boolean;
-      enableOnceReady?: boolean;
-    },
-    onReady?: () => void,
-    onDispose?: () => void,
-  ) => Promise<KrispNoiseFilterNode>;
-  dispose?: () => Promise<void> | void;
-};
-
-type KrispSDKConstructor = {
-  new (config: { params: Record<string, unknown> }): KrispSDKInstance;
-  isSupported?: () => boolean;
-};
-
-type KrispSDKModule = {
-  default?: KrispSDKConstructor;
-  KrispSDK?: KrispSDKConstructor;
 };
 
 type ElectronDesktopVideoTrackConstraints = MediaTrackConstraints & {
@@ -2508,13 +2472,13 @@ export default function ChatDashboard({
   const remoteScreenDemoteTimeoutsRef = useRef<Map<string, number>>(new Map());
   const remoteAudioElsRef = useRef<Map<string, HTMLAudioElement>>(new Map());
   const speakingAnalyserCleanupRef = useRef<Map<string, () => void>>(new Map());
-  const krispSdkRef = useRef<KrispSDKInstance | null>(null);
-  const krispNoiseFilterNodeRef = useRef<KrispNoiseFilterNode | null>(null);
-  const krispAudioContextRef = useRef<AudioContext | null>(null);
-  const krispSourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
-  const krispDestinationNodeRef = useRef<MediaStreamAudioDestinationNode | null>(null);
-  const krispInputStreamRef = useRef<MediaStream | null>(null);
-  const krispUnavailableLoggedRef = useRef(false);
+  const rnnoiseNodeRef = useRef<RnnoiseWorkletNode | null>(null);
+  const rnnoiseAudioContextRef = useRef<AudioContext | null>(null);
+  const rnnoiseSourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const rnnoiseDestinationNodeRef = useRef<MediaStreamAudioDestinationNode | null>(null);
+  const rnnoiseInputStreamRef = useRef<MediaStream | null>(null);
+  const rnnoiseWasmBinaryRef = useRef<ArrayBuffer | null>(null);
+  const rnnoiseUnavailableLoggedRef = useRef(false);
   const signalSinceIdRef = useRef(0);
   const previousVoiceParticipantIdsRef = useRef<string[]>([]);
   const missingSelfParticipantCountRef = useRef(0);
@@ -3109,33 +3073,26 @@ export default function ChatDashboard({
     }
   };
 
-  const disposeKrispVoicePipeline = useCallback(async () => {
-    const sdk = krispSdkRef.current;
-    const filterNode = krispNoiseFilterNodeRef.current;
-    const audioContext = krispAudioContextRef.current;
-    const sourceNode = krispSourceNodeRef.current;
-    const destinationNode = krispDestinationNodeRef.current;
-    const inputStream = krispInputStreamRef.current;
+  const disposeRnnoiseVoicePipeline = useCallback(async () => {
+    const rnnoiseNode = rnnoiseNodeRef.current;
+    const audioContext = rnnoiseAudioContextRef.current;
+    const sourceNode = rnnoiseSourceNodeRef.current;
+    const destinationNode = rnnoiseDestinationNodeRef.current;
+    const inputStream = rnnoiseInputStreamRef.current;
 
-    krispSdkRef.current = null;
-    krispNoiseFilterNodeRef.current = null;
-    krispAudioContextRef.current = null;
-    krispSourceNodeRef.current = null;
-    krispDestinationNodeRef.current = null;
-    krispInputStreamRef.current = null;
+    rnnoiseNodeRef.current = null;
+    rnnoiseAudioContextRef.current = null;
+    rnnoiseSourceNodeRef.current = null;
+    rnnoiseDestinationNodeRef.current = null;
+    rnnoiseInputStreamRef.current = null;
 
-    try {
-      filterNode?.disable?.();
-    } catch {
-      // Ignore SDK-specific disable failures.
-    }
     try {
       sourceNode?.disconnect();
     } catch {
       // Ignore disconnect failures.
     }
     try {
-      filterNode?.disconnect();
+      rnnoiseNode?.disconnect();
     } catch {
       // Ignore disconnect failures.
     }
@@ -3144,26 +3101,13 @@ export default function ChatDashboard({
     } catch {
       // Ignore disconnect failures.
     }
-
-    const pending: Promise<unknown>[] = [];
-    const pushMaybePromise = (value: unknown) => {
-      if (!value || typeof value !== "object" || !("then" in value)) return;
-      pending.push((value as Promise<unknown>).catch(() => undefined));
-    };
     try {
-      pushMaybePromise(filterNode?.dispose?.());
+      rnnoiseNode?.destroy();
     } catch {
-      // Ignore SDK-specific dispose failures.
+      // Ignore RNNoise destroy failures.
     }
     try {
-      pushMaybePromise(sdk?.dispose?.());
-    } catch {
-      // Ignore SDK-specific dispose failures.
-    }
-    try {
-      if (audioContext) {
-        pushMaybePromise(audioContext.close());
-      }
+      await audioContext?.close();
     } catch {
       // Ignore AudioContext close failures.
     }
@@ -3171,101 +3115,82 @@ export default function ChatDashboard({
     inputStream?.getTracks().forEach((track) => {
       track.stop();
     });
-
-    if (pending.length > 0) {
-      await Promise.all(pending);
-    }
   }, []);
 
-  const buildKrispNoiseSuppressedStream = useCallback(
-    async (inputStream: MediaStream): Promise<MediaStream | null> => {
-      if (!KRISP_ENABLED) return null;
-      if (!window.electronAPI?.isElectron) return null;
-      if (!KRISP_MODULE_URL || !KRISP_MODEL_NC_URL) return null;
+  const logRnnoiseFallbackReason = useCallback((reason: string, details?: unknown) => {
+    if (rnnoiseUnavailableLoggedRef.current) return;
+    rnnoiseUnavailableLoggedRef.current = true;
+    if (details !== undefined) {
+      console.warn(`[voice] RNNoise unavailable: ${reason}`, details);
+      return;
+    }
+    console.warn(`[voice] RNNoise unavailable: ${reason}`);
+  }, []);
 
-      await disposeKrispVoicePipeline();
+  const buildRnnoiseNoiseSuppressedStream = useCallback(
+    async (inputStream: MediaStream): Promise<MediaStream | null> => {
+      if (!RNNOISE_ENABLED) {
+        logRnnoiseFallbackReason("disabled by VITE_RNNOISE_ENABLED.");
+        return null;
+      }
+      if (!window.electronAPI?.isElectron) {
+        logRnnoiseFallbackReason("desktop runtime is required.");
+        return null;
+      }
+      if (typeof AudioWorkletNode === "undefined") {
+        logRnnoiseFallbackReason("AudioWorklet is not supported on this runtime.");
+        return null;
+      }
+
+      await disposeRnnoiseVoicePipeline();
 
       try {
-        const krispModule = (await import(/* @vite-ignore */ KRISP_MODULE_URL)) as KrispSDKModule;
-        const KrispSDK = krispModule.default || krispModule.KrispSDK;
-        if (!KrispSDK) {
-          throw new Error("Krisp SDK module did not export a constructor.");
+        let wasmBinary = rnnoiseWasmBinaryRef.current;
+        if (!wasmBinary) {
+          wasmBinary = await loadRnnoise({
+            url: rnnoiseWasmPath,
+            simdUrl: rnnoiseSimdWasmPath,
+          });
+          rnnoiseWasmBinaryRef.current = wasmBinary;
         }
-        if (typeof KrispSDK.isSupported === "function" && !KrispSDK.isSupported()) {
-          if (!krispUnavailableLoggedRef.current) {
-            krispUnavailableLoggedRef.current = true;
-            console.warn("[voice] Krisp SDK is not supported on this device/runtime.");
-          }
-          return null;
-        }
-
-        const models: Record<string, unknown> = {
-          modelNNCPath: KRISP_MODEL_NC_URL,
-          model8Path: KRISP_MODEL_8_URL || KRISP_MODEL_NC_URL,
-        };
-        if (KRISP_MODEL_BVC_URL) {
-          models.modelBVCPath = KRISP_MODEL_BVC_URL;
-        }
-        const params: Record<string, unknown> = {
-          debugLogs: false,
-          logProcessStats: false,
-          useSharedArrayBuffer: false,
-          models,
-        };
-        if (KRISP_BVC_ALLOWED_DEVICES_URL) {
-          params.bvcAllowedDevicesPath = KRISP_BVC_ALLOWED_DEVICES_URL;
-        }
-
-        const sdk = new KrispSDK({ params });
-        await sdk.init();
 
         const audioContext = new AudioContext({ latencyHint: "interactive", sampleRate: 48000 });
+        await audioContext.audioWorklet.addModule(rnnoiseWorkletPath);
+
         const sourceNode = audioContext.createMediaStreamSource(inputStream);
         const destinationNode = audioContext.createMediaStreamDestination();
-        const filterNode = await sdk.createNoiseFilter({
-          audioContext,
-          stream: inputStream,
-          isInbound: false,
-          useBVC: Boolean(KRISP_MODEL_BVC_URL && KRISP_BVC_ALLOWED_DEVICES_URL),
-          enableOnceReady: true,
+        const rnnoiseNode = new RnnoiseWorkletNode(audioContext, {
+          maxChannels: 1,
+          wasmBinary: wasmBinary.slice(0),
         });
 
-        sourceNode.connect(filterNode);
-        filterNode.connect(destinationNode);
+        sourceNode.connect(rnnoiseNode);
+        rnnoiseNode.connect(destinationNode);
 
-        try {
-          filterNode.enable?.();
-        } catch {
-          // Ignore optional enable call failures.
-        }
         if (audioContext.state !== "running") {
           await audioContext.resume().catch(() => undefined);
         }
 
-        krispSdkRef.current = sdk;
-        krispNoiseFilterNodeRef.current = filterNode;
-        krispAudioContextRef.current = audioContext;
-        krispSourceNodeRef.current = sourceNode;
-        krispDestinationNodeRef.current = destinationNode;
-        krispInputStreamRef.current = inputStream;
+        rnnoiseNodeRef.current = rnnoiseNode;
+        rnnoiseAudioContextRef.current = audioContext;
+        rnnoiseSourceNodeRef.current = sourceNode;
+        rnnoiseDestinationNodeRef.current = destinationNode;
+        rnnoiseInputStreamRef.current = inputStream;
         return destinationNode.stream;
       } catch (err) {
-        await disposeKrispVoicePipeline();
-        if (!krispUnavailableLoggedRef.current) {
-          krispUnavailableLoggedRef.current = true;
-          console.warn("[voice] Krisp startup failed. Falling back to browser suppression.", err);
-        }
+        await disposeRnnoiseVoicePipeline();
+        logRnnoiseFallbackReason("startup failed; falling back to next suppression layer.", err);
         return null;
       }
     },
-    [disposeKrispVoicePipeline],
+    [disposeRnnoiseVoicePipeline, logRnnoiseFallbackReason],
   );
 
   const applyLocalVoiceMute = useCallback((muted: boolean) => {
     localStreamRef.current?.getAudioTracks().forEach((track) => {
       track.enabled = !muted;
     });
-    krispInputStreamRef.current?.getAudioTracks().forEach((track) => {
+    rnnoiseInputStreamRef.current?.getAudioTracks().forEach((track) => {
       track.enabled = !muted;
     });
   }, []);
@@ -9616,7 +9541,7 @@ export default function ChatDashboard({
     }
     localStreamRef.current?.getTracks().forEach((track) => track.stop());
     localStreamRef.current = null;
-    void disposeKrispVoicePipeline();
+    void disposeRnnoiseVoicePipeline();
     if (localScreenTrackRef.current) {
       localScreenTrackRef.current.onended = null;
     }
@@ -9665,7 +9590,7 @@ export default function ChatDashboard({
     pendingCandidatesRef.current.clear();
     signalSinceIdRef.current = 0;
     setSpeakingUserIds([]);
-  }, [closePeerConnection, currentUserId, disposeKrispVoicePipeline]);
+  }, [closePeerConnection, currentUserId, disposeRnnoiseVoicePipeline]);
 
   const stopVoiceSession = useCallback(async (notifyServer: boolean) => {
     const roomToLeave = voiceRoomKey;
@@ -10049,7 +9974,7 @@ export default function ChatDashboard({
       if (!(await ensureWindowsMediaStatus("microphone"))) {
         return;
       }
-      await disposeKrispVoicePipeline();
+      await disposeRnnoiseVoicePipeline();
       await ensureSoundContext();
       let capturedStream: MediaStream;
       try {
@@ -10080,11 +10005,11 @@ export default function ChatDashboard({
           .catch(() => undefined);
       }
 
-      const krispProcessedStream = await buildKrispNoiseSuppressedStream(capturedStream);
-      const stream = krispProcessedStream || capturedStream;
+      const rnnoiseProcessedStream = await buildRnnoiseNoiseSuppressedStream(capturedStream);
+      const stream = rnnoiseProcessedStream || capturedStream;
       localStreamRef.current = stream;
       applyLocalVoiceMute(effectiveVoiceMuted);
-      startSpeakingMeter(currentUserId, krispInputStreamRef.current || stream);
+      startSpeakingMeter(currentUserId, rnnoiseInputStreamRef.current || stream);
       const latestSignalIdBeforeJoin = await getLatestVoiceSignalId(accessToken, room, currentUserId).catch(() => 0);
       signalSinceIdRef.current = latestSignalIdBeforeJoin;
       await joinVoiceRoom(accessToken, room, currentUserId, effectiveVoiceMuted, voiceDeafened);

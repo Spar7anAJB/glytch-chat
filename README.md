@@ -39,12 +39,7 @@ Frontend:
 - `VITE_ELECTRON_INSTALLER_URL_MAC` (optional; overrides macOS installer URL)
 - `VITE_ELECTRON_INSTALLER_URL_WIN` (optional; overrides Windows installer URL)
 - `VITE_ELECTRON_INSTALLER_URL_LINUX` (optional; overrides Linux installer URL)
-- `VITE_KRISP_ENABLED` (`true`/`false`; optional; enables Krisp live suppression pipeline in desktop runtime)
-- `VITE_KRISP_MODULE_URL` (optional; defaults to `/krisp/dist/krispsdk.mjs`)
-- `VITE_KRISP_MODEL_NC_URL` (optional; defaults to `/krisp/dist/models/model_nc.kef`)
-- `VITE_KRISP_MODEL_8_URL` (optional; defaults to `/krisp/dist/models/model_8.kef`)
-- `VITE_KRISP_MODEL_BVC_URL` (optional; enables BVC model when set)
-- `VITE_KRISP_BVC_ALLOWED_DEVICES_URL` (optional; used with BVC model)
+- `VITE_RNNOISE_ENABLED` (`true`/`false`; optional; defaults to `true`; enables bundled RNNoise suppression in desktop runtime)
 
 Backend:
 
@@ -185,14 +180,12 @@ On Windows it can:
 
 For update detection to work, bump `package.json` version before building installers.
 
-### Krisp live noise suppression (desktop)
+### Voice noise suppression (desktop)
 
-This app supports Krisp Browser SDK integration in voice calls and falls back to native WebRTC suppression if Krisp is unavailable.
+This app uses bundled RNNoise suppression in Electron voice calls and falls back to native WebRTC suppression when RNNoise is unavailable.
 
-1. Get Krisp SDK package access from Krisp.
-2. Copy SDK assets into `public/krisp/` (see `public/krisp/README.md` for exact paths).
-3. Set `VITE_KRISP_ENABLED=true` in your build env.
-4. Rebuild desktop packages.
+1. RNNoise is enabled by default (`VITE_RNNOISE_ENABLED=true`).
+2. Rebuild desktop packages.
 
 ### macOS launch note
 
