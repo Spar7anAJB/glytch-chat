@@ -124,6 +124,15 @@ export type GifResult = {
   description: string;
 };
 
+export type LivekitKrispTokenPayload = {
+  url: string;
+  token: string;
+  identity: string;
+  room: string;
+  ttlSeconds: number;
+  expiresAt: string;
+};
+
 export type Glytch = {
   id: number;
   owner_id: string;
@@ -731,6 +740,60 @@ async function fetchGiphyGifs(query: string, limit: number): Promise<{ results: 
     throw new Error(message || `Could not load GIFs (status ${res.status}).`);
   }
   return normalizeGiphyResponse(data || {});
+}
+
+export async function requestLivekitKrispToken(
+  accessToken: string,
+  roomKey?: string | null,
+): Promise<LivekitKrispTokenPayload> {
+  assertConfig();
+  if (!apiBase) {
+    throw new Error("Backend env vars missing. Set VITE_API_URL.");
+  }
+
+  const requestBody: Record<string, unknown> = {};
+  if (typeof roomKey === "string" && roomKey.trim()) {
+    requestBody.roomKey = roomKey.trim();
+  }
+
+  const response = await fetch(`${apiBase}/api/voice/livekit-token`, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify(requestBody),
+  });
+
+  const payload = (await response.json().catch(() => ({}))) as Partial<LivekitKrispTokenPayload> & {
+    error?: string;
+    message?: string;
+  };
+  if (!response.ok) {
+    const message = payload.error || payload.message || `Could not request LiveKit token (status ${response.status}).`;
+    throw new Error(message);
+  }
+
+  const url = typeof payload.url === "string" ? payload.url.trim() : "";
+  const token = typeof payload.token === "string" ? payload.token.trim() : "";
+  const identity = typeof payload.identity === "string" ? payload.identity.trim() : "";
+  const room = typeof payload.room === "string" ? payload.room.trim() : "";
+  const expiresAt = typeof payload.expiresAt === "string" ? payload.expiresAt : "";
+  const ttlSeconds = Number.isFinite(Number(payload.ttlSeconds)) ? Number(payload.ttlSeconds) : 0;
+
+  if (!url || !token || !identity || !room || !expiresAt || ttlSeconds <= 0) {
+    throw new Error("LiveKit token response is missing required fields.");
+  }
+
+  return {
+    url,
+    token,
+    identity,
+    room,
+    ttlSeconds,
+    expiresAt,
+  };
 }
 
 export async function isUsernameAvailable(username: string): Promise<boolean> {

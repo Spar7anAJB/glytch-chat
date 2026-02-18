@@ -19,3 +19,11 @@ services:
         sync: false
       - key: GIPHY_RATING
         value: pg
+      - key: LIVEKIT_URL
+        sync: false
+      - key: LIVEKIT_API_KEY
+        sync: false
+      - key: LIVEKIT_API_SECRET
+        sync: false
+      - key: LIVEKIT_KRISP_TOKEN_TTL_SECONDS
+        value: "300"

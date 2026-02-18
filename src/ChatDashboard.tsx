@@ -88,6 +88,7 @@ import {
   setVoiceState,
   searchGifLibrary,
   searchPublicGlytches,
+  requestLivekitKrispToken,
   sendFriendRequest,
   ingestRemoteMessageAsset,
   reviewGlytchUnbanRequest,
@@ -548,6 +549,7 @@ const GLYTCH_INVITE_MESSAGE_PREFIX = "[[GLYTCH_INVITE]]";
 const DM_REPLY_MESSAGE_PREFIX = "[[DM_REPLY]]";
 const MISSING_SELF_PARTICIPANT_MAX_MISSES = 8;
 const RNNOISE_ENABLED = String(import.meta.env.VITE_RNNOISE_ENABLED || "true").toLowerCase() !== "false";
+const LIVEKIT_KRISP_ENABLED = String(import.meta.env.VITE_LIVEKIT_KRISP_ENABLED || "false").toLowerCase() === "true";
 const SHOWCASE_KIND_LABELS: Record<ShowcaseKind, string> = {
   text: "Text",
   links: "Links",
@@ -909,6 +911,25 @@ type SoundboardClip = {
   id: string;
   name: string;
   dataUrl: string;
+};
+
+type LivekitAudioTrackAdapter = {
+  mediaStreamTrack: MediaStreamTrack;
+  setProcessor: (processor: unknown) => Promise<void>;
+  stopProcessor: (keepElement?: boolean) => Promise<void>;
+};
+
+type LivekitKrispProcessorAdapter = {
+  onPublish: (room: unknown) => Promise<void>;
+  setEnabled: (enabled: boolean) => Promise<boolean | undefined>;
+  isEnabled: () => boolean;
+};
+
+type LivekitKrispSessionCredentials = {
+  url: string;
+  token: string;
+  expiresAtMs: number;
+  roomKey: string;
 };
 
 function formatTime(date: Date): string {
@@ -1800,10 +1821,22 @@ function dmMessagePreviewText(message: Pick<DmMessage, "content" | "attachment_u
 
 function buildVoiceAudioConstraints(): VoiceAudioConstraints {
   return {
-    // Keep this conservative and standards-focused for Windows reliability.
+    // Request stronger AEC/NS paths on Chromium while preserving standards fallbacks.
     echoCancellation: true,
+    echoCancellationType: "system",
     noiseSuppression: true,
     autoGainControl: true,
+    voiceIsolation: { ideal: true },
+    googAutoGainControl: true,
+    googEchoCancellation: true,
+    googEchoCancellation2: true,
+    googDAEchoCancellation: true,
+    googExperimentalEchoCancellation: true,
+    googHighpassFilter: true,
+    googNoiseSuppression: true,
+    googNoiseSuppression2: true,
+    googTypingNoiseDetection: false,
+    googAudioMirroring: false,
     channelCount: { ideal: 1, max: 1 },
     sampleRate: { ideal: 48000 },
     sampleSize: { ideal: 16 },
@@ -1816,6 +1849,8 @@ function buildStrictVoiceAudioConstraints(): VoiceAudioConstraints {
     echoCancellation: { exact: true },
     noiseSuppression: { exact: true },
     autoGainControl: { exact: true },
+    echoCancellationType: "system",
+    voiceIsolation: { ideal: true },
     channelCount: { ideal: 1, max: 1 },
   };
 }
@@ -2485,6 +2520,12 @@ export default function ChatDashboard({
   const remoteScreenDemoteTimeoutsRef = useRef<Map<string, number>>(new Map());
   const remoteAudioElsRef = useRef<Map<string, HTMLAudioElement>>(new Map());
   const speakingAnalyserCleanupRef = useRef<Map<string, () => void>>(new Map());
+  const livekitAudioTrackRef = useRef<LivekitAudioTrackAdapter | null>(null);
+  const livekitProcessorRef = useRef<LivekitKrispProcessorAdapter | null>(null);
+  const livekitAudioContextRef = useRef<AudioContext | null>(null);
+  const livekitInputStreamRef = useRef<MediaStream | null>(null);
+  const livekitUnavailableLoggedRef = useRef(false);
+  const livekitKrispCredentialsRef = useRef<LivekitKrispSessionCredentials | null>(null);
   const rnnoiseNodeRef = useRef<RnnoiseWorkletNode | null>(null);
   const rnnoiseAudioContextRef = useRef<AudioContext | null>(null);
   const rnnoiseSourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
@@ -3086,6 +3127,148 @@ export default function ChatDashboard({
     }
   };
 
+  const disposeLivekitVoicePipeline = useCallback(async () => {
+    const audioTrack = livekitAudioTrackRef.current;
+    const processor = livekitProcessorRef.current;
+    const audioContext = livekitAudioContextRef.current;
+    const inputStream = livekitInputStreamRef.current;
+
+    livekitAudioTrackRef.current = null;
+    livekitProcessorRef.current = null;
+    livekitAudioContextRef.current = null;
+    livekitInputStreamRef.current = null;
+
+    try {
+      await processor?.setEnabled(false);
+    } catch {
+      // Ignore disable failures.
+    }
+    try {
+      await audioTrack?.stopProcessor(false);
+    } catch {
+      // Ignore processor shutdown failures.
+    }
+    try {
+      await audioContext?.close();
+    } catch {
+      // Ignore AudioContext close failures.
+    }
+    inputStream?.getTracks().forEach((track) => {
+      track.stop();
+    });
+  }, []);
+
+  const logLivekitFallbackReason = useCallback((reason: string, details?: unknown) => {
+    if (livekitUnavailableLoggedRef.current) return;
+    livekitUnavailableLoggedRef.current = true;
+    if (details !== undefined) {
+      console.warn(`[voice] LiveKit enhanced suppression unavailable: ${reason}`, details);
+      return;
+    }
+    console.warn(`[voice] LiveKit enhanced suppression unavailable: ${reason}`);
+  }, []);
+
+  const resolveLivekitKrispCredentials = useCallback(
+    async (roomKey: string): Promise<LivekitKrispSessionCredentials | null> => {
+      const cached = livekitKrispCredentialsRef.current;
+      const nowMs = Date.now();
+      if (cached && cached.roomKey === roomKey && cached.expiresAtMs - nowMs > 30_000) {
+        return cached;
+      }
+
+      try {
+        const payload = await requestLivekitKrispToken(accessToken, roomKey);
+        const parsedExpiresAt = Number.parseInt(String(Date.parse(payload.expiresAt)), 10);
+        const expiresAtMs = Number.isFinite(parsedExpiresAt)
+          ? parsedExpiresAt
+          : nowMs + Math.max(60, payload.ttlSeconds || 300) * 1000;
+        const nextCredentials: LivekitKrispSessionCredentials = {
+          url: payload.url,
+          token: payload.token,
+          expiresAtMs,
+          roomKey: payload.room || roomKey,
+        };
+        livekitKrispCredentialsRef.current = nextCredentials;
+        return nextCredentials;
+      } catch (err) {
+        logLivekitFallbackReason("token mint request failed; backend LiveKit auth may be unavailable.", err);
+        return null;
+      }
+    },
+    [accessToken, logLivekitFallbackReason],
+  );
+
+  const buildLivekitNoiseSuppressedStream = useCallback(
+    async (inputStream: MediaStream, roomKey: string): Promise<MediaStream | null> => {
+      if (!LIVEKIT_KRISP_ENABLED) {
+        return null;
+      }
+      if (!window.electronAPI?.isElectron) {
+        logLivekitFallbackReason("desktop runtime is required.");
+        return null;
+      }
+
+      const credentials = await resolveLivekitKrispCredentials(roomKey);
+      if (!credentials?.url || !credentials.token) {
+        return null;
+      }
+
+      const [inputTrack] = inputStream.getAudioTracks();
+      if (!inputTrack) {
+        logLivekitFallbackReason("microphone capture does not include an audio track.");
+        return null;
+      }
+
+      await disposeLivekitVoicePipeline();
+
+      try {
+        const [livekitModule, krispModule] = await Promise.all([import("livekit-client"), import("@livekit/krisp-noise-filter")]);
+        if (!krispModule.isKrispNoiseFilterSupported()) {
+          logLivekitFallbackReason("Krisp processor is not supported on this runtime.");
+          return null;
+        }
+        const audioContext = new AudioContext({ latencyHint: "interactive", sampleRate: 48000 });
+        const localAudioTrack = new livekitModule.LocalAudioTrack(
+          inputTrack,
+          inputTrack.getConstraints ? inputTrack.getConstraints() : undefined,
+          true,
+          audioContext,
+        ) as LivekitAudioTrackAdapter;
+        const processor = krispModule.KrispNoiseFilter({ quality: "medium", useBVC: false }) as LivekitKrispProcessorAdapter;
+        await localAudioTrack.setProcessor(processor);
+        const publishContext = {
+          engine: {
+            clientOptions: {
+              url: credentials.url,
+              token: credentials.token,
+            },
+          },
+        };
+        await processor.onPublish(publishContext);
+        await processor.setEnabled(true);
+        if (!processor.isEnabled()) {
+          throw new Error("processor reported disabled state after enable request.");
+        }
+
+        const processedTrack = localAudioTrack.mediaStreamTrack;
+        if (!processedTrack || processedTrack.kind !== "audio" || processedTrack.readyState === "ended") {
+          throw new Error("processor did not provide a live audio track.");
+        }
+
+        livekitAudioTrackRef.current = localAudioTrack;
+        livekitProcessorRef.current = processor;
+        livekitAudioContextRef.current = audioContext;
+        livekitInputStreamRef.current = inputStream;
+        return new MediaStream([processedTrack]);
+      } catch (err) {
+        await disposeLivekitVoicePipeline();
+        logLivekitFallbackReason("startup failed; falling back to RNNoise/native suppression.", err);
+        return null;
+      }
+    },
+    [disposeLivekitVoicePipeline, logLivekitFallbackReason, resolveLivekitKrispCredentials],
+  );
+
   const disposeRnnoiseVoicePipeline = useCallback(async () => {
     const rnnoiseNode = rnnoiseNodeRef.current;
     const audioContext = rnnoiseAudioContextRef.current;
@@ -3205,6 +3388,9 @@ export default function ChatDashboard({
 
   const applyLocalVoiceMute = useCallback((muted: boolean) => {
     localStreamRef.current?.getAudioTracks().forEach((track) => {
+      track.enabled = !muted;
+    });
+    livekitInputStreamRef.current?.getAudioTracks().forEach((track) => {
       track.enabled = !muted;
     });
     rnnoiseInputStreamRef.current?.getAudioTracks().forEach((track) => {
@@ -9610,6 +9796,7 @@ export default function ChatDashboard({
     }
     localStreamRef.current?.getTracks().forEach((track) => track.stop());
     localStreamRef.current = null;
+    void disposeLivekitVoicePipeline();
     void disposeRnnoiseVoicePipeline();
     if (localScreenTrackRef.current) {
       localScreenTrackRef.current.onended = null;
@@ -9659,7 +9846,7 @@ export default function ChatDashboard({
     pendingCandidatesRef.current.clear();
     signalSinceIdRef.current = 0;
     setSpeakingUserIds([]);
-  }, [closePeerConnection, currentUserId, disposeRnnoiseVoicePipeline]);
+  }, [closePeerConnection, currentUserId, disposeLivekitVoicePipeline, disposeRnnoiseVoicePipeline]);
 
   const stopVoiceSession = useCallback(async (notifyServer: boolean) => {
     const roomToLeave = voiceRoomKey;
@@ -9758,6 +9945,11 @@ export default function ChatDashboard({
             screenAudioStream = new MediaStream();
             remoteScreenAudioStreamsRef.current.set(targetUserId, screenAudioStream);
           }
+          screenAudioStream.getAudioTracks().forEach((audioTrack) => {
+            if (audioTrack.id !== event.track.id) {
+              screenAudioStream.removeTrack(audioTrack);
+            }
+          });
           const hasScreenAudioTrack = screenAudioStream
             .getAudioTracks()
             .some((audioTrack) => audioTrack.id === event.track.id);
@@ -9799,6 +9991,11 @@ export default function ChatDashboard({
           voiceAudioStream = new MediaStream();
           remoteStreamsRef.current.set(targetUserId, voiceAudioStream);
         }
+        voiceAudioStream.getAudioTracks().forEach((audioTrack) => {
+          if (audioTrack.id !== event.track.id) {
+            voiceAudioStream.removeTrack(audioTrack);
+          }
+        });
         const hasVoiceTrack = voiceAudioStream.getAudioTracks().some((audioTrack) => audioTrack.id === event.track.id);
         if (!hasVoiceTrack) {
           voiceAudioStream.addTrack(event.track);
@@ -10043,6 +10240,7 @@ export default function ChatDashboard({
       if (!(await ensureWindowsMediaStatus("microphone"))) {
         return;
       }
+      await disposeLivekitVoicePipeline();
       await disposeRnnoiseVoicePipeline();
       await ensureSoundContext();
       let capturedStream: MediaStream;
@@ -10095,11 +10293,14 @@ export default function ChatDashboard({
         throw new Error("Microphone track ended unexpectedly. Rejoin voice and try a different input device.");
       }
 
-      const rnnoiseProcessedStream = await buildRnnoiseNoiseSuppressedStream(capturedStream);
-      const stream = rnnoiseProcessedStream || capturedStream;
+      const livekitProcessedStream = await buildLivekitNoiseSuppressedStream(capturedStream, room);
+      const rnnoiseProcessedStream = livekitProcessedStream
+        ? null
+        : await buildRnnoiseNoiseSuppressedStream(capturedStream);
+      const stream = livekitProcessedStream || rnnoiseProcessedStream || capturedStream;
       localStreamRef.current = stream;
       applyLocalVoiceMute(effectiveVoiceMuted);
-      startSpeakingMeter(currentUserId, rnnoiseInputStreamRef.current || stream);
+      startSpeakingMeter(currentUserId, livekitInputStreamRef.current || rnnoiseInputStreamRef.current || stream);
       const latestSignalIdBeforeJoin = await getLatestVoiceSignalId(accessToken, room, currentUserId).catch(() => 0);
       signalSinceIdRef.current = latestSignalIdBeforeJoin;
       await joinVoiceRoom(accessToken, room, currentUserId, effectiveVoiceMuted, voiceDeafened);

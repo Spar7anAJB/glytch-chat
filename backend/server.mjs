@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { createHmac, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
@@ -76,6 +77,13 @@ const MEDIA_MODERATION_NUDITY_THRESHOLD = clampNumber(
 const SIGHTENGINE_API_URL = (process.env.SIGHTENGINE_API_URL || "https://api.sightengine.com/1.0/check.json").replace(/\/+$/, "");
 const SIGHTENGINE_API_USER = process.env.SIGHTENGINE_API_USER || "";
 const SIGHTENGINE_API_SECRET = process.env.SIGHTENGINE_API_SECRET || "";
+const LIVEKIT_URL = (process.env.LIVEKIT_URL || process.env.VITE_LIVEKIT_URL || "").trim();
+const LIVEKIT_API_KEY = (process.env.LIVEKIT_API_KEY || "").trim();
+const LIVEKIT_API_SECRET = (process.env.LIVEKIT_API_SECRET || "").trim();
+const LIVEKIT_KRISP_TOKEN_TTL_SECONDS = Math.max(
+  60,
+  Math.min(3600, Number.parseInt(process.env.LIVEKIT_KRISP_TOKEN_TTL_SECONDS ?? "300", 10) || 300),
+);
 
 const CORS_ALLOW_HEADERS = [
   "Authorization",
@@ -98,6 +106,7 @@ const MEDIA_PROFILE_UPLOAD_PREFIX = "/api/media/profile-upload/";
 const MEDIA_GLYTCH_ICON_UPLOAD_PREFIX = "/api/media/glytch-icon-upload/";
 const MEDIA_MESSAGE_UPLOAD_PREFIX = "/api/media/message-upload/";
 const MEDIA_MESSAGE_INGEST_PATH = "/api/media/message-ingest";
+const LIVEKIT_KRISP_TOKEN_PATH = "/api/voice/livekit-token";
 const UPDATES_PREFIX = "/api/updates/";
 const DOWNLOADS_PREFIX = "/api/downloads/";
 const DOWNLOADS_DIR = path.join(process.cwd(), "public", "downloads");
@@ -222,6 +231,66 @@ function getRequestUserId(req) {
   }
 
   return null;
+}
+
+function isLivekitKrispConfigured() {
+  return Boolean(LIVEKIT_URL && LIVEKIT_API_KEY && LIVEKIT_API_SECRET);
+}
+
+function createHs256Jwt(payload, secret) {
+  const header = {
+    alg: "HS256",
+    typ: "JWT",
+  };
+  const encodedHeader = Buffer.from(JSON.stringify(header)).toString("base64url");
+  const encodedPayload = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const signingInput = `${encodedHeader}.${encodedPayload}`;
+  const signature = createHmac("sha256", secret).update(signingInput).digest("base64url");
+  return `${signingInput}.${signature}`;
+}
+
+function normalizeLivekitRoomKey(rawRoomKey, fallbackIdentity) {
+  if (typeof rawRoomKey !== "string") {
+    return `glytch:${fallbackIdentity}`;
+  }
+  const normalized = rawRoomKey.trim();
+  if (!normalized) {
+    return `glytch:${fallbackIdentity}`;
+  }
+  if (normalized.length > 128) {
+    return normalized.slice(0, 128);
+  }
+  return normalized;
+}
+
+async function fetchSupabaseAuthUser(accessToken) {
+  if (!SUPABASE_URL || !accessToken) return null;
+
+  const headers = new Headers({
+    Authorization: `Bearer ${accessToken}`,
+    Accept: "application/json",
+  });
+  if (SUPABASE_ANON_KEY) {
+    headers.set("apikey", SUPABASE_ANON_KEY);
+  }
+
+  try {
+    const response = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+      method: "GET",
+      headers,
+      redirect: "manual",
+    });
+    if (!response.ok) return null;
+    const payload = await response.json().catch(() => null);
+    if (!payload || typeof payload !== "object") return null;
+    if (typeof payload.id !== "string" || !payload.id) return null;
+    return {
+      id: payload.id,
+      email: typeof payload.email === "string" ? payload.email : null,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function normalizedImageContentType(rawContentType) {
@@ -930,6 +999,82 @@ async function ingestRemoteMessageMedia(req, res, parsedUrl) {
   });
 }
 
+async function handleLivekitKrispTokenMint(req, res) {
+  const method = req.method || "GET";
+  if (method !== "POST") {
+    sendJson(res, 405, { error: "Method not allowed." });
+    return;
+  }
+
+  if (!isLivekitKrispConfigured()) {
+    const missing = [];
+    if (!LIVEKIT_URL) missing.push("LIVEKIT_URL");
+    if (!LIVEKIT_API_KEY) missing.push("LIVEKIT_API_KEY");
+    if (!LIVEKIT_API_SECRET) missing.push("LIVEKIT_API_SECRET");
+    sendJson(res, 503, {
+      error: "LiveKit token service is not configured.",
+      missing,
+    });
+    return;
+  }
+
+  const bearerToken = extractBearerToken(req);
+  if (!bearerToken) {
+    sendJson(res, 401, { error: "Missing bearer token." });
+    return;
+  }
+
+  const authUser = await fetchSupabaseAuthUser(bearerToken);
+  if (!authUser) {
+    sendJson(res, 401, { error: "Invalid or expired session token." });
+    return;
+  }
+
+  const rawBody = await readRawBody(req);
+  let payload = {};
+  if (rawBody.length > 0) {
+    try {
+      const parsed = JSON.parse(rawBody.toString("utf8"));
+      if (parsed && typeof parsed === "object") {
+        payload = parsed;
+      }
+    } catch {
+      sendJson(res, 400, { error: "Invalid JSON body." });
+      return;
+    }
+  }
+
+  const roomKey = normalizeLivekitRoomKey(payload.roomKey, authUser.id);
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const expiresAtSeconds = nowSeconds + LIVEKIT_KRISP_TOKEN_TTL_SECONDS;
+
+  const tokenPayload = {
+    iss: LIVEKIT_API_KEY,
+    sub: authUser.id,
+    iat: nowSeconds,
+    nbf: Math.max(0, nowSeconds - 5),
+    exp: expiresAtSeconds,
+    jti: randomUUID(),
+    video: {
+      roomJoin: true,
+      room: roomKey,
+      canPublish: true,
+      canSubscribe: true,
+      canPublishData: true,
+    },
+  };
+  const token = createHs256Jwt(tokenPayload, LIVEKIT_API_SECRET);
+
+  sendJson(res, 200, {
+    url: LIVEKIT_URL,
+    token,
+    identity: authUser.id,
+    room: roomKey,
+    ttlSeconds: LIVEKIT_KRISP_TOKEN_TTL_SECONDS,
+    expiresAt: new Date(expiresAtSeconds * 1000).toISOString(),
+  });
+}
+
 async function forwardSupabase(req, res, targetPath) {
   if (!SUPABASE_URL) {
     sendJson(res, 500, {
@@ -1449,6 +1594,7 @@ const server = createServer(async (req, res) => {
       ok: true,
       service: "glytch-backend",
       supabaseConfigured: Boolean(SUPABASE_URL),
+      livekitKrispConfigured: isLivekitKrispConfigured(),
       giphyConfigured: Boolean(GIPHY_API_KEY),
       tenorConfigured: Boolean(TENOR_API_KEY),
       gifServiceAvailable,
@@ -1473,6 +1619,11 @@ const server = createServer(async (req, res) => {
 
   if (pathname === MEDIA_MESSAGE_INGEST_PATH) {
     await ingestRemoteMessageMedia(req, res, parsedUrl);
+    return;
+  }
+
+  if (pathname === LIVEKIT_KRISP_TOKEN_PATH) {
+    await handleLivekitKrispTokenMint(req, res);
     return;
   }
 

@@ -26,6 +26,7 @@ Backend API routes:
 - `/api/media/message-upload/*` (message image upload with moderation gate)
 - `/api/media/message-ingest` (remote image/GIF ingestion with moderation gate)
 - `/api/gifs/search` (GIF search/trending)
+- `/api/voice/livekit-token` (mint short-lived LiveKit auth tokens for desktop noise suppression)
 - `/api/updates/{platform}/latest` (desktop app update manifest for in-app updater)
 
 ## Environment
@@ -40,6 +41,7 @@ Frontend:
 - `VITE_ELECTRON_INSTALLER_URL_WIN` (optional; overrides Windows installer URL)
 - `VITE_ELECTRON_INSTALLER_URL_LINUX` (optional; overrides Linux installer URL)
 - `VITE_RNNOISE_ENABLED` (`true`/`false`; optional; defaults to `true`; enables bundled RNNoise suppression in desktop runtime)
+- `VITE_LIVEKIT_KRISP_ENABLED` (`true`/`false`; optional; defaults to `false`; enables LiveKit enhanced suppression before RNNoise fallback)
 
 Backend:
 
@@ -53,6 +55,10 @@ Backend:
 - `GIPHY_RATING` (optional; defaults to `pg`)
 - `TENOR_API_KEY` (optional fallback if GIPHY is unavailable)
 - `TENOR_CLIENT_KEY` (optional; defaults to `glytch-chat`)
+- `LIVEKIT_URL` (required for LiveKit Krisp token minting; ws/wss URL)
+- `LIVEKIT_API_KEY` (required for LiveKit Krisp token minting)
+- `LIVEKIT_API_SECRET` (required for LiveKit Krisp token minting)
+- `LIVEKIT_KRISP_TOKEN_TTL_SECONDS` (optional; defaults to `300`; range `60-3600`)
 
 ### Media Moderation (Phase 2)
 
@@ -182,10 +188,11 @@ For update detection to work, bump `package.json` version before building instal
 
 ### Voice noise suppression (desktop)
 
-This app uses bundled RNNoise suppression in Electron voice calls and falls back to native WebRTC suppression when RNNoise is unavailable.
+This app tries LiveKit enhanced suppression first (optional), then falls back to bundled RNNoise, then native WebRTC suppression.
 
-1. RNNoise is enabled by default (`VITE_RNNOISE_ENABLED=true`).
-2. Rebuild desktop packages.
+1. Optional: set `VITE_LIVEKIT_KRISP_ENABLED=true` on frontend and configure backend with `LIVEKIT_URL`, `LIVEKIT_API_KEY`, and `LIVEKIT_API_SECRET`.
+2. RNNoise is enabled by default (`VITE_RNNOISE_ENABLED=true`).
+3. Rebuild desktop packages.
 
 ### macOS launch note
 
