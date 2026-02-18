@@ -54,6 +54,10 @@ Backend:
 - `SUPABASE_PROFILE_BUCKET` (optional; defaults to `profile-media`)
 - `SUPABASE_GLYTCH_BUCKET` (optional; defaults to `glytch-media`)
 - `SUPABASE_MESSAGE_BUCKET` (optional; defaults to `message-media`)
+- `GIPHY_API_KEY` (recommended for GIF search/trending)
+- `GIPHY_RATING` (optional; defaults to `pg`)
+- `TENOR_API_KEY` (optional fallback if GIPHY is unavailable)
+- `TENOR_CLIENT_KEY` (optional; defaults to `glytch-chat`)
 
 ### Media Moderation (Phase 2)
 

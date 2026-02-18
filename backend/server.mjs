@@ -52,15 +52,14 @@ const GIPHY_API_BASE = (process.env.GIPHY_API_BASE || process.env.VITE_GIPHY_API
   /\/+$/,
   "",
 );
-const GIPHY_API_KEY = process.env.GIPHY_API_KEY || process.env.VITE_GIPHY_API_KEY || "";
-const GIPHY_LEGACY_PUBLIC_API_KEY = "dc6zaTOxFJmzC";
-const GIPHY_RATING = process.env.GIPHY_RATING || process.env.VITE_GIPHY_RATING || "pg";
+const GIPHY_API_KEY = (process.env.GIPHY_API_KEY || process.env.VITE_GIPHY_API_KEY || "").trim();
+const GIPHY_RATING = (process.env.GIPHY_RATING || process.env.VITE_GIPHY_RATING || "pg").trim();
 const TENOR_API_BASE = (process.env.TENOR_API_BASE || process.env.VITE_TENOR_API_BASE || "https://tenor.googleapis.com/v2").replace(
   /\/+$/,
   "",
 );
-const TENOR_API_KEY = process.env.TENOR_API_KEY || process.env.VITE_TENOR_API_KEY || "";
-const TENOR_CLIENT_KEY = process.env.TENOR_CLIENT_KEY || process.env.VITE_TENOR_CLIENT_KEY || "glytch-chat";
+const TENOR_API_KEY = (process.env.TENOR_API_KEY || process.env.VITE_TENOR_API_KEY || "").trim();
+const TENOR_CLIENT_KEY = (process.env.TENOR_CLIENT_KEY || process.env.VITE_TENOR_CLIENT_KEY || "glytch-chat").trim();
 const MAX_MEDIA_UPLOAD_BYTES = Number.parseInt(process.env.MAX_MEDIA_UPLOAD_BYTES ?? "8388608", 10);
 const MEDIA_MODERATION_ENABLED = parseBooleanEnv(
   process.env.MEDIA_MODERATION_ENABLED,
@@ -966,12 +965,12 @@ async function handleGifSearch(res, parsedUrl) {
   const query = parsedUrl.searchParams.get("q")?.trim() || "";
   const rawLimit = Number.parseInt(parsedUrl.searchParams.get("limit") || "24", 10);
   const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 1), 50) : 24;
-  const giphyApiKey = GIPHY_API_KEY || GIPHY_LEGACY_PUBLIC_API_KEY;
+  let giphyFailure = "";
 
-  if (giphyApiKey) {
+  if (GIPHY_API_KEY) {
     const endpoint = query ? "search" : "trending";
     const params = new URLSearchParams({
-      api_key: giphyApiKey,
+      api_key: GIPHY_API_KEY,
       limit: String(limit),
       rating: GIPHY_RATING,
       bundle: "messaging_non_clips",
@@ -1000,13 +999,25 @@ async function handleGifSearch(res, parsedUrl) {
       await relayFetchResponse(res, upstream);
       return;
     }
+
+    const upstreamError = await upstream.json().catch(() => ({}));
+    const upstreamMessage = getUnknownMessage(upstreamError);
+    const statusLabel = `GIPHY request failed (${upstream.status || 502})`;
+    giphyFailure = upstreamMessage ? `${statusLabel}: ${upstreamMessage}` : statusLabel;
   }
 
   if (!TENOR_API_KEY) {
+    const troubleshooting = [];
+    if (!GIPHY_API_KEY) {
+      troubleshooting.push("GIPHY_API_KEY is not configured.");
+    }
+    if (giphyFailure) {
+      troubleshooting.push(giphyFailure);
+    }
+    troubleshooting.push("TENOR_API_KEY is not configured.");
     sendJson(res, 503, {
       error: "GIF service unavailable.",
-      message:
-        "Set GIPHY_API_KEY (or VITE_GIPHY_API_KEY). Optional fallback: TENOR_API_KEY.",
+      message: troubleshooting.join(" "),
     });
     return;
   }
@@ -1433,11 +1444,14 @@ const server = createServer(async (req, res) => {
   const { pathname, search } = parsedUrl;
 
   if (pathname === "/api/health") {
+    const gifServiceAvailable = Boolean(GIPHY_API_KEY || TENOR_API_KEY);
     sendJson(res, 200, {
       ok: true,
       service: "glytch-backend",
       supabaseConfigured: Boolean(SUPABASE_URL),
       giphyConfigured: Boolean(GIPHY_API_KEY),
+      tenorConfigured: Boolean(TENOR_API_KEY),
+      gifServiceAvailable,
     });
     return;
   }

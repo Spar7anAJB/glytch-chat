@@ -725,12 +725,12 @@ async function fetchGiphyGifs(query: string, limit: number): Promise<{ results: 
       Accept: "application/json",
     },
   });
-  const data = await res.json().catch(() => ({}));
+  const data = await res.json().catch(() => null);
   if (!res.ok) {
     const message = messageFromUnknownJson(data);
-    throw new Error(message || "Could not load GIFs from GIPHY.");
+    throw new Error(message || `Could not load GIFs (status ${res.status}).`);
   }
-  return normalizeGiphyResponse(data);
+  return normalizeGiphyResponse(data || {});
 }
 
 export async function isUsernameAvailable(username: string): Promise<boolean> {
