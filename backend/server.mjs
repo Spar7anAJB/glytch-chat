@@ -42,7 +42,7 @@ function loadWorkspaceEnv() {
 loadWorkspaceEnv();
 
 const API_PORT = Number.parseInt(process.env.API_PORT ?? process.env.PORT ?? "8787", 10);
-const API_HOST = process.env.API_HOST ?? (process.env.PORT ? "0.0.0.0" : "127.0.0.1");
+const API_HOST = process.env.PORT ? "0.0.0.0" : process.env.API_HOST ?? "127.0.0.1";
 const SUPABASE_URL = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "").replace(/\/+$/, "");
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || "";
 const PROFILE_BUCKET = process.env.SUPABASE_PROFILE_BUCKET || process.env.VITE_SUPABASE_PROFILE_BUCKET || "profile-media";
