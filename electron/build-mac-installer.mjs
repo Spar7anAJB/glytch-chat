@@ -122,11 +122,26 @@ function copyReleaseBack() {
   fs.cpSync(stagedReleaseDir, rootReleaseDir, { recursive: true });
 }
 
+function readPackageVersion(workspaceRoot) {
+  const packageJsonPath = path.join(workspaceRoot, "package.json");
+  if (!fs.existsSync(packageJsonPath)) return "0.0.0";
+  try {
+    const parsed = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
+    if (parsed && typeof parsed.version === "string" && parsed.version.trim()) {
+      return parsed.version.trim();
+    }
+  } catch {
+    // Ignore malformed json in staging check.
+  }
+  return "0.0.0";
+}
+
 function main() {
   console.log(`[installer:mac] staging workspace in ${stageDir}`);
   fs.mkdirSync(stageDir, { recursive: true });
 
   copyWorkspaceWithFallback();
+  console.log(`[installer:mac] root version=${readPackageVersion(rootDir)} staged version=${readPackageVersion(stageDir)}`);
   assertInstallerApiUrl(stageDir);
 
   run("npm", ["ci"], { cwd: stageDir });
