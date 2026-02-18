@@ -347,6 +347,10 @@ function getSupabasePublicBaseUrl() {
   return supabaseBaseUrl;
 }
 
+function buildPublicMessageAssetUrl(objectPath: string) {
+  return `${getSupabasePublicBaseUrl()}/storage/v1/object/public/${messageBucket}/${encodePath(objectPath)}`;
+}
+
 function buildBackendSupabasePath(path: string): string {
   const parsed = new URL(path, "http://localhost");
   const { pathname, search } = parsed;
@@ -1459,10 +1463,11 @@ export async function uploadMessageAsset(
     }
 
     const approvedPath = typeof data.objectPath === "string" && data.objectPath.trim().length > 0 ? data.objectPath : objectPath;
+    const approvedUrl = typeof data.url === "string" && data.url.trim().length > 0 ? data.url.trim() : "";
     const approvedType = data.attachmentType === "gif" ? "gif" : data.attachmentType === "image" ? "image" : fallbackAttachmentType;
 
     return {
-      url: approvedPath,
+      url: approvedUrl || approvedPath,
       attachmentType: approvedType,
     };
   }
@@ -1529,9 +1534,10 @@ export async function ingestRemoteMessageAsset(
   if (!approvedPath) {
     throw new Error("Remote media upload did not return a storage path.");
   }
+  const approvedUrl = typeof data.url === "string" && data.url.trim().length > 0 ? data.url.trim() : "";
 
   return {
-    url: approvedPath,
+    url: approvedUrl || approvedPath,
     attachmentType: data.attachmentType === "gif" ? "gif" : "image",
   };
 }
@@ -1544,10 +1550,16 @@ export async function resolveMessageAttachmentUrl(
   assertConfig();
   const objectPath = extractMessageAssetPath(attachmentUrl);
   if (!objectPath) return attachmentUrl;
+  let publicFallbackUrl = attachmentUrl;
+  try {
+    publicFallbackUrl = buildPublicMessageAssetUrl(objectPath);
+  } catch {
+    // Keep raw attachment URL/path as fallback.
+  }
 
   const cached = messageSignedUrlCache.get(objectPath);
   if (cached && cached.expiresAt - Date.now() > MESSAGE_SIGN_URL_REFRESH_BUFFER_MS) {
-    return cached.signedUrl;
+    return cached.signedUrl || publicFallbackUrl;
   }
 
   try {
@@ -1560,10 +1572,10 @@ export async function resolveMessageAttachmentUrl(
     const data = (await readJsonOrThrow(res)) as { signedURL?: string };
     if (!data.signedURL) {
       messageSignedUrlCache.set(objectPath, {
-        signedUrl: null,
+        signedUrl: publicFallbackUrl,
         expiresAt: Date.now() + MESSAGE_SIGN_URL_FAILURE_TTL_MS,
       });
-      return null;
+      return publicFallbackUrl;
     }
     const signedUrl =
       data.signedURL.startsWith("http://") || data.signedURL.startsWith("https://")
@@ -1577,10 +1589,10 @@ export async function resolveMessageAttachmentUrl(
   } catch {
     // Some older rows may reference deleted/private objects. Keep messages readable.
     messageSignedUrlCache.set(objectPath, {
-      signedUrl: null,
+      signedUrl: publicFallbackUrl,
       expiresAt: Date.now() + MESSAGE_SIGN_URL_FAILURE_TTL_MS,
     });
-    return null;
+    return publicFallbackUrl;
   }
 }
 

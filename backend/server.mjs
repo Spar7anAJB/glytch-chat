@@ -701,6 +701,7 @@ async function uploadModeratedMessageMedia(req, res, parsedUrl, pathname) {
   await upstream.arrayBuffer();
   sendJson(res, 200, {
     objectPath,
+    url: publicStorageUrl(MESSAGE_BUCKET, objectPath),
     attachmentType: contentType === "image/gif" ? "gif" : "image",
     moderation: {
       provider: moderation.provider,
@@ -1026,6 +1027,7 @@ async function ingestRemoteMessageMedia(req, res, parsedUrl) {
   await upstream.arrayBuffer();
   sendJson(res, 200, {
     objectPath,
+    url: publicStorageUrl(MESSAGE_BUCKET, objectPath),
     attachmentType: remoteContentType === "image/gif" ? "gif" : "image",
     moderation: {
       provider: moderation.provider,

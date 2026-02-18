@@ -2252,6 +2252,22 @@ type PatchNoteEntry = {
 
 const PATCH_NOTES: PatchNoteEntry[] = [
   {
+    version: "0.1.3",
+    date: "2026-02-18",
+    bugFixes: [
+      "Fixed DM image/GIF rendering when signed media URLs fail by adding resilient media URL fallback handling.",
+      "Improved backend message-media responses to include direct media URLs for better attachment resolution.",
+      "Added GIF send fallback so GIF messages still send even if remote ingest fails for a provider URL.",
+      "Tuned Max voice suppression with stronger voice-band gating to cut more background echo/leakage.",
+    ],
+    newFeatures: [
+      "Patch notes updated for media reliability and suppression improvements in this release.",
+    ],
+    knownIssues: [
+      "Best echo performance still requires headphones when possible on speaker setups.",
+    ],
+  },
+  {
     version: "0.1.1",
     date: "2026-02-18",
     bugFixes: [
@@ -3587,8 +3603,11 @@ export default function ChatDashboard({
         const audioContext = new AudioContext({ latencyHint: "interactive", sampleRate: 48000 });
         const sourceNode = audioContext.createMediaStreamSource(inputStream);
         const highpassNode = audioContext.createBiquadFilter();
+        const rumbleCutNode = audioContext.createBiquadFilter();
         const lowpassNode = audioContext.createBiquadFilter();
+        const mudCutNode = audioContext.createBiquadFilter();
         const presenceNode = audioContext.createBiquadFilter();
+        const clarityNode = audioContext.createBiquadFilter();
         const deEssNode = audioContext.createBiquadFilter();
         const compressorNode = audioContext.createDynamicsCompressor();
         const limiterNode = audioContext.createDynamicsCompressor();
@@ -3602,44 +3621,61 @@ export default function ChatDashboard({
         const profileIsUltra = profile === "ultra";
 
         highpassNode.type = "highpass";
-        highpassNode.frequency.value = profileIsBalanced ? 80 : profileIsUltra ? 110 : 95;
-        highpassNode.Q.value = 0.75;
+        highpassNode.frequency.value = profileIsBalanced ? 85 : profileIsUltra ? 125 : 105;
+        highpassNode.Q.value = 0.8;
+
+        rumbleCutNode.type = "lowshelf";
+        rumbleCutNode.frequency.value = 180;
+        rumbleCutNode.gain.value = profileIsBalanced ? -1.2 : profileIsUltra ? -4.8 : -3.1;
 
         lowpassNode.type = "lowpass";
-        lowpassNode.frequency.value = profileIsBalanced ? 11200 : profileIsUltra ? 7600 : 9000;
+        lowpassNode.frequency.value = profileIsBalanced ? 9800 : profileIsUltra ? 6900 : 8000;
         lowpassNode.Q.value = 0.7;
 
+        mudCutNode.type = "peaking";
+        mudCutNode.frequency.value = 280;
+        mudCutNode.Q.value = 0.95;
+        mudCutNode.gain.value = profileIsBalanced ? -0.8 : profileIsUltra ? -2.9 : -1.8;
+
         presenceNode.type = "peaking";
-        presenceNode.frequency.value = 2550;
-        presenceNode.Q.value = 1.05;
-        presenceNode.gain.value = profileIsBalanced ? 1.4 : profileIsUltra ? 3.4 : 2.4;
+        presenceNode.frequency.value = 2600;
+        presenceNode.Q.value = 1.1;
+        presenceNode.gain.value = profileIsBalanced ? 1.2 : profileIsUltra ? 4.1 : 2.8;
+
+        clarityNode.type = "peaking";
+        clarityNode.frequency.value = 3600;
+        clarityNode.Q.value = 1.15;
+        clarityNode.gain.value = profileIsBalanced ? 0.8 : profileIsUltra ? 2.2 : 1.4;
 
         deEssNode.type = "highshelf";
-        deEssNode.frequency.value = 6400;
-        deEssNode.gain.value = profileIsBalanced ? -0.8 : profileIsUltra ? -2.6 : -1.6;
+        deEssNode.frequency.value = 5800;
+        deEssNode.gain.value = profileIsBalanced ? -0.6 : profileIsUltra ? -2.9 : -1.9;
 
-        compressorNode.threshold.value = profileIsBalanced ? -25 : profileIsUltra ? -35 : -31;
+        compressorNode.threshold.value = profileIsBalanced ? -24 : profileIsUltra ? -36 : -32;
         compressorNode.knee.value = 24;
-        compressorNode.ratio.value = profileIsBalanced ? 3.2 : profileIsUltra ? 6.4 : 4.4;
-        compressorNode.attack.value = 0.003;
-        compressorNode.release.value = profileIsUltra ? 0.22 : 0.18;
+        compressorNode.ratio.value = profileIsBalanced ? 3.3 : profileIsUltra ? 7.2 : 5.1;
+        compressorNode.attack.value = 0.002;
+        compressorNode.release.value = profileIsUltra ? 0.2 : 0.16;
 
-        limiterNode.threshold.value = -7;
+        limiterNode.threshold.value = -8;
         limiterNode.knee.value = 0;
-        limiterNode.ratio.value = 20;
+        limiterNode.ratio.value = 24;
         limiterNode.attack.value = 0.001;
-        limiterNode.release.value = 0.12;
+        limiterNode.release.value = 0.1;
 
-        gateAnalyser.fftSize = 1024;
-        gateAnalyser.smoothingTimeConstant = 0.86;
+        gateAnalyser.fftSize = 2048;
+        gateAnalyser.smoothingTimeConstant = 0.9;
         gateGainNode.gain.value = 1;
 
         outputGainNode.gain.value = normalizeMicInputGainPercent(settings.inputGainPercent) / 100;
 
         sourceNode.connect(highpassNode);
-        highpassNode.connect(lowpassNode);
-        lowpassNode.connect(presenceNode);
-        presenceNode.connect(deEssNode);
+        highpassNode.connect(rumbleCutNode);
+        rumbleCutNode.connect(lowpassNode);
+        lowpassNode.connect(mudCutNode);
+        mudCutNode.connect(presenceNode);
+        presenceNode.connect(clarityNode);
+        clarityNode.connect(deEssNode);
         deEssNode.connect(compressorNode);
         compressorNode.connect(limiterNode);
         limiterNode.connect(gateGainNode);
@@ -3647,18 +3683,30 @@ export default function ChatDashboard({
         gateGainNode.connect(outputGainNode);
         outputGainNode.connect(destinationNode);
 
-        // Aggressive speech gate: keep low-level room/speaker leakage from being sent when you're not speaking.
+        // Voice-aware gate: combine amplitude and speech-band energy to cut room echo/leakage.
         const gateData = new Uint8Array(gateAnalyser.fftSize);
+        const gateFrequencyData = new Uint8Array(gateAnalyser.frequencyBinCount);
         let smoothedRms = 0;
+        let smoothedSpeechRatio = 1;
         let gateOpen = false;
         let gateHoldUntil = 0;
-        const openThreshold = profileIsUltra ? 0.018 : profileIsBalanced ? 0.024 : 0.021;
-        const closeThreshold = openThreshold * 0.68;
-        const closedGain = profileIsUltra ? 0.03 : profileIsBalanced ? 0.16 : 0.1;
-        const holdMs = profileIsUltra ? 210 : 180;
+        const openThreshold = profileIsUltra ? 0.02 : profileIsBalanced ? 0.024 : 0.022;
+        const closeThreshold = profileIsUltra ? 0.013 : profileIsBalanced ? 0.016 : 0.0145;
+        const openSpeechRatio = profileIsUltra ? 1.4 : profileIsBalanced ? 1.16 : 1.28;
+        const closeSpeechRatio = profileIsUltra ? 1.08 : profileIsBalanced ? 0.96 : 1.02;
+        const closedGain = profileIsUltra ? 0.006 : profileIsBalanced ? 0.12 : 0.04;
+        const holdMs = profileIsUltra ? 250 : profileIsBalanced ? 170 : 210;
+
+        const nyquist = audioContext.sampleRate / 2;
+        const binWidthHz = nyquist / gateFrequencyData.length;
+        const speechStartBin = Math.max(1, Math.floor(140 / binWidthHz));
+        const speechEndBin = Math.min(gateFrequencyData.length - 1, Math.ceil(4200 / binWidthHz));
+        const lowNoiseEndBin = Math.max(2, Math.ceil(120 / binWidthHz));
+        const highNoiseStartBin = Math.min(gateFrequencyData.length - 2, Math.floor(5600 / binWidthHz));
 
         const updateGate = () => {
           gateAnalyser.getByteTimeDomainData(gateData);
+          gateAnalyser.getByteFrequencyData(gateFrequencyData);
           let rms = 0;
           for (let i = 0; i < gateData.length; i += 1) {
             const normalized = (gateData[i] - 128) / 128;
@@ -3667,17 +3715,40 @@ export default function ChatDashboard({
           rms = Math.sqrt(rms / gateData.length);
           smoothedRms = smoothedRms * 0.84 + rms * 0.16;
 
+          let speechEnergy = 0;
+          let noiseEnergy = 0;
+          for (let i = speechStartBin; i <= speechEndBin; i += 1) {
+            const sample = gateFrequencyData[i] || 0;
+            speechEnergy += sample * sample;
+          }
+          for (let i = 0; i <= lowNoiseEndBin; i += 1) {
+            const sample = gateFrequencyData[i] || 0;
+            noiseEnergy += sample * sample;
+          }
+          for (let i = highNoiseStartBin; i < gateFrequencyData.length; i += 1) {
+            const sample = gateFrequencyData[i] || 0;
+            noiseEnergy += sample * sample;
+          }
+          const speechRatio = speechEnergy / (noiseEnergy + 1);
+          smoothedSpeechRatio = smoothedSpeechRatio * 0.82 + speechRatio * 0.18;
+
           const nowMs = Date.now();
-          if (smoothedRms >= openThreshold) {
+          const loudVoiceOverride = smoothedRms >= openThreshold * 1.35;
+          if ((smoothedRms >= openThreshold && smoothedSpeechRatio >= openSpeechRatio) || loudVoiceOverride) {
             gateOpen = true;
             gateHoldUntil = nowMs + holdMs;
-          } else if (gateOpen && smoothedRms <= closeThreshold && nowMs > gateHoldUntil) {
+          } else if (
+            gateOpen &&
+            smoothedRms <= closeThreshold &&
+            smoothedSpeechRatio <= closeSpeechRatio &&
+            nowMs > gateHoldUntil
+          ) {
             gateOpen = false;
           }
 
           const targetGain = gateOpen ? 1 : closedGain;
           try {
-            gateGainNode.gain.setTargetAtTime(targetGain, audioContext.currentTime, 0.02);
+            gateGainNode.gain.setTargetAtTime(targetGain, audioContext.currentTime, gateOpen ? 0.012 : 0.028);
           } catch {
             gateGainNode.gain.value = targetGain;
           }
@@ -9488,9 +9559,15 @@ export default function ChatDashboard({
           if (!thirdPartyIntegrationsEnabled) {
             throw new Error("Third-party integrations are disabled.");
           }
-          const uploaded = await ingestRemoteMessageAsset(accessToken, uploadContext, uploadContextId, selectedGif.url);
-          uploadedAttachmentUrl = uploaded.url;
-          uploadedAttachmentType = uploaded.attachmentType;
+          try {
+            const uploaded = await ingestRemoteMessageAsset(accessToken, uploadContext, uploadContextId, selectedGif.url);
+            uploadedAttachmentUrl = uploaded.url;
+            uploadedAttachmentType = uploaded.attachmentType;
+          } catch {
+            // Keep GIF sending resilient when backend ingestion fails for a provider URL.
+            uploadedAttachmentUrl = selectedGif.url;
+            uploadedAttachmentType = "gif";
+          }
         }
       } catch (err) {
         setChatError(err instanceof Error ? err.message : "Could not upload attachment.");
