@@ -1,23 +1,23 @@
 {
   "app": "Glytch Chat",
-  "generatedAt": "2026-02-18T21:15:02.270Z",
+  "generatedAt": "2026-02-18T21:39:27.732Z",
   "version": "0.1.3",
   "platforms": {
     "mac": {
       "version": "0.1.3",
       "fileName": "glytch-chat-installer.dmg",
       "sourceArtifact": "glytch-chat-0.1.3-mac-x64.dmg",
-      "sizeBytes": 111347038,
-      "sha256": "f645ac6a48c40477725058ea6d7b80c2eb638bb559708b85ec561930d26f5e3f",
-      "updatedAt": "2026-02-18T21:13:38.015Z"
+      "sizeBytes": 111347461,
+      "sha256": "dc11243fbc218054cdb0a21fe852af02469731537ed5708570439a1623f63508",
+      "updatedAt": "2026-02-18T21:37:56.014Z"
     },
     "windows": {
       "version": "0.1.3",
       "fileName": "glytch-chat-setup.exe",
       "sourceArtifact": "glytch-chat-0.1.3-win-x64.exe",
-      "sizeBytes": 83819226,
-      "sha256": "ba337e19784326f610929b8cc749b5fe20b80d0be419da81f471c2ba7edc14a1",
-      "updatedAt": "2026-02-18T21:15:02.082Z"
+      "sizeBytes": 83818801,
+      "sha256": "25211d2a9a34d747d63763b59217f2bc2a5a117d1bcaeb044e9f56078c71bd3f",
+      "updatedAt": "2026-02-18T21:39:27.558Z"
     }
   }
 }
