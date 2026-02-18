@@ -8,6 +8,10 @@ type ElectronBridgeApi = {
   getAppVersion?: () => Promise<string>;
   downloadAndInstallUpdate?: (downloadUrl: string) => Promise<{ ok: boolean }>;
   openUninstall?: () => Promise<{ ok: boolean; launched?: boolean }>;
+  getMediaPermissionStatus?: (
+    kind: "camera" | "microphone",
+  ) => Promise<{ ok: boolean; status: string; error?: string }>;
+  openWindowsPrivacySettings?: (kind: "camera" | "microphone" | "screen" | "privacy") => Promise<{ ok: boolean }>;
 };
 
 declare global {

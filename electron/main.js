@@ -1,4 +1,4 @@
-import { app, BrowserWindow, desktopCapturer, ipcMain, nativeImage, session, shell } from "electron";
+import { app, BrowserWindow, desktopCapturer, ipcMain, nativeImage, session, shell, systemPreferences } from "electron";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -239,6 +239,44 @@ ipcMain.handle("electron:open-uninstall", async () => {
   return { ok: true, launched: false };
 });
 
+ipcMain.handle("electron:get-media-permission-status", async (_event, kind) => {
+  const mediaKind = kind === "camera" ? "camera" : kind === "microphone" ? "microphone" : null;
+  if (!mediaKind) {
+    return { ok: false, status: "unknown", error: "Unknown media permission kind." };
+  }
+
+  try {
+    if (!systemPreferences || typeof systemPreferences.getMediaAccessStatus !== "function") {
+      return { ok: true, status: "unknown" };
+    }
+    const status = systemPreferences.getMediaAccessStatus(mediaKind);
+    return { ok: true, status: typeof status === "string" ? status : "unknown" };
+  } catch (error) {
+    return {
+      ok: false,
+      status: "unknown",
+      error: error instanceof Error ? error.message : "Could not read media permission status.",
+    };
+  }
+});
+
+ipcMain.handle("electron:open-windows-privacy-settings", async (_event, kind) => {
+  if (!isWindows) {
+    throw new Error("Windows privacy settings are only available on Windows.");
+  }
+
+  const route =
+    kind === "camera"
+      ? "ms-settings:privacy-webcam"
+      : kind === "microphone"
+        ? "ms-settings:privacy-microphone"
+        : kind === "screen"
+          ? "ms-settings:privacy-screencapture"
+          : "ms-settings:privacy";
+  await shell.openExternal(route);
+  return { ok: true };
+});
+
 app.whenReady().then(() => {
   applyRuntimeAppIcon();
 
@@ -258,6 +296,13 @@ app.whenReady().then(() => {
     },
     { useSystemPicker: true },
   );
+
+  session.defaultSession.setPermissionCheckHandler((_webContents, permission) => {
+    if (permission === "media" || permission === "display-capture") {
+      return true;
+    }
+    return false;
+  });
 
   session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
     if (permission === "media" || permission === "display-capture") {

@@ -3184,3 +3184,27 @@ export async function listVoiceSignals(
 
   return (await readJsonOrThrow(res)) as VoiceSignal[];
 }
+
+export async function getLatestVoiceSignalId(
+  accessToken: string,
+  roomKey: string,
+  currentUserId: string,
+): Promise<number> {
+  assertConfig();
+  const query = new URLSearchParams({
+    select: "id",
+    room_key: `eq.${roomKey}`,
+    or: `(target_id.is.null,target_id.eq.${currentUserId},sender_id.eq.${currentUserId})`,
+    order: "id.desc",
+    limit: "1",
+  });
+
+  const res = await supabaseFetch(`/rest/v1/voice_signals?${query.toString()}`, {
+    method: "GET",
+    headers: supabaseHeaders(accessToken),
+  });
+  const rows = (await readJsonOrThrow(res)) as Array<{ id?: number }>;
+  const latest = rows[0]?.id;
+  if (!Number.isFinite(latest)) return 0;
+  return Math.max(0, Math.trunc(latest || 0));
+}

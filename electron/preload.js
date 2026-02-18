@@ -8,4 +8,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getAppVersion: () => ipcRenderer.invoke("electron:get-app-version"),
   downloadAndInstallUpdate: (downloadUrl) => ipcRenderer.invoke("electron:download-and-install-update", downloadUrl),
   openUninstall: () => ipcRenderer.invoke("electron:open-uninstall"),
+  getMediaPermissionStatus: (kind) => ipcRenderer.invoke("electron:get-media-permission-status", kind),
+  openWindowsPrivacySettings: (kind) => ipcRenderer.invoke("electron:open-windows-privacy-settings", kind),
 });

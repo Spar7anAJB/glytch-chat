@@ -66,6 +66,7 @@ import {
   listGlytches,
   listDmMessageReactions,
   listVoiceParticipants,
+  getLatestVoiceSignalId,
   listVoiceSignals,
   joinVoiceRoom,
   leaveVoiceRoom,
@@ -541,6 +542,16 @@ const REACTION_EMOJIS = [
 ];
 const GLYTCH_INVITE_MESSAGE_PREFIX = "[[GLYTCH_INVITE]]";
 const DM_REPLY_MESSAGE_PREFIX = "[[DM_REPLY]]";
+const MISSING_SELF_PARTICIPANT_MAX_MISSES = 8;
+const KRISP_ENABLED = String(import.meta.env.VITE_KRISP_ENABLED || "").toLowerCase() === "true";
+const KRISP_MODULE_URL = (import.meta.env.VITE_KRISP_MODULE_URL as string | undefined)?.trim() || "/krisp/dist/krispsdk.mjs";
+const KRISP_MODEL_NC_URL =
+  (import.meta.env.VITE_KRISP_MODEL_NC_URL as string | undefined)?.trim() || "/krisp/dist/models/model_nc.kef";
+const KRISP_MODEL_8_URL =
+  (import.meta.env.VITE_KRISP_MODEL_8_URL as string | undefined)?.trim() || "/krisp/dist/models/model_8.kef";
+const KRISP_MODEL_BVC_URL = (import.meta.env.VITE_KRISP_MODEL_BVC_URL as string | undefined)?.trim() || "";
+const KRISP_BVC_ALLOWED_DEVICES_URL =
+  (import.meta.env.VITE_KRISP_BVC_ALLOWED_DEVICES_URL as string | undefined)?.trim() || "";
 const SHOWCASE_KIND_LABELS: Record<ShowcaseKind, string> = {
   text: "Text",
   links: "Links",
@@ -857,11 +868,50 @@ const ROLE_PERMISSION_OPTIONS: Array<{ key: GlytchRolePermissionKey; label: stri
 type VoiceAudioConstraints = MediaTrackConstraints & {
   latency?: number | ConstrainDouble;
   voiceIsolation?: ConstrainBoolean;
+  echoCancellationType?: string;
   googAutoGainControl?: boolean;
   googEchoCancellation?: boolean;
+  googEchoCancellation2?: boolean;
+  googDAEchoCancellation?: boolean;
+  googExperimentalEchoCancellation?: boolean;
   googHighpassFilter?: boolean;
   googNoiseSuppression?: boolean;
+  googNoiseSuppression2?: boolean;
+  googAudioMirroring?: boolean;
+  googAudioNetworkAdaptor?: boolean;
   googTypingNoiseDetection?: boolean;
+};
+
+type KrispNoiseFilterNode = AudioNode & {
+  enable?: () => void;
+  disable?: () => void;
+  dispose?: () => Promise<void> | void;
+};
+
+type KrispSDKInstance = {
+  init: () => Promise<void>;
+  createNoiseFilter: (
+    options: {
+      audioContext: AudioContext;
+      stream: MediaStream;
+      isInbound: boolean;
+      useBVC?: boolean;
+      enableOnceReady?: boolean;
+    },
+    onReady?: () => void,
+    onDispose?: () => void,
+  ) => Promise<KrispNoiseFilterNode>;
+  dispose?: () => Promise<void> | void;
+};
+
+type KrispSDKConstructor = {
+  new (config: { params: Record<string, unknown> }): KrispSDKInstance;
+  isSupported?: () => boolean;
+};
+
+type KrispSDKModule = {
+  default?: KrispSDKConstructor;
+  KrispSDK?: KrispSDKConstructor;
 };
 
 type ElectronDesktopVideoTrackConstraints = MediaTrackConstraints & {
@@ -1789,16 +1839,23 @@ function buildVoiceAudioConstraints(): VoiceAudioConstraints {
     echoCancellation: { ideal: true },
     noiseSuppression: { ideal: true },
     autoGainControl: { ideal: true },
-    channelCount: { ideal: 1 },
-    latency: { ideal: 0.01, max: 0.08 },
-    sampleRate: { ideal: 48000 },
+    channelCount: { ideal: 1, max: 1 },
+    latency: { ideal: 0.008, max: 0.04 },
+    sampleRate: { ideal: 48000, max: 48000 },
     sampleSize: { ideal: 16 },
     // Non-standard but supported by some engines (ignored where unsupported).
     voiceIsolation: true,
+    echoCancellationType: "system",
     googAutoGainControl: true,
     googEchoCancellation: true,
+    googEchoCancellation2: true,
+    googDAEchoCancellation: true,
+    googExperimentalEchoCancellation: true,
     googHighpassFilter: true,
     googNoiseSuppression: true,
+    googNoiseSuppression2: true,
+    googAudioMirroring: false,
+    googAudioNetworkAdaptor: true,
     googTypingNoiseDetection: true,
   };
 }
@@ -2111,20 +2168,33 @@ function formatLocalDateTime(rawIso: string | null): string {
 }
 
 type PatchNoteEntry = {
+  version: string;
   date: string;
-  title: string;
-  bullets: string[];
+  bugFixes: string[];
+  newFeatures: string[];
+  knownIssues: string[];
 };
 
 const PATCH_NOTES: PatchNoteEntry[] = [
   {
+    version: "0.1.1",
     date: "2026-02-18",
-    title: "v0.1.1",
-    bullets: [
+    bugFixes: [
       "Windows desktop media improvements for screen share and webcam fallback behavior.",
       "Voice stability hardening to reduce random disconnects and false kick states.",
       "DM voice UX upgrades: per-user volume control and message date separators.",
-      "Desktop polish: in-app updates, version visibility, uninstall shortcut, and cleaner window chrome.",
+      "Desktop notification behavior now only alerts when the app is not focused.",
+      "Profile banner rendering now preserves full banner framing instead of clipping.",
+    ],
+    newFeatures: [
+      "In-app desktop updater flow for Windows with version visibility in system settings.",
+      "Patch notes view directly in the app navigation.",
+      "Custom user soundboard support (up to 6 uploaded clips).",
+      "Desktop uninstall shortcut in system settings.",
+    ],
+    knownIssues: [
+      "Soundboard playback currently plays locally and is not yet mixed into outgoing voice for other participants.",
+      "Installer/app icon asset pipeline still needs dedicated .ico/.icns files for full native icon coverage.",
     ],
   },
 ];
@@ -2174,6 +2244,11 @@ function fileToDataUrl(file: File): Promise<string> {
     };
     reader.readAsDataURL(file);
   });
+}
+
+function isPermissionDeniedMediaError(error: unknown): boolean {
+  if (!(error instanceof DOMException)) return false;
+  return error.name === "NotAllowedError" || error.name === "PermissionDeniedError" || error.name === "SecurityError";
 }
 
 export default function ChatDashboard({
@@ -2320,6 +2395,7 @@ export default function ChatDashboard({
   const [desktopUninstallBusy, setDesktopUninstallBusy] = useState(false);
   const [desktopUpdateNotice, setDesktopUpdateNotice] = useState("");
   const [desktopUpdateError, setDesktopUpdateError] = useState("");
+  const [selectedPatchNoteVersion, setSelectedPatchNoteVersion] = useState(PATCH_NOTES[0]?.version || "");
   const [isUserIdle, setIsUserIdle] = useState(false);
   const [profileSaveError, setProfileSaveError] = useState("");
   const [profileSaveBusy, setProfileSaveBusy] = useState(false);
@@ -2364,6 +2440,9 @@ export default function ChatDashboard({
   const [soundboardBusy, setSoundboardBusy] = useState(false);
   const [soundboardPlayingId, setSoundboardPlayingId] = useState<string | null>(null);
   const [soundboardError, setSoundboardError] = useState("");
+  const [soundboardPopoverOpen, setSoundboardPopoverOpen] = useState(false);
+  const [showScrollToLatestButton, setShowScrollToLatestButton] = useState(false);
+  const [windowsPrivacyOpenBusy, setWindowsPrivacyOpenBusy] = useState<"camera" | "microphone" | "screen" | null>(null);
   const [remoteVideoShareKinds, setRemoteVideoShareKinds] = useState<Record<string, LocalVideoShareKind | null>>({});
   const [dmIncomingCallCounts, setDmIncomingCallCounts] = useState<Record<number, number>>({});
   const [screenShareBusy, setScreenShareBusy] = useState(false);
@@ -2429,6 +2508,13 @@ export default function ChatDashboard({
   const remoteScreenDemoteTimeoutsRef = useRef<Map<string, number>>(new Map());
   const remoteAudioElsRef = useRef<Map<string, HTMLAudioElement>>(new Map());
   const speakingAnalyserCleanupRef = useRef<Map<string, () => void>>(new Map());
+  const krispSdkRef = useRef<KrispSDKInstance | null>(null);
+  const krispNoiseFilterNodeRef = useRef<KrispNoiseFilterNode | null>(null);
+  const krispAudioContextRef = useRef<AudioContext | null>(null);
+  const krispSourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const krispDestinationNodeRef = useRef<MediaStreamAudioDestinationNode | null>(null);
+  const krispInputStreamRef = useRef<MediaStream | null>(null);
+  const krispUnavailableLoggedRef = useRef(false);
   const signalSinceIdRef = useRef(0);
   const previousVoiceParticipantIdsRef = useRef<string[]>([]);
   const missingSelfParticipantCountRef = useRef(0);
@@ -3023,8 +3109,163 @@ export default function ChatDashboard({
     }
   };
 
+  const disposeKrispVoicePipeline = useCallback(async () => {
+    const sdk = krispSdkRef.current;
+    const filterNode = krispNoiseFilterNodeRef.current;
+    const audioContext = krispAudioContextRef.current;
+    const sourceNode = krispSourceNodeRef.current;
+    const destinationNode = krispDestinationNodeRef.current;
+    const inputStream = krispInputStreamRef.current;
+
+    krispSdkRef.current = null;
+    krispNoiseFilterNodeRef.current = null;
+    krispAudioContextRef.current = null;
+    krispSourceNodeRef.current = null;
+    krispDestinationNodeRef.current = null;
+    krispInputStreamRef.current = null;
+
+    try {
+      filterNode?.disable?.();
+    } catch {
+      // Ignore SDK-specific disable failures.
+    }
+    try {
+      sourceNode?.disconnect();
+    } catch {
+      // Ignore disconnect failures.
+    }
+    try {
+      filterNode?.disconnect();
+    } catch {
+      // Ignore disconnect failures.
+    }
+    try {
+      destinationNode?.disconnect();
+    } catch {
+      // Ignore disconnect failures.
+    }
+
+    const pending: Promise<unknown>[] = [];
+    const pushMaybePromise = (value: unknown) => {
+      if (!value || typeof value !== "object" || !("then" in value)) return;
+      pending.push((value as Promise<unknown>).catch(() => undefined));
+    };
+    try {
+      pushMaybePromise(filterNode?.dispose?.());
+    } catch {
+      // Ignore SDK-specific dispose failures.
+    }
+    try {
+      pushMaybePromise(sdk?.dispose?.());
+    } catch {
+      // Ignore SDK-specific dispose failures.
+    }
+    try {
+      if (audioContext) {
+        pushMaybePromise(audioContext.close());
+      }
+    } catch {
+      // Ignore AudioContext close failures.
+    }
+
+    inputStream?.getTracks().forEach((track) => {
+      track.stop();
+    });
+
+    if (pending.length > 0) {
+      await Promise.all(pending);
+    }
+  }, []);
+
+  const buildKrispNoiseSuppressedStream = useCallback(
+    async (inputStream: MediaStream): Promise<MediaStream | null> => {
+      if (!KRISP_ENABLED) return null;
+      if (!window.electronAPI?.isElectron) return null;
+      if (!KRISP_MODULE_URL || !KRISP_MODEL_NC_URL) return null;
+
+      await disposeKrispVoicePipeline();
+
+      try {
+        const krispModule = (await import(/* @vite-ignore */ KRISP_MODULE_URL)) as KrispSDKModule;
+        const KrispSDK = krispModule.default || krispModule.KrispSDK;
+        if (!KrispSDK) {
+          throw new Error("Krisp SDK module did not export a constructor.");
+        }
+        if (typeof KrispSDK.isSupported === "function" && !KrispSDK.isSupported()) {
+          if (!krispUnavailableLoggedRef.current) {
+            krispUnavailableLoggedRef.current = true;
+            console.warn("[voice] Krisp SDK is not supported on this device/runtime.");
+          }
+          return null;
+        }
+
+        const models: Record<string, unknown> = {
+          modelNNCPath: KRISP_MODEL_NC_URL,
+          model8Path: KRISP_MODEL_8_URL || KRISP_MODEL_NC_URL,
+        };
+        if (KRISP_MODEL_BVC_URL) {
+          models.modelBVCPath = KRISP_MODEL_BVC_URL;
+        }
+        const params: Record<string, unknown> = {
+          debugLogs: false,
+          logProcessStats: false,
+          useSharedArrayBuffer: false,
+          models,
+        };
+        if (KRISP_BVC_ALLOWED_DEVICES_URL) {
+          params.bvcAllowedDevicesPath = KRISP_BVC_ALLOWED_DEVICES_URL;
+        }
+
+        const sdk = new KrispSDK({ params });
+        await sdk.init();
+
+        const audioContext = new AudioContext({ latencyHint: "interactive", sampleRate: 48000 });
+        const sourceNode = audioContext.createMediaStreamSource(inputStream);
+        const destinationNode = audioContext.createMediaStreamDestination();
+        const filterNode = await sdk.createNoiseFilter({
+          audioContext,
+          stream: inputStream,
+          isInbound: false,
+          useBVC: Boolean(KRISP_MODEL_BVC_URL && KRISP_BVC_ALLOWED_DEVICES_URL),
+          enableOnceReady: true,
+        });
+
+        sourceNode.connect(filterNode);
+        filterNode.connect(destinationNode);
+
+        try {
+          filterNode.enable?.();
+        } catch {
+          // Ignore optional enable call failures.
+        }
+        if (audioContext.state !== "running") {
+          await audioContext.resume().catch(() => undefined);
+        }
+
+        krispSdkRef.current = sdk;
+        krispNoiseFilterNodeRef.current = filterNode;
+        krispAudioContextRef.current = audioContext;
+        krispSourceNodeRef.current = sourceNode;
+        krispDestinationNodeRef.current = destinationNode;
+        krispInputStreamRef.current = inputStream;
+        return destinationNode.stream;
+      } catch (err) {
+        await disposeKrispVoicePipeline();
+        if (!krispUnavailableLoggedRef.current) {
+          krispUnavailableLoggedRef.current = true;
+          console.warn("[voice] Krisp startup failed. Falling back to browser suppression.", err);
+        }
+        return null;
+      }
+    },
+    [disposeKrispVoicePipeline],
+  );
+
   const applyLocalVoiceMute = useCallback((muted: boolean) => {
     localStreamRef.current?.getAudioTracks().forEach((track) => {
+      track.enabled = !muted;
+    });
+    krispInputStreamRef.current?.getAudioTracks().forEach((track) => {
       track.enabled = !muted;
     });
   }, []);
@@ -3373,9 +3614,13 @@ export default function ChatDashboard({
     profileForm.notificationsEnabled && profileForm.notifyFriendRequestAccepted;
   const thirdPartyIntegrationsEnabled = profileForm.thirdPartyIntegrationsEnabled;
   const isElectronRuntime = typeof window !== "undefined" && Boolean(window.electronAPI?.isElectron);
+  const isWindowsElectronRuntime =
+    typeof window !== "undefined" && Boolean(window.electronAPI?.isElectron && window.electronAPI.platform === "win32");
   const electronDesktopPlatform =
     typeof window === "undefined" ? null : normalizeDesktopUpdatePlatform(window.electronAPI?.platform);
   const supportsInAppInstallerUpdates = isElectronRuntime && electronDesktopPlatform === "windows";
+  const selectedPatchNoteEntry =
+    PATCH_NOTES.find((entry) => entry.version === selectedPatchNoteVersion) || PATCH_NOTES[0] || null;
   const isDesktopUpdateAvailable =
     desktopLatestVersion.length > 0 &&
     desktopUpdateDownloadUrl.length > 0 &&
@@ -3484,6 +3729,41 @@ export default function ChatDashboard({
       setDesktopUninstallBusy(false);
     }
   }, [isElectronRuntime]);
+
+  const openWindowsPrivacySettings = useCallback(
+    async (kind: "camera" | "microphone" | "screen") => {
+      if (!isWindowsElectronRuntime || !window.electronAPI?.openWindowsPrivacySettings) return;
+      setWindowsPrivacyOpenBusy(kind);
+      try {
+        await window.electronAPI.openWindowsPrivacySettings(kind);
+      } finally {
+        setWindowsPrivacyOpenBusy((prev) => (prev === kind ? null : prev));
+      }
+    },
+    [isWindowsElectronRuntime],
+  );
+
+  const ensureWindowsMediaStatus = useCallback(
+    async (kind: "camera" | "microphone"): Promise<boolean> => {
+      if (!isWindowsElectronRuntime || !window.electronAPI?.getMediaPermissionStatus) return true;
+      try {
+        const result = await window.electronAPI.getMediaPermissionStatus(kind);
+        const normalized = (result?.status || "").toLowerCase();
+        if (normalized === "denied" || normalized === "restricted") {
+          setVoiceError(
+            kind === "camera"
+              ? "Windows camera permission is blocked for Glytch Chat. Enable camera access in Windows privacy settings."
+              : "Windows microphone permission is blocked for Glytch Chat. Enable microphone access in Windows privacy settings.",
+          );
+          return false;
+        }
+      } catch {
+        // If status detection fails, continue and let getUserMedia provide the canonical error.
+      }
+      return true;
+    },
+    [isWindowsElectronRuntime],
+  );
 
   useEffect(() => {
     if (!isElectronRuntime || !window.electronAPI?.getAppVersion) return;
@@ -3899,6 +4179,7 @@ export default function ChatDashboard({
   }, []);
 
   const scrollMessageListToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
+    setShowScrollToLatestButton(false);
     requestAnimationFrame(() => {
       messageEndRef.current?.scrollIntoView({ behavior, block: "end" });
     });
@@ -3927,7 +4208,30 @@ export default function ChatDashboard({
     setGifError("");
     setComposerAttachment(null);
     setSelectedGif(null);
+    setShowScrollToLatestButton(false);
+    setSoundboardPopoverOpen(false);
   }, [viewMode, activeConversationId, activeGroupChatId, activeChannelId]);
+
+  useEffect(() => {
+    if (voiceRoomKey) return;
+    setSoundboardPopoverOpen(false);
+  }, [voiceRoomKey]);
+
+  useEffect(() => {
+    const container = messageDisplayRef.current;
+    if (!container) return;
+
+    const syncButtonVisibility = () => {
+      const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+      setShowScrollToLatestButton(distanceFromBottom > 72);
+    };
+
+    syncButtonVisibility();
+    container.addEventListener("scroll", syncButtonVisibility, { passive: true });
+    return () => {
+      container.removeEventListener("scroll", syncButtonVisibility);
+    };
+  }, [activeConversationId, activeGroupChatId, activeChannelId, messages.length, viewMode]);
 
   useEffect(() => {
     if (!messageContextMenu) return;
@@ -4361,6 +4665,21 @@ export default function ChatDashboard({
       })
       .catch(() => undefined);
   }, [accessToken]);
+
+  const handleOpenDmConversation = useCallback(
+    (conversationId: number, unreadCount: number) => {
+      if (!Number.isFinite(conversationId) || conversationId <= 0) return;
+      setDmSidebarContextMenu(null);
+      setActiveConversationId(conversationId);
+      if (unreadCount <= 0) return;
+      setUnreadDmCounts((prev) => {
+        if (!prev[conversationId]) return prev;
+        return { ...prev, [conversationId]: 0 };
+      });
+      flushDmConversationReadOnLeave(conversationId);
+    },
+    [flushDmConversationReadOnLeave],
+  );
 
   const loadGlytchSidebarData = useCallback(async () => {
     const rows = await listGlytches(accessToken);
@@ -5959,7 +6278,7 @@ export default function ChatDashboard({
         const myParticipantRow = rows.find((row) => row.user_id === currentUserId) || null;
         if (voiceRoomKey && !myParticipantRow) {
           missingSelfParticipantCountRef.current += 1;
-          if (missingSelfParticipantCountRef.current >= 3) {
+          if (missingSelfParticipantCountRef.current >= MISSING_SELF_PARTICIPANT_MAX_MISSES) {
             await stopVoiceSession(false);
             if (!mounted) return;
             setVoiceError("You were removed from this voice channel.");
@@ -6009,8 +6328,22 @@ export default function ChatDashboard({
         if (voiceRoomKey) {
           const peerIds = rows.map((row) => row.user_id).filter((id) => id !== currentUserId);
           for (const userId of peerIds) {
-            if (!peerConnectionsRef.current.has(userId) && currentUserId < userId) {
+            const existingPc = peerConnectionsRef.current.get(userId);
+            if (!existingPc && currentUserId < userId) {
               await getOrCreatePeerConnection(userId, true);
+              continue;
+            }
+            if (!existingPc) continue;
+            const shouldResetPeer =
+              existingPc.connectionState === "disconnected" ||
+              existingPc.connectionState === "failed" ||
+              existingPc.iceConnectionState === "disconnected" ||
+              existingPc.iceConnectionState === "failed";
+            if (shouldResetPeer) {
+              closePeerConnection(userId);
+              if (currentUserId < userId) {
+                await getOrCreatePeerConnection(userId, true);
+              }
             }
           }
 
@@ -6164,10 +6497,31 @@ export default function ChatDashboard({
           }
 
           if (signal.kind === "offer") {
-            const pc = await getOrCreatePeerConnection(signal.sender_id, false);
+            let pc = await getOrCreatePeerConnection(signal.sender_id, false);
             const sdp = payload.sdp as RTCSessionDescriptionInit | undefined;
             if (!sdp) continue;
-            await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+            if (pc.signalingState !== "stable") {
+              try {
+                await pc.setLocalDescription({ type: "rollback" });
+              } catch {
+                // Ignore rollback failures and retry with a clean connection below if needed.
+              }
+            }
+            try {
+              await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+            } catch (err) {
+              const message = err instanceof Error ? err.message.toLowerCase() : "";
+              const shouldResetPeer =
+                message.includes("wrong state") ||
+                message.includes("failed to set remote offer") ||
+                message.includes("cannot set remote offer");
+              if (!shouldResetPeer) {
+                throw err;
+              }
+              closePeerConnection(signal.sender_id);
+              pc = await getOrCreatePeerConnection(signal.sender_id, false);
+              await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+            }
             await flushPendingCandidates(signal.sender_id, pc);
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
@@ -8902,6 +9256,7 @@ export default function ChatDashboard({
     if (cameraFallbackInFlightRef.current) return false;
     if (localCameraTrackRef.current && localCameraStreamRef.current) return true;
     if (typeof navigator === "undefined" || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return false;
+    if (!(await ensureWindowsMediaStatus("camera"))) return false;
 
     cameraFallbackInFlightRef.current = true;
     try {
@@ -8942,12 +9297,15 @@ export default function ChatDashboard({
 
       attachLocalShareTracksToPeers(stream, "camera");
       return true;
-    } catch {
+    } catch (err) {
+      if (isPermissionDeniedMediaError(err)) {
+        setVoiceError("Camera permission was denied. Allow camera access for Glytch Chat and try again.");
+      }
       return false;
     } finally {
       cameraFallbackInFlightRef.current = false;
     }
-  }, [attachLocalShareTracksToPeers, stopLocalCameraShare]);
+  }, [attachLocalShareTracksToPeers, ensureWindowsMediaStatus, stopLocalCameraShare]);
 
   const handleStartScreenShare = async () => {
     if (!voiceRoomKey) {
@@ -8974,12 +9332,8 @@ export default function ChatDashboard({
         window.electronAPI.getDesktopSourceId &&
         typeof navigator.mediaDevices.getUserMedia === "function",
     );
-    const shouldPreferElectronDesktopCapture =
-      window.electronAPI?.isElectron && window.electronAPI.platform === "win32" && canUseElectronFallback;
     const preferredDesktopSourceId = selectedDesktopSourceId === "auto" ? null : selectedDesktopSourceId;
-    const shouldUseElectronSourceSelection = Boolean(
-      (preferredDesktopSourceId && canUseElectronFallback) || shouldPreferElectronDesktopCapture,
-    );
+    const shouldUseElectronSourceSelection = Boolean(preferredDesktopSourceId && canUseElectronFallback);
     if (!canUseDisplayMedia && !canUseElectronFallback) {
       if (window.electronAPI?.isElectron) {
         setVoiceError("Screen sharing unavailable: missing capture APIs in Electron runtime.");
@@ -8992,7 +9346,7 @@ export default function ChatDashboard({
     setScreenShareBusy(true);
     setVoiceError("");
     try {
-      let stream: MediaStream;
+      let stream: MediaStream | null = null;
       if (shouldUseElectronSourceSelection) {
         stream = await requestElectronScreenStream(preferredDesktopSourceId, screenShareIncludeSystemAudio);
       } else if (canUseDisplayMedia) {
@@ -9004,16 +9358,38 @@ export default function ChatDashboard({
             audio: screenShareIncludeSystemAudio,
           });
         } catch (displayError) {
-          const isSupportIssue =
-            displayError instanceof DOMException &&
-            (displayError.name === "NotSupportedError" || displayError.name === "NotFoundError");
-          if (!isSupportIssue || !canUseElectronFallback) {
-            throw displayError;
+          let recoveredViaVideoOnly = false;
+          let fallbackError: unknown = displayError;
+
+          if (screenShareIncludeSystemAudio && !isPermissionDeniedMediaError(displayError)) {
+            try {
+              stream = await navigator.mediaDevices.getDisplayMedia({
+                video: {
+                  frameRate: { ideal: 30, max: 60 },
+                },
+                audio: false,
+              });
+              recoveredViaVideoOnly = true;
+            } catch (retryError) {
+              fallbackError = retryError;
+            }
           }
-          stream = await requestElectronScreenStream(preferredDesktopSourceId, screenShareIncludeSystemAudio);
+
+          if (!recoveredViaVideoOnly) {
+            const isSupportIssue =
+              fallbackError instanceof DOMException &&
+              (fallbackError.name === "NotSupportedError" || fallbackError.name === "NotFoundError");
+            if (!isSupportIssue || !canUseElectronFallback) {
+              throw fallbackError;
+            }
+            stream = await requestElectronScreenStream(preferredDesktopSourceId, screenShareIncludeSystemAudio);
+          }
         }
       } else {
         stream = await requestElectronScreenStream(preferredDesktopSourceId, screenShareIncludeSystemAudio);
+      }
+      if (!stream) {
+        throw new Error("Could not start screen sharing.");
       }
       const [track] = stream.getVideoTracks();
       if (!track) {
@@ -9042,7 +9418,11 @@ export default function ChatDashboard({
       }
     } catch (err) {
       await stopLocalDesktopShare(false).catch(() => undefined);
-      setVoiceError(err instanceof Error ? err.message : "Could not start screen sharing.");
+      if (isPermissionDeniedMediaError(err)) {
+        setVoiceError("Screen share permission was denied. Allow screen capture access for Glytch Chat and try again.");
+      } else {
+        setVoiceError(err instanceof Error ? err.message : "Could not start screen sharing.");
+      }
     } finally {
       setScreenShareBusy(false);
     }
@@ -9096,8 +9476,8 @@ export default function ChatDashboard({
     const audioCtx = new AudioContext();
     const source = audioCtx.createMediaStreamSource(stream);
     const analyser = audioCtx.createAnalyser();
-    analyser.fftSize = 512;
-    analyser.smoothingTimeConstant = 0.75;
+    analyser.fftSize = 1024;
+    analyser.smoothingTimeConstant = 0.88;
     source.connect(analyser);
 
     const data = new Uint8Array(analyser.frequencyBinCount);
@@ -9115,12 +9495,12 @@ export default function ChatDashboard({
       const avg = sum / data.length;
       smoothedLevel = smoothedLevel * 0.82 + avg * 0.18;
       const nowMs = Date.now();
-      const activateThreshold = 23;
-      const deactivateThreshold = 14;
+      const activateThreshold = 28;
+      const deactivateThreshold = 17;
 
       if (smoothedLevel >= activateThreshold) {
         speakingState = true;
-        holdUntilMs = nowMs + 240;
+        holdUntilMs = nowMs + 320;
       } else if (speakingState && smoothedLevel <= deactivateThreshold && nowMs > holdUntilMs) {
         speakingState = false;
       }
@@ -9236,6 +9616,7 @@ export default function ChatDashboard({
     }
     localStreamRef.current?.getTracks().forEach((track) => track.stop());
     localStreamRef.current = null;
+    void disposeKrispVoicePipeline();
     if (localScreenTrackRef.current) {
       localScreenTrackRef.current.onended = null;
     }
@@ -9281,9 +9662,10 @@ export default function ChatDashboard({
     setRemoteVideoShareKinds({});
     setScreenShareAudioMuted(false);
     setScreenShareBusy(false);
+    pendingCandidatesRef.current.clear();
     signalSinceIdRef.current = 0;
     setSpeakingUserIds([]);
-  }, [closePeerConnection, currentUserId]);
+  }, [closePeerConnection, currentUserId, disposeKrispVoicePipeline]);
 
   const stopVoiceSession = useCallback(async (notifyServer: boolean) => {
     const roomToLeave = voiceRoomKey;
@@ -9664,16 +10046,20 @@ export default function ChatDashboard({
     }
 
     try {
+      if (!(await ensureWindowsMediaStatus("microphone"))) {
+        return;
+      }
+      await disposeKrispVoicePipeline();
       await ensureSoundContext();
-      let stream: MediaStream;
+      let capturedStream: MediaStream;
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
+        capturedStream = await navigator.mediaDevices.getUserMedia({
           audio: buildVoiceAudioConstraints(),
           video: false,
         });
       } catch {
         try {
-          stream = await navigator.mediaDevices.getUserMedia({
+          capturedStream = await navigator.mediaDevices.getUserMedia({
             audio: {
               echoCancellation: true,
               noiseSuppression: true,
@@ -9683,32 +10069,34 @@ export default function ChatDashboard({
             video: false,
           });
         } catch {
-          stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+          capturedStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
         }
       }
 
-      const [localTrack] = stream.getAudioTracks();
-      if (localTrack?.applyConstraints) {
-        await localTrack
-          .applyConstraints({
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-          })
+      const [capturedTrack] = capturedStream.getAudioTracks();
+      if (capturedTrack?.applyConstraints) {
+        await capturedTrack
+          .applyConstraints(buildVoiceAudioConstraints())
           .catch(() => undefined);
       }
 
+      const krispProcessedStream = await buildKrispNoiseSuppressedStream(capturedStream);
+      const stream = krispProcessedStream || capturedStream;
       localStreamRef.current = stream;
       applyLocalVoiceMute(effectiveVoiceMuted);
-      startSpeakingMeter(currentUserId, stream);
-      signalSinceIdRef.current = 0;
-
+      startSpeakingMeter(currentUserId, krispInputStreamRef.current || stream);
+      const latestSignalIdBeforeJoin = await getLatestVoiceSignalId(accessToken, room, currentUserId).catch(() => 0);
+      signalSinceIdRef.current = latestSignalIdBeforeJoin;
       await joinVoiceRoom(accessToken, room, currentUserId, effectiveVoiceMuted, voiceDeafened);
       setVoiceRoomKey(room);
       setVoiceError("");
     } catch (err) {
       teardownVoice();
-      setVoiceError(err instanceof Error ? err.message : "Could not join voice.");
+      if (isPermissionDeniedMediaError(err)) {
+        setVoiceError("Microphone permission was denied. Allow microphone access for Glytch Chat and try again.");
+      } else {
+        setVoiceError(err instanceof Error ? err.message : "Could not join voice.");
+      }
     }
   };
 
@@ -10887,8 +11275,7 @@ export default function ChatDashboard({
                             }
                             type="button"
                             onClick={() => {
-                              setDmSidebarContextMenu(null);
-                              setActiveConversationId(dm.conversationId);
+                              handleOpenDmConversation(dm.conversationId, unreadCount);
                             }}
                           >
                             <span className="dmNameRow">
@@ -11075,20 +11462,19 @@ export default function ChatDashboard({
               </>
             ) : viewMode === "patch-notes" ? (
               <section className="requestSection">
-                <p className="sectionLabel">Release Stream</p>
-                {PATCH_NOTES.map((entry) => (
-                  <article key={`${entry.date}:${entry.title}`} className="requestCard">
-                    <p>
-                      <strong>{entry.title}</strong>
-                    </p>
-                    <p className="smallMuted">{entry.date}</p>
-                    {entry.bullets.map((item) => (
-                      <p key={`${entry.title}:${item}`} className="smallMuted">
-                        - {item}
-                      </p>
-                    ))}
-                  </article>
-                ))}
+                <p className="sectionLabel">Versions</p>
+                <div className="patchNotesSidebarVersions">
+                  {PATCH_NOTES.map((entry) => (
+                    <button
+                      key={`sidebar-patch-${entry.version}`}
+                      className={selectedPatchNoteVersion === entry.version ? "channelItem friendItem active" : "channelItem friendItem"}
+                      type="button"
+                      onClick={() => setSelectedPatchNoteVersion(entry.version)}
+                    >
+                      <span>v{entry.version}</span>
+                    </button>
+                  ))}
+                </div>
               </section>
             ) : viewMode === "glytch" || viewMode === "glytch-settings" ? (
               <>
@@ -12881,28 +13267,72 @@ export default function ChatDashboard({
             )}
           </section>
         ) : viewMode === "patch-notes" ? (
-          <section className="settingsPage" aria-label="Patch notes">
-            <div className="settingsTabs">
-              <button className="tab active" type="button">
-                v0.1.1
-              </button>
-            </div>
-            <section className="requestSection">
-              <p className="sectionLabel">Recent Updates</p>
-              {PATCH_NOTES.map((entry) => (
-                <article key={`main-${entry.date}-${entry.title}`} className="requestCard">
-                  <p>
-                    <strong>{entry.title}</strong>
-                  </p>
-                  <p className="smallMuted">{entry.date}</p>
-                  {entry.bullets.map((item) => (
-                    <p key={`${entry.title}-main-${item}`} className="smallMuted">
-                      - {item}
-                    </p>
+          <section className="settingsPage patchNotesPage" aria-label="Patch notes">
+            <div className="patchNotesLayout">
+              <aside className="patchNotesVersionsPanel" aria-label="Patch note versions">
+                <p className="sectionLabel">Versions</p>
+                <div className="patchNotesVersionsList">
+                  {PATCH_NOTES.map((entry) => (
+                    <button
+                      key={`main-patch-version-${entry.version}`}
+                      className={selectedPatchNoteVersion === entry.version ? "tab active" : "tab"}
+                      type="button"
+                      onClick={() => setSelectedPatchNoteVersion(entry.version)}
+                    >
+                      v{entry.version}
+                    </button>
                   ))}
-                </article>
-              ))}
-            </section>
+                </div>
+              </aside>
+              <section className="patchNotesMessagePanel" aria-label="Patch note details">
+                {!selectedPatchNoteEntry ? (
+                  <p className="smallMuted">No patch notes available.</p>
+                ) : (
+                  <>
+                    <header className="patchNotesEntryHeader">
+                      <h2>v{selectedPatchNoteEntry.version}</h2>
+                      <p className="smallMuted">{selectedPatchNoteEntry.date}</p>
+                    </header>
+                    <article className="requestCard patchNotesSectionCard">
+                      <p className="sectionLabel">Bug Fixes</p>
+                      {selectedPatchNoteEntry.bugFixes.length === 0 ? (
+                        <p className="smallMuted">No bug fixes listed for this version.</p>
+                      ) : (
+                        <ul className="patchNotesBulletList">
+                          {selectedPatchNoteEntry.bugFixes.map((item) => (
+                            <li key={`patch-${selectedPatchNoteEntry.version}-bug-${item}`}>{item}</li>
+                          ))}
+                        </ul>
+                      )}
+                    </article>
+                    <article className="requestCard patchNotesSectionCard">
+                      <p className="sectionLabel">New Features</p>
+                      {selectedPatchNoteEntry.newFeatures.length === 0 ? (
+                        <p className="smallMuted">No new features listed for this version.</p>
+                      ) : (
+                        <ul className="patchNotesBulletList">
+                          {selectedPatchNoteEntry.newFeatures.map((item) => (
+                            <li key={`patch-${selectedPatchNoteEntry.version}-feature-${item}`}>{item}</li>
+                          ))}
+                        </ul>
+                      )}
+                    </article>
+                    <article className="requestCard patchNotesSectionCard">
+                      <p className="sectionLabel">Known Issues</p>
+                      {selectedPatchNoteEntry.knownIssues.length === 0 ? (
+                        <p className="smallMuted">No known issues listed for this version.</p>
+                      ) : (
+                        <ul className="patchNotesBulletList">
+                          {selectedPatchNoteEntry.knownIssues.map((item) => (
+                            <li key={`patch-${selectedPatchNoteEntry.version}-issue-${item}`}>{item}</li>
+                          ))}
+                        </ul>
+                      )}
+                    </article>
+                  </>
+                )}
+              </section>
+            </div>
           </section>
         ) : viewMode === "glytch-settings" ? (
           <section className="settingsPage" aria-label="Glytch settings">
@@ -14118,6 +14548,88 @@ export default function ChatDashboard({
               {(voiceRoomKey || shouldShowDmIncomingCallPreviewPanel) && (
                 <article className="voicePanel dmVoicePanelTop" aria-label="Voice participants">
                   <p className="sectionLabel">Voice Chat</p>
+                  {isWindowsElectronRuntime && (
+                    <div className="voicePermissionActionRow">
+                      <button
+                        type="button"
+                        className="voiceModerationButton"
+                        onClick={() => void openWindowsPrivacySettings("microphone")}
+                        disabled={windowsPrivacyOpenBusy === "microphone"}
+                      >
+                        {windowsPrivacyOpenBusy === "microphone" ? "Opening..." : "Mic Permissions"}
+                      </button>
+                      <button
+                        type="button"
+                        className="voiceModerationButton"
+                        onClick={() => void openWindowsPrivacySettings("camera")}
+                        disabled={windowsPrivacyOpenBusy === "camera"}
+                      >
+                        {windowsPrivacyOpenBusy === "camera" ? "Opening..." : "Camera Permissions"}
+                      </button>
+                      <button
+                        type="button"
+                        className="voiceModerationButton"
+                        onClick={() => void openWindowsPrivacySettings("screen")}
+                        disabled={windowsPrivacyOpenBusy === "screen"}
+                      >
+                        {windowsPrivacyOpenBusy === "screen" ? "Opening..." : "Screen Permissions"}
+                      </button>
+                    </div>
+                  )}
+                  {voiceRoomKey && (
+                    <div className="voicePanelTopActions">
+                      <button
+                        type="button"
+                        className={`voiceModerationButton${soundboardPopoverOpen ? " active" : ""}`}
+                        onClick={() => setSoundboardPopoverOpen((prev) => !prev)}
+                      >
+                        {soundboardPopoverOpen ? "Hide Soundboard" : "Open Soundboard"}
+                      </button>
+                      {soundboardPopoverOpen && (
+                        <section className="soundboardPopover" aria-label="Soundboard">
+                          <p className="sectionLabel">Soundboard (max {SOUNDBOARD_MAX_CLIPS})</p>
+                          <label className="uploadButton">
+                            {soundboardBusy ? "Uploading..." : "Upload Sound"}
+                            <input
+                              type="file"
+                              accept="audio/*"
+                              onChange={handleUploadSoundboardClip}
+                              disabled={soundboardBusy || soundboardClips.length >= SOUNDBOARD_MAX_CLIPS}
+                            />
+                          </label>
+                          {soundboardError && <p className="chatError">{soundboardError}</p>}
+                          {soundboardClips.length === 0 ? (
+                            <p className="smallMuted">Upload short audio clips to build your soundboard.</p>
+                          ) : (
+                            <div className="voiceParticipants">
+                              {soundboardClips.map((clip) => (
+                                <div key={clip.id} className="voiceParticipant">
+                                  <span className="voiceParticipantName">{clip.name}</span>
+                                  <div className="voiceParticipantControls">
+                                    <button
+                                      type="button"
+                                      className="voiceModerationButton"
+                                      onClick={() => void handlePlaySoundboardClip(clip)}
+                                      disabled={soundboardPlayingId === clip.id}
+                                    >
+                                      {soundboardPlayingId === clip.id ? "Playing..." : "Play"}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="voiceModerationButton danger"
+                                      onClick={() => handleRemoveSoundboardClip(clip.id)}
+                                    >
+                                      Remove
+                                    </button>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </section>
+                      )}
+                    </div>
+                  )}
                   {voiceRoomKey ? (
                     <>
                       {voiceParticipants.length === 0 ? (
@@ -14475,47 +14987,6 @@ export default function ChatDashboard({
                       })}
                     </div>
                       )}
-                      <section className="requestSection" aria-label="Soundboard">
-                        <p className="sectionLabel">Soundboard (max {SOUNDBOARD_MAX_CLIPS})</p>
-                        <label className="uploadButton">
-                          {soundboardBusy ? "Uploading..." : "Upload Sound"}
-                          <input
-                            type="file"
-                            accept="audio/*"
-                            onChange={handleUploadSoundboardClip}
-                            disabled={soundboardBusy || soundboardClips.length >= SOUNDBOARD_MAX_CLIPS}
-                          />
-                        </label>
-                        {soundboardError && <p className="chatError">{soundboardError}</p>}
-                        {soundboardClips.length === 0 ? (
-                          <p className="smallMuted">Upload short audio clips to build your soundboard.</p>
-                        ) : (
-                          <div className="voiceParticipants">
-                            {soundboardClips.map((clip) => (
-                              <div key={clip.id} className="voiceParticipant">
-                                <span className="voiceParticipantName">{clip.name}</span>
-                                <div className="voiceParticipantControls">
-                                  <button
-                                    type="button"
-                                    className="voiceModerationButton"
-                                    onClick={() => void handlePlaySoundboardClip(clip)}
-                                    disabled={soundboardPlayingId === clip.id}
-                                  >
-                                    {soundboardPlayingId === clip.id ? "Playing..." : "Play"}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="voiceModerationButton danger"
-                                    onClick={() => handleRemoveSoundboardClip(clip.id)}
-                                  >
-                                    Remove
-                                  </button>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </section>
                     </>
                   ) : activeDm ? (
                     <div className="voiceParticipants avatarOnly">
@@ -14578,6 +15049,17 @@ export default function ChatDashboard({
                   !loadingMessages &&
                   messages.length === 0 &&
                   !chatError && <p className="chatInfo">No messages yet. Send the first one.</p>}
+
+                {(viewMode === "dm" || viewMode === "group" || (viewMode === "glytch" && activeChannel?.kind !== "voice")) &&
+                  showScrollToLatestButton && (
+                    <button
+                      type="button"
+                      className="messageScrollToLatestButton"
+                      onClick={() => scrollMessageListToBottom("smooth")}
+                    >
+                      Jump to latest message
+                    </button>
+                  )}
 
                 <div ref={messageEndRef} />
               </section>
