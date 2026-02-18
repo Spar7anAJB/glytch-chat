@@ -1800,27 +1800,23 @@ function dmMessagePreviewText(message: Pick<DmMessage, "content" | "attachment_u
 
 function buildVoiceAudioConstraints(): VoiceAudioConstraints {
   return {
-    echoCancellation: { ideal: true },
-    noiseSuppression: { ideal: true },
-    autoGainControl: { ideal: true },
+    // Keep this conservative and standards-focused for Windows reliability.
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,
     channelCount: { ideal: 1, max: 1 },
-    latency: { ideal: 0.008, max: 0.04 },
-    sampleRate: { ideal: 48000, max: 48000 },
+    sampleRate: { ideal: 48000 },
     sampleSize: { ideal: 16 },
-    // Non-standard but supported by some engines (ignored where unsupported).
-    voiceIsolation: true,
-    echoCancellationType: "system",
-    googAutoGainControl: true,
-    googEchoCancellation: true,
-    googEchoCancellation2: true,
-    googDAEchoCancellation: true,
-    googExperimentalEchoCancellation: true,
-    googHighpassFilter: true,
-    googNoiseSuppression: true,
-    googNoiseSuppression2: true,
-    googAudioMirroring: false,
-    googAudioNetworkAdaptor: true,
-    googTypingNoiseDetection: true,
+    latency: { ideal: 0.01, max: 0.05 },
+  };
+}
+
+function buildStrictVoiceAudioConstraints(): VoiceAudioConstraints {
+  return {
+    echoCancellation: { exact: true },
+    noiseSuppression: { exact: true },
+    autoGainControl: { exact: true },
+    channelCount: { ideal: 1, max: 1 },
   };
 }
 
@@ -3159,8 +3155,12 @@ export default function ChatDashboard({
 
         const sourceNode = audioContext.createMediaStreamSource(inputStream);
         const destinationNode = audioContext.createMediaStreamDestination();
+        const inputChannelCount = Math.max(
+          1,
+          Math.min(2, Number(inputStream.getAudioTracks()[0]?.getSettings()?.channelCount || 1)),
+        );
         const rnnoiseNode = new RnnoiseWorkletNode(audioContext, {
-          maxChannels: 1,
+          maxChannels: inputChannelCount,
           wasmBinary: wasmBinary.slice(0),
         });
 
@@ -9979,11 +9979,16 @@ export default function ChatDashboard({
       let capturedStream: MediaStream;
       try {
         capturedStream = await navigator.mediaDevices.getUserMedia({
-          audio: buildVoiceAudioConstraints(),
+          audio: buildStrictVoiceAudioConstraints(),
           video: false,
         });
       } catch {
         try {
+          capturedStream = await navigator.mediaDevices.getUserMedia({
+            audio: buildVoiceAudioConstraints(),
+            video: false,
+          });
+        } catch {
           capturedStream = await navigator.mediaDevices.getUserMedia({
             audio: {
               echoCancellation: true,
@@ -9993,16 +9998,32 @@ export default function ChatDashboard({
             },
             video: false,
           });
-        } catch {
-          capturedStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
         }
       }
 
       const [capturedTrack] = capturedStream.getAudioTracks();
       if (capturedTrack?.applyConstraints) {
         await capturedTrack
-          .applyConstraints(buildVoiceAudioConstraints())
-          .catch(() => undefined);
+          .applyConstraints(buildStrictVoiceAudioConstraints())
+          .catch(() =>
+            capturedTrack
+              .applyConstraints(buildVoiceAudioConstraints())
+              .catch(() => undefined),
+          );
+      }
+      if (capturedTrack?.getSettings) {
+        const settings = capturedTrack.getSettings();
+        if (settings.echoCancellation === false || settings.noiseSuppression === false) {
+          console.warn("[voice] Microphone driver rejected AEC/NS constraints; echo may increase on speakers.", settings);
+        }
+      }
+
+      if (!capturedTrack) {
+        throw new Error("Microphone did not provide an audio track.");
+      }
+
+      if (capturedTrack.readyState === "ended") {
+        throw new Error("Microphone track ended unexpectedly. Rejoin voice and try a different input device.");
       }
 
       const rnnoiseProcessedStream = await buildRnnoiseNoiseSuppressedStream(capturedStream);
