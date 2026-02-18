@@ -32,5 +32,8 @@ dist-ssr
 *.exe
 *.AppImage
 public/downloads/*
+!public/downloads/.gitkeep
+!public/downloads/updates.json
+!public/downloads/glytch-chat-setup.exe
 
 release-test/
