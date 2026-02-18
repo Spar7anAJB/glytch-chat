@@ -144,7 +144,7 @@ type ViewMode = "dm" | "group" | "glytch" | "glytch-settings" | "settings" | "pa
 type GlytchActionMode = "none" | "create" | "join";
 type DmPanelMode = "dms" | "friends";
 type SettingsSection = "profile" | "system";
-type SettingsTab = "edit" | "theme" | "showcases" | "preview" | "notifications" | "accessibility" | "updates";
+type SettingsTab = "edit" | "theme" | "showcases" | "preview" | "notifications" | "accessibility";
 type AppFontPreset = "cyber" | "clean" | "display" | "compact" | "modern" | "mono" | "serif";
 type AvatarDecoration = "none" | "sparkle" | "crown" | "heart" | "bolt" | "moon" | "leaf" | "star";
 type ProfileShowcaseLayout = "grid" | "stack";
@@ -849,7 +849,7 @@ const AVATAR_DECORATION_HINTS: Record<AvatarDecoration, string> = {
   star: "Breathing halo",
 };
 const PROFILE_SETTINGS_TABS: SettingsTab[] = ["edit", "showcases", "preview"];
-const SYSTEM_SETTINGS_TABS: SettingsTab[] = ["theme", "notifications", "accessibility", "updates"];
+const SYSTEM_SETTINGS_TABS: SettingsTab[] = ["theme", "notifications", "accessibility"];
 
 const ROLE_PERMISSION_OPTIONS: Array<{ key: GlytchRolePermissionKey; label: string; fallbackKeys: string[] }> = [
   { key: "ban_members", label: "Can Ban Members", fallbackKeys: ["manage_members"] },
@@ -3544,9 +3544,7 @@ export default function ChatDashboard({
     typeof window !== "undefined" && Boolean(window.electronAPI?.isElectron && window.electronAPI.platform === "win32");
   const electronDesktopPlatform =
     typeof window === "undefined" ? null : normalizeDesktopUpdatePlatform(window.electronAPI?.platform);
-  const supportsDesktopUpdateAction =
-    isElectronRuntime && (electronDesktopPlatform === "windows" || electronDesktopPlatform === "mac");
-  const desktopUpdateActionLabel = electronDesktopPlatform === "windows" ? "Install Update" : "Download Update";
+  const supportsInAppInstallerUpdates = isElectronRuntime && electronDesktopPlatform === "windows";
   const selectedPatchNoteEntry =
     PATCH_NOTES.find((entry) => entry.version === selectedPatchNoteVersion) || PATCH_NOTES[0] || null;
   const isDesktopUpdateAvailable =
@@ -3613,41 +3611,27 @@ export default function ChatDashboard({
   }, [desktopAppVersion, electronDesktopPlatform, isElectronRuntime]);
 
   const handleInstallDesktopUpdate = useCallback(async () => {
-    if (!desktopUpdateDownloadUrl) {
-      setDesktopUpdateError("No update download URL is available yet.");
+    if (!supportsInAppInstallerUpdates || !window.electronAPI?.downloadAndInstallUpdate) {
+      setDesktopUpdateError("In-app installer updates are only available for the Windows desktop app.");
       return;
     }
-    if (!electronDesktopPlatform) {
-      setDesktopUpdateError("Desktop update actions are not supported on this platform.");
+    if (!desktopUpdateDownloadUrl) {
+      setDesktopUpdateError("No update download URL is available yet.");
       return;
     }
 
     setDesktopUpdateInstallBusy(true);
     setDesktopUpdateError("");
-    setDesktopUpdateNotice(
-      electronDesktopPlatform === "windows" ? "Downloading update installer..." : "Opening update download...",
-    );
+    setDesktopUpdateNotice("Downloading update installer...");
     try {
-      if (electronDesktopPlatform === "windows") {
-        if (!window.electronAPI?.downloadAndInstallUpdate) {
-          throw new Error("In-app installer updates are unavailable in this build.");
-        }
-        await window.electronAPI.downloadAndInstallUpdate(desktopUpdateDownloadUrl);
-        setDesktopUpdateNotice("Installer launched. Glytch Chat will close so the update can be applied.");
-      } else if (electronDesktopPlatform === "mac") {
-        if (typeof window !== "undefined") {
-          window.open(desktopUpdateDownloadUrl, "_blank", "noopener,noreferrer");
-        }
-        setDesktopUpdateNotice("Opened update download. Install the latest DMG to update Glytch Chat.");
-      } else {
-        throw new Error("Desktop update actions are not supported on this platform.");
-      }
+      await window.electronAPI.downloadAndInstallUpdate(desktopUpdateDownloadUrl);
+      setDesktopUpdateNotice("Installer launched. Glytch Chat will close so the update can be applied.");
     } catch (err) {
-      setDesktopUpdateError(err instanceof Error ? err.message : "Could not start update.");
+      setDesktopUpdateError(err instanceof Error ? err.message : "Could not install update.");
     } finally {
       setDesktopUpdateInstallBusy(false);
     }
-  }, [desktopUpdateDownloadUrl, electronDesktopPlatform]);
+  }, [desktopUpdateDownloadUrl, supportsInAppInstallerUpdates]);
 
   const handleOpenDesktopUninstall = useCallback(async () => {
     if (!isElectronRuntime || !window.electronAPI?.openUninstall) {
@@ -3728,7 +3712,7 @@ export default function ChatDashboard({
 
   useEffect(() => {
     if (!isElectronRuntime) return;
-    if (electronDesktopPlatform !== "windows" && electronDesktopPlatform !== "mac") return;
+    if (electronDesktopPlatform !== "windows") return;
     if (!desktopAppVersion) return;
     if (desktopUpdateAutoCheckRef.current) return;
     desktopUpdateAutoCheckRef.current = true;
@@ -10879,7 +10863,7 @@ export default function ChatDashboard({
       if (tab) {
         setSettingsTab(tab);
       } else {
-        setSettingsTab(section === "profile" ? "edit" : "updates");
+        setSettingsTab(section === "profile" ? "edit" : "theme");
       }
       setViewMode("settings");
     },
@@ -11048,7 +11032,7 @@ export default function ChatDashboard({
               type="button"
               aria-label="Open system settings"
               title="System settings"
-              onClick={() => openSettingsView("system", "updates")}
+              onClick={() => openSettingsView("system", "theme")}
             >
               <svg viewBox="0 0 24 24" role="presentation" aria-hidden="true">
                 <path
@@ -12408,10 +12392,8 @@ export default function ChatDashboard({
                     ? "Identity"
                     : tab === "theme"
                       ? "Appearance"
-                    : tab === "accessibility"
-                      ? "Accessibility"
-                      : tab === "updates"
-                        ? "Updates"
+                      : tab === "accessibility"
+                        ? "Accessibility"
                       : tab === "showcases"
                         ? "Showcase Modules"
                         : tab === "notifications"
@@ -12754,6 +12736,40 @@ export default function ChatDashboard({
                 <p className="smallMuted">
                   DM and channel backgrounds are now edited in-chat from the header gear icon.
                 </p>
+
+                {isElectronRuntime && (
+                  <section className="requestSection" aria-label="Desktop app updates">
+                    <p className="sectionLabel">Desktop App Version</p>
+                    <p className="smallMuted">Installed: v{desktopAppVersion || "0.0.0"}</p>
+                    <p className="smallMuted">Latest: {desktopLatestVersion ? `v${desktopLatestVersion}` : "Not checked yet"}</p>
+                    <p className="smallMuted">Latest build: {formatLocalDateTime(desktopUpdatePublishedAt)}</p>
+                    <p className="smallMuted">Last check: {formatLocalDateTime(desktopUpdateLastCheckedAt)}</p>
+                    {desktopUpdateNotice && <p className="smallMuted">{desktopUpdateNotice}</p>}
+                    {desktopUpdateError && <p className="chatError">{desktopUpdateError}</p>}
+                    <div className="moderationActionRow">
+                      <button type="button" onClick={() => void checkForDesktopAppUpdate()} disabled={desktopUpdateBusy}>
+                        {desktopUpdateBusy ? "Checking..." : "Check for Updates"}
+                      </button>
+                      {supportsInAppInstallerUpdates && (
+                        <button
+                          type="button"
+                          onClick={() => void handleInstallDesktopUpdate()}
+                          disabled={!isDesktopUpdateAvailable || desktopUpdateBusy || desktopUpdateInstallBusy}
+                        >
+                          {desktopUpdateInstallBusy ? "Installing..." : "Install Update"}
+                        </button>
+                      )}
+                      {electronDesktopPlatform === "windows" && (
+                        <button type="button" onClick={() => void handleOpenDesktopUninstall()} disabled={desktopUninstallBusy}>
+                          {desktopUninstallBusy ? "Opening..." : "Uninstall App"}
+                        </button>
+                      )}
+                    </div>
+                    {!supportsInAppInstallerUpdates && (
+                      <p className="smallMuted">In-app installer updates are currently enabled for Windows desktop builds.</p>
+                    )}
+                  </section>
+                )}
 
                 <button type="submit" disabled={profileSaveBusy}>
                   {profileSaveBusy ? "Saving..." : "Save Theme Settings"}
@@ -13168,18 +13184,9 @@ export default function ChatDashboard({
                 <p className="smallMuted">
                   Accessibility settings apply immediately and are saved to your profile for future sessions.
                 </p>
-
-                <button type="submit" disabled={profileSaveBusy}>
-                  {profileSaveBusy ? "Saving..." : "Save Accessibility Settings"}
-                </button>
-              </form>
-            ) : settingsTab === "updates" ? (
-              <section className="settingsForm" aria-label="Desktop updates">
-                <p className="sectionLabel">Desktop App Updates</p>
-                {!isElectronRuntime ? (
-                  <p className="smallMuted">Open the desktop app to check for and install updates.</p>
-                ) : (
-                  <>
+                {isElectronRuntime && (
+                  <section className="requestSection" aria-label="Desktop app updates">
+                    <p className="sectionLabel">Desktop App Version</p>
                     <p className="smallMuted">Installed: v{desktopAppVersion || "0.0.0"}</p>
                     <p className="smallMuted">Latest: {desktopLatestVersion ? `v${desktopLatestVersion}` : "Not checked yet"}</p>
                     <p className="smallMuted">Latest build: {formatLocalDateTime(desktopUpdatePublishedAt)}</p>
@@ -13190,13 +13197,13 @@ export default function ChatDashboard({
                       <button type="button" onClick={() => void checkForDesktopAppUpdate()} disabled={desktopUpdateBusy}>
                         {desktopUpdateBusy ? "Checking..." : "Check for Updates"}
                       </button>
-                      {supportsDesktopUpdateAction && (
+                      {supportsInAppInstallerUpdates && (
                         <button
                           type="button"
                           onClick={() => void handleInstallDesktopUpdate()}
                           disabled={!isDesktopUpdateAvailable || desktopUpdateBusy || desktopUpdateInstallBusy}
                         >
-                          {desktopUpdateInstallBusy ? "Starting..." : desktopUpdateActionLabel}
+                          {desktopUpdateInstallBusy ? "Installing..." : "Install Update"}
                         </button>
                       )}
                       {electronDesktopPlatform === "windows" && (
@@ -13205,15 +13212,16 @@ export default function ChatDashboard({
                         </button>
                       )}
                     </div>
-                    {!supportsDesktopUpdateAction && (
-                      <p className="smallMuted">Update actions are currently available on Windows and macOS desktop builds.</p>
+                    {!supportsInAppInstallerUpdates && (
+                      <p className="smallMuted">In-app installer updates are currently enabled for Windows desktop builds.</p>
                     )}
-                    {electronDesktopPlatform === "mac" && (
-                      <p className="smallMuted">macOS updates open the latest DMG download for manual install.</p>
-                    )}
-                  </>
+                  </section>
                 )}
-              </section>
+
+                <button type="submit" disabled={profileSaveBusy}>
+                  {profileSaveBusy ? "Saving..." : "Save Accessibility Settings"}
+                </button>
+              </form>
             ) : (
               <div
                 className={`profilePreviewCard ${profileForm.cardStyle}`}
