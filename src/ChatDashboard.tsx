@@ -146,7 +146,7 @@ type ViewMode = "dm" | "group" | "glytch" | "glytch-settings" | "settings" | "pa
 type GlytchActionMode = "none" | "create" | "join";
 type DmPanelMode = "dms" | "friends";
 type SettingsSection = "profile" | "system";
-type SettingsTab = "edit" | "theme" | "showcases" | "preview" | "notifications" | "accessibility" | "updates";
+type SettingsTab = "edit" | "theme" | "showcases" | "preview" | "notifications" | "accessibility" | "mic" | "updates";
 type AppFontPreset = "cyber" | "clean" | "display" | "compact" | "modern" | "mono" | "serif";
 type AvatarDecoration = "none" | "sparkle" | "crown" | "heart" | "bolt" | "moon" | "leaf" | "star";
 type ProfileShowcaseLayout = "grid" | "stack";
@@ -403,6 +403,7 @@ const SOUNDBOARD_MAX_CLIPS = 6;
 const SOUNDBOARD_MAX_CLIP_BYTES = 2 * 1024 * 1024;
 const SOUNDBOARD_STORAGE_KEY = "glytch.soundboard.clips.v1";
 const DESKTOP_AUTO_UPDATE_WINDOWS_STORAGE_KEY = "glytch.desktopAutoUpdateWindows.v1";
+const VOICE_MIC_SETTINGS_STORAGE_KEY = "glytch.voice.mic.settings.v1";
 const LEGACY_DEFAULT_DM_CHAT_BACKGROUND: BackgroundGradient = {
   from: "#122341",
   to: "#0a162b",
@@ -552,6 +553,9 @@ const DM_REPLY_MESSAGE_PREFIX = "[[DM_REPLY]]";
 const MISSING_SELF_PARTICIPANT_MAX_MISSES = 8;
 const RNNOISE_ENABLED = String(import.meta.env.VITE_RNNOISE_ENABLED || "true").toLowerCase() !== "false";
 const LIVEKIT_KRISP_ENABLED = String(import.meta.env.VITE_LIVEKIT_KRISP_ENABLED || "false").toLowerCase() === "true";
+const VOICE_MIC_INPUT_GAIN_MIN = 70;
+const VOICE_MIC_INPUT_GAIN_MAX = 170;
+const VOICE_MIC_INPUT_GAIN_DEFAULT = 100;
 const SHOWCASE_KIND_LABELS: Record<ShowcaseKind, string> = {
   text: "Text",
   links: "Links",
@@ -853,7 +857,7 @@ const AVATAR_DECORATION_HINTS: Record<AvatarDecoration, string> = {
   star: "Breathing halo",
 };
 const PROFILE_SETTINGS_TABS: SettingsTab[] = ["edit", "showcases", "preview"];
-const SYSTEM_SETTINGS_TABS: SettingsTab[] = ["theme", "notifications", "accessibility", "updates"];
+const SYSTEM_SETTINGS_TABS: SettingsTab[] = ["theme", "notifications", "accessibility", "mic", "updates"];
 
 const ROLE_PERMISSION_OPTIONS: Array<{ key: GlytchRolePermissionKey; label: string; fallbackKeys: string[] }> = [
   { key: "ban_members", label: "Can Ban Members", fallbackKeys: ["manage_members"] },
@@ -932,6 +936,28 @@ type LivekitKrispSessionCredentials = {
   token: string;
   expiresAtMs: number;
   roomKey: string;
+};
+
+type VoiceSuppressionProfile = "balanced" | "strong" | "ultra";
+
+type VoiceMicSettings = {
+  inputDeviceId: string;
+  suppressionProfile: VoiceSuppressionProfile;
+  echoCancellation: boolean;
+  noiseSuppression: boolean;
+  autoGainControl: boolean;
+  voiceIsolation: boolean;
+  inputGainPercent: number;
+};
+
+const DEFAULT_VOICE_MIC_SETTINGS: VoiceMicSettings = {
+  inputDeviceId: "default",
+  suppressionProfile: "strong",
+  echoCancellation: true,
+  noiseSuppression: true,
+  autoGainControl: true,
+  voiceIsolation: true,
+  inputGainPercent: VOICE_MIC_INPUT_GAIN_DEFAULT,
 };
 
 function formatTime(date: Date): string {
@@ -1649,6 +1675,23 @@ function clampVoiceVolume(volume: number): number {
   return Math.max(0, Math.min(1, volume));
 }
 
+function normalizeVoiceSuppressionProfile(raw: unknown): VoiceSuppressionProfile {
+  if (raw === "balanced" || raw === "strong" || raw === "ultra") return raw;
+  return DEFAULT_VOICE_MIC_SETTINGS.suppressionProfile;
+}
+
+function normalizeMicInputGainPercent(raw: unknown): number {
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return VOICE_MIC_INPUT_GAIN_DEFAULT;
+  return Math.max(VOICE_MIC_INPUT_GAIN_MIN, Math.min(VOICE_MIC_INPUT_GAIN_MAX, Math.round(parsed)));
+}
+
+function normalizeMicInputDeviceId(raw: unknown): string {
+  if (typeof raw !== "string") return "default";
+  const trimmed = raw.trim();
+  return trimmed || "default";
+}
+
 function hasOwnPermissionKey(permissions: Record<string, boolean> | undefined, key: string): boolean {
   return Boolean(permissions && Object.prototype.hasOwnProperty.call(permissions, key));
 }
@@ -1821,38 +1864,44 @@ function dmMessagePreviewText(message: Pick<DmMessage, "content" | "attachment_u
   return message.content?.trim() || (message.attachment_url ? "Sent an image." : "Open DMs to read the latest message.");
 }
 
-function buildVoiceAudioConstraints(): VoiceAudioConstraints {
+function buildVoiceAudioConstraints(settings: VoiceMicSettings): VoiceAudioConstraints {
+  const selectedDeviceId = normalizeMicInputDeviceId(settings.inputDeviceId);
+  const isStrong = settings.suppressionProfile === "strong" || settings.suppressionProfile === "ultra";
+  const isUltra = settings.suppressionProfile === "ultra";
   return {
     // Request stronger AEC/NS paths on Chromium while preserving standards fallbacks.
-    echoCancellation: true,
+    deviceId: selectedDeviceId === "default" ? undefined : { ideal: selectedDeviceId },
+    echoCancellation: settings.echoCancellation,
     echoCancellationType: "system",
-    noiseSuppression: true,
-    autoGainControl: true,
-    voiceIsolation: { ideal: true },
-    googAutoGainControl: true,
-    googEchoCancellation: true,
-    googEchoCancellation2: true,
-    googDAEchoCancellation: true,
-    googExperimentalEchoCancellation: true,
+    noiseSuppression: settings.noiseSuppression,
+    autoGainControl: settings.autoGainControl,
+    voiceIsolation: settings.voiceIsolation ? { ideal: true } : false,
+    googAutoGainControl: settings.autoGainControl,
+    googEchoCancellation: settings.echoCancellation,
+    googEchoCancellation2: settings.echoCancellation && isStrong,
+    googDAEchoCancellation: settings.echoCancellation && isUltra,
+    googExperimentalEchoCancellation: settings.echoCancellation && isStrong,
     googHighpassFilter: true,
-    googNoiseSuppression: true,
-    googNoiseSuppression2: true,
+    googNoiseSuppression: settings.noiseSuppression,
+    googNoiseSuppression2: settings.noiseSuppression && isStrong,
     googTypingNoiseDetection: false,
     googAudioMirroring: false,
     channelCount: { ideal: 1, max: 1 },
     sampleRate: { ideal: 48000 },
     sampleSize: { ideal: 16 },
-    latency: { ideal: 0.01, max: 0.05 },
+    latency: { ideal: isUltra ? 0.006 : 0.01, max: isUltra ? 0.03 : 0.05 },
   };
 }
 
-function buildStrictVoiceAudioConstraints(): VoiceAudioConstraints {
+function buildStrictVoiceAudioConstraints(settings: VoiceMicSettings): VoiceAudioConstraints {
+  const selectedDeviceId = normalizeMicInputDeviceId(settings.inputDeviceId);
   return {
-    echoCancellation: { exact: true },
-    noiseSuppression: { exact: true },
-    autoGainControl: { exact: true },
+    deviceId: selectedDeviceId === "default" ? undefined : { exact: selectedDeviceId },
+    echoCancellation: { exact: settings.echoCancellation },
+    noiseSuppression: { exact: settings.noiseSuppression },
+    autoGainControl: { exact: settings.autoGainControl },
     echoCancellationType: "system",
-    voiceIsolation: { ideal: true },
+    voiceIsolation: settings.voiceIsolation ? { ideal: true } : false,
     channelCount: { ideal: 1, max: 1 },
   };
 }
@@ -2271,6 +2320,39 @@ function persistDesktopAutoUpdateWindowsToStorage(enabled: boolean) {
   }
 }
 
+function loadVoiceMicSettingsFromStorage(): VoiceMicSettings {
+  if (typeof window === "undefined") return { ...DEFAULT_VOICE_MIC_SETTINGS };
+  try {
+    const raw = window.localStorage.getItem(VOICE_MIC_SETTINGS_STORAGE_KEY);
+    if (!raw) return { ...DEFAULT_VOICE_MIC_SETTINGS };
+    const parsed = JSON.parse(raw) as Partial<VoiceMicSettings> | null;
+    const source = parsed && typeof parsed === "object" ? parsed : {};
+    return {
+      inputDeviceId: normalizeMicInputDeviceId(source.inputDeviceId),
+      suppressionProfile: normalizeVoiceSuppressionProfile(source.suppressionProfile),
+      echoCancellation:
+        typeof source.echoCancellation === "boolean" ? source.echoCancellation : DEFAULT_VOICE_MIC_SETTINGS.echoCancellation,
+      noiseSuppression:
+        typeof source.noiseSuppression === "boolean" ? source.noiseSuppression : DEFAULT_VOICE_MIC_SETTINGS.noiseSuppression,
+      autoGainControl:
+        typeof source.autoGainControl === "boolean" ? source.autoGainControl : DEFAULT_VOICE_MIC_SETTINGS.autoGainControl,
+      voiceIsolation: typeof source.voiceIsolation === "boolean" ? source.voiceIsolation : DEFAULT_VOICE_MIC_SETTINGS.voiceIsolation,
+      inputGainPercent: normalizeMicInputGainPercent(source.inputGainPercent),
+    };
+  } catch {
+    return { ...DEFAULT_VOICE_MIC_SETTINGS };
+  }
+}
+
+function persistVoiceMicSettingsToStorage(settings: VoiceMicSettings) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(VOICE_MIC_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+  } catch {
+    // Ignore localStorage quota failures.
+  }
+}
+
 function fileToDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -2440,6 +2522,8 @@ export default function ChatDashboard({
   const [desktopAutoUpdateWindowsEnabled, setDesktopAutoUpdateWindowsEnabled] = useState(() =>
     loadDesktopAutoUpdateWindowsFromStorage(),
   );
+  const [voiceMicSettings, setVoiceMicSettings] = useState<VoiceMicSettings>(() => loadVoiceMicSettingsFromStorage());
+  const [voiceInputDevices, setVoiceInputDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedPatchNoteVersion, setSelectedPatchNoteVersion] = useState(PATCH_NOTES[0]?.version || "");
   const [isUserIdle, setIsUserIdle] = useState(false);
   const [profileSaveError, setProfileSaveError] = useState("");
@@ -2503,6 +2587,13 @@ export default function ChatDashboard({
   const [activeScreenSharePresenterId, setActiveScreenSharePresenterId] = useState<string | null>(null);
   const [voiceError, setVoiceError] = useState("");
   const [voiceModerationBusyKey, setVoiceModerationBusyKey] = useState<string | null>(null);
+  const [micTestRunning, setMicTestRunning] = useState(false);
+  const [micTestBusy, setMicTestBusy] = useState(false);
+  const [micTestRecording, setMicTestRecording] = useState(false);
+  const [micTestMonitorEnabled, setMicTestMonitorEnabled] = useState(false);
+  const [micTestLevel, setMicTestLevel] = useState(0);
+  const [micTestError, setMicTestError] = useState("");
+  const [micTestSampleUrl, setMicTestSampleUrl] = useState("");
   const [joinInviteBusyMessageId, setJoinInviteBusyMessageId] = useState<number | null>(null);
   const [showQuickThemeEditor, setShowQuickThemeEditor] = useState(false);
   const [quickThemeModeDraft, setQuickThemeModeDraft] = useState<"gradient" | "image">("gradient");
@@ -2567,6 +2658,19 @@ export default function ChatDashboard({
   const rnnoiseInputStreamRef = useRef<MediaStream | null>(null);
   const rnnoiseWasmBinaryRef = useRef<ArrayBuffer | null>(null);
   const rnnoiseUnavailableLoggedRef = useRef(false);
+  const voiceEnhancementAudioContextRef = useRef<AudioContext | null>(null);
+  const voiceEnhancementSourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const voiceEnhancementDestinationNodeRef = useRef<MediaStreamAudioDestinationNode | null>(null);
+  const voiceEnhancementInputStreamRef = useRef<MediaStream | null>(null);
+  const voiceEnhancementOutputGainNodeRef = useRef<GainNode | null>(null);
+  const micTestStreamRef = useRef<MediaStream | null>(null);
+  const micTestMonitorAudioRef = useRef<HTMLAudioElement | null>(null);
+  const micTestMeterAudioContextRef = useRef<AudioContext | null>(null);
+  const micTestMeterSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const micTestMeterAnalyserRef = useRef<AnalyserNode | null>(null);
+  const micTestMeterRafRef = useRef(0);
+  const micTestRecorderRef = useRef<MediaRecorder | null>(null);
+  const micTestRecordTimeoutRef = useRef<number | null>(null);
   const signalSinceIdRef = useRef(0);
   const previousVoiceParticipantIdsRef = useRef<string[]>([]);
   const missingSelfParticipantCountRef = useRef(0);
@@ -3421,6 +3525,153 @@ export default function ChatDashboard({
     [disposeRnnoiseVoicePipeline, logRnnoiseFallbackReason],
   );
 
+  const disposeVoiceEnhancementPipeline = useCallback(async () => {
+    const audioContext = voiceEnhancementAudioContextRef.current;
+    const sourceNode = voiceEnhancementSourceNodeRef.current;
+    const destinationNode = voiceEnhancementDestinationNodeRef.current;
+    const inputStream = voiceEnhancementInputStreamRef.current;
+
+    voiceEnhancementAudioContextRef.current = null;
+    voiceEnhancementSourceNodeRef.current = null;
+    voiceEnhancementDestinationNodeRef.current = null;
+    voiceEnhancementInputStreamRef.current = null;
+    voiceEnhancementOutputGainNodeRef.current = null;
+
+    try {
+      sourceNode?.disconnect();
+    } catch {
+      // Ignore disconnect failures.
+    }
+    try {
+      destinationNode?.disconnect();
+    } catch {
+      // Ignore disconnect failures.
+    }
+    try {
+      await audioContext?.close();
+    } catch {
+      // Ignore AudioContext close failures.
+    }
+
+    inputStream?.getTracks().forEach((track) => {
+      track.stop();
+    });
+  }, []);
+
+  const buildVoiceEnhancementStream = useCallback(
+    async (inputStream: MediaStream, settings: VoiceMicSettings): Promise<MediaStream | null> => {
+      const [inputTrack] = inputStream.getAudioTracks();
+      if (!inputTrack) return null;
+
+      await disposeVoiceEnhancementPipeline();
+
+      try {
+        const audioContext = new AudioContext({ latencyHint: "interactive", sampleRate: 48000 });
+        const sourceNode = audioContext.createMediaStreamSource(inputStream);
+        const highpassNode = audioContext.createBiquadFilter();
+        const lowpassNode = audioContext.createBiquadFilter();
+        const presenceNode = audioContext.createBiquadFilter();
+        const deEssNode = audioContext.createBiquadFilter();
+        const compressorNode = audioContext.createDynamicsCompressor();
+        const limiterNode = audioContext.createDynamicsCompressor();
+        const outputGainNode = audioContext.createGain();
+        const destinationNode = audioContext.createMediaStreamDestination();
+
+        const profile = settings.suppressionProfile;
+        const profileIsBalanced = profile === "balanced";
+        const profileIsUltra = profile === "ultra";
+
+        highpassNode.type = "highpass";
+        highpassNode.frequency.value = profileIsBalanced ? 80 : profileIsUltra ? 110 : 95;
+        highpassNode.Q.value = 0.75;
+
+        lowpassNode.type = "lowpass";
+        lowpassNode.frequency.value = profileIsBalanced ? 11200 : profileIsUltra ? 7600 : 9000;
+        lowpassNode.Q.value = 0.7;
+
+        presenceNode.type = "peaking";
+        presenceNode.frequency.value = 2550;
+        presenceNode.Q.value = 1.05;
+        presenceNode.gain.value = profileIsBalanced ? 1.4 : profileIsUltra ? 3.4 : 2.4;
+
+        deEssNode.type = "highshelf";
+        deEssNode.frequency.value = 6400;
+        deEssNode.gain.value = profileIsBalanced ? -0.8 : profileIsUltra ? -2.6 : -1.6;
+
+        compressorNode.threshold.value = profileIsBalanced ? -25 : profileIsUltra ? -35 : -31;
+        compressorNode.knee.value = 24;
+        compressorNode.ratio.value = profileIsBalanced ? 3.2 : profileIsUltra ? 6.4 : 4.4;
+        compressorNode.attack.value = 0.003;
+        compressorNode.release.value = profileIsUltra ? 0.22 : 0.18;
+
+        limiterNode.threshold.value = -7;
+        limiterNode.knee.value = 0;
+        limiterNode.ratio.value = 20;
+        limiterNode.attack.value = 0.001;
+        limiterNode.release.value = 0.12;
+
+        outputGainNode.gain.value = normalizeMicInputGainPercent(settings.inputGainPercent) / 100;
+
+        sourceNode.connect(highpassNode);
+        highpassNode.connect(lowpassNode);
+        lowpassNode.connect(presenceNode);
+        presenceNode.connect(deEssNode);
+        deEssNode.connect(compressorNode);
+        compressorNode.connect(limiterNode);
+        limiterNode.connect(outputGainNode);
+        outputGainNode.connect(destinationNode);
+
+        if (audioContext.state !== "running") {
+          await audioContext.resume().catch(() => undefined);
+        }
+
+        voiceEnhancementAudioContextRef.current = audioContext;
+        voiceEnhancementSourceNodeRef.current = sourceNode;
+        voiceEnhancementDestinationNodeRef.current = destinationNode;
+        voiceEnhancementInputStreamRef.current = inputStream;
+        voiceEnhancementOutputGainNodeRef.current = outputGainNode;
+
+        return destinationNode.stream;
+      } catch {
+        await disposeVoiceEnhancementPipeline();
+        return null;
+      }
+    },
+    [disposeVoiceEnhancementPipeline],
+  );
+
+  const requestVoiceMicrophoneStream = useCallback(async (): Promise<MediaStream> => {
+    if (typeof navigator === "undefined" || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      throw new Error("Microphone capture is not supported in this runtime.");
+    }
+
+    try {
+      return await navigator.mediaDevices.getUserMedia({
+        audio: buildStrictVoiceAudioConstraints(voiceMicSettings),
+        video: false,
+      });
+    } catch {
+      try {
+        return await navigator.mediaDevices.getUserMedia({
+          audio: buildVoiceAudioConstraints(voiceMicSettings),
+          video: false,
+        });
+      } catch {
+        const selectedDeviceId = normalizeMicInputDeviceId(voiceMicSettings.inputDeviceId);
+        return await navigator.mediaDevices.getUserMedia({
+          audio: {
+            deviceId: selectedDeviceId === "default" ? undefined : { ideal: selectedDeviceId },
+            echoCancellation: voiceMicSettings.echoCancellation,
+            noiseSuppression: voiceMicSettings.noiseSuppression,
+            autoGainControl: voiceMicSettings.autoGainControl,
+            channelCount: 1,
+          },
+          video: false,
+        });
+      }
+    }
+  }, [voiceMicSettings]);
+
   const applyLocalVoiceMute = useCallback((muted: boolean) => {
     localStreamRef.current?.getAudioTracks().forEach((track) => {
       track.enabled = !muted;
@@ -3429,6 +3680,9 @@ export default function ChatDashboard({
       track.enabled = !muted;
     });
     rnnoiseInputStreamRef.current?.getAudioTracks().forEach((track) => {
+      track.enabled = !muted;
+    });
+    voiceEnhancementInputStreamRef.current?.getAudioTracks().forEach((track) => {
       track.enabled = !muted;
     });
   }, []);
@@ -3957,6 +4211,24 @@ export default function ChatDashboard({
     [isWindowsElectronRuntime],
   );
 
+  const refreshVoiceInputDevices = useCallback(async () => {
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.enumerateDevices) return;
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const nextInputs = devices.filter((device) => device.kind === "audioinput");
+      setVoiceInputDevices(nextInputs);
+      setVoiceMicSettings((prev) => {
+        const selectedId = normalizeMicInputDeviceId(prev.inputDeviceId);
+        if (selectedId === "default") return prev;
+        const exists = nextInputs.some((device) => device.deviceId === selectedId);
+        if (exists) return prev;
+        return { ...prev, inputDeviceId: "default" };
+      });
+    } catch {
+      // Ignore device-listing failures.
+    }
+  }, []);
+
   useEffect(() => {
     if (!isElectronRuntime || !window.electronAPI?.getAppVersion) return;
     let mounted = true;
@@ -3979,6 +4251,67 @@ export default function ChatDashboard({
   useEffect(() => {
     persistDesktopAutoUpdateWindowsToStorage(desktopAutoUpdateWindowsEnabled);
   }, [desktopAutoUpdateWindowsEnabled]);
+
+  useEffect(() => {
+    persistVoiceMicSettingsToStorage(voiceMicSettings);
+  }, [voiceMicSettings]);
+
+  useEffect(() => {
+    const gainNode = voiceEnhancementOutputGainNodeRef.current;
+    if (!gainNode) return;
+    const gainValue = normalizeMicInputGainPercent(voiceMicSettings.inputGainPercent) / 100;
+    try {
+      gainNode.gain.setTargetAtTime(gainValue, gainNode.context.currentTime, 0.05);
+    } catch {
+      gainNode.gain.value = gainValue;
+    }
+  }, [voiceMicSettings.inputGainPercent]);
+
+  useEffect(() => {
+    void refreshVoiceInputDevices();
+    if (typeof navigator === "undefined" || !navigator.mediaDevices) return;
+    const onDeviceChange = () => {
+      void refreshVoiceInputDevices();
+    };
+    navigator.mediaDevices.addEventListener?.("devicechange", onDeviceChange);
+    return () => {
+      navigator.mediaDevices.removeEventListener?.("devicechange", onDeviceChange);
+    };
+  }, [refreshVoiceInputDevices]);
+
+  useEffect(() => {
+    if (!micTestRunning || !micTestStreamRef.current) return;
+    if (!micTestMonitorEnabled) {
+      if (micTestMonitorAudioRef.current) {
+        micTestMonitorAudioRef.current.pause();
+        micTestMonitorAudioRef.current.srcObject = null;
+        micTestMonitorAudioRef.current = null;
+      }
+      return;
+    }
+
+    if (!micTestMonitorAudioRef.current) {
+      const monitorAudio = new Audio();
+      monitorAudio.autoplay = true;
+      monitorAudio.muted = false;
+      monitorAudio.volume = 0.85;
+      monitorAudio.srcObject = micTestStreamRef.current;
+      micTestMonitorAudioRef.current = monitorAudio;
+      void monitorAudio.play().catch(() => undefined);
+      return;
+    }
+
+    micTestMonitorAudioRef.current.srcObject = micTestStreamRef.current;
+    void micTestMonitorAudioRef.current.play().catch(() => undefined);
+  }, [micTestMonitorEnabled, micTestRunning]);
+
+  useEffect(() => {
+    return () => {
+      if (micTestSampleUrl.startsWith("blob:")) {
+        URL.revokeObjectURL(micTestSampleUrl);
+      }
+    };
+  }, [micTestSampleUrl]);
 
   useEffect(() => {
     if (!desktopAutoUpdateWindowsEnabled) {
@@ -6855,6 +7188,7 @@ export default function ChatDashboard({
         void soundContextRef.current.close();
         soundContextRef.current = null;
       }
+      void stopMicTest();
       void stopVoiceSession(true);
     };
   }, []);
@@ -9789,6 +10123,233 @@ export default function ChatDashboard({
     speakingAnalyserCleanupRef.current.set(userId, cleanup);
   }, []);
 
+  const stopMicTest = useCallback(async () => {
+    const pendingRecordTimeout = micTestRecordTimeoutRef.current;
+    if (typeof pendingRecordTimeout === "number") {
+      window.clearTimeout(pendingRecordTimeout);
+      micTestRecordTimeoutRef.current = null;
+    }
+
+    const recorder = micTestRecorderRef.current;
+    if (recorder && recorder.state !== "inactive") {
+      try {
+        recorder.stop();
+      } catch {
+        // Ignore stale recorder stop failures.
+      }
+    }
+    micTestRecorderRef.current = null;
+
+    if (micTestMeterRafRef.current) {
+      window.cancelAnimationFrame(micTestMeterRafRef.current);
+      micTestMeterRafRef.current = 0;
+    }
+    try {
+      micTestMeterSourceRef.current?.disconnect();
+    } catch {
+      // Ignore disconnect failures.
+    }
+    try {
+      micTestMeterAnalyserRef.current?.disconnect();
+    } catch {
+      // Ignore disconnect failures.
+    }
+    try {
+      await micTestMeterAudioContextRef.current?.close();
+    } catch {
+      // Ignore AudioContext close failures.
+    }
+    micTestMeterSourceRef.current = null;
+    micTestMeterAnalyserRef.current = null;
+    micTestMeterAudioContextRef.current = null;
+
+    if (micTestMonitorAudioRef.current) {
+      micTestMonitorAudioRef.current.pause();
+      micTestMonitorAudioRef.current.srcObject = null;
+      micTestMonitorAudioRef.current = null;
+    }
+
+    micTestStreamRef.current?.getTracks().forEach((track) => {
+      track.stop();
+    });
+    micTestStreamRef.current = null;
+
+    await disposeVoiceEnhancementPipeline();
+    await disposeRnnoiseVoicePipeline();
+
+    setMicTestRunning(false);
+    setMicTestRecording(false);
+    setMicTestLevel(0);
+  }, [disposeRnnoiseVoicePipeline, disposeVoiceEnhancementPipeline]);
+
+  const startMicTest = useCallback(async () => {
+    if (voiceRoomKey) {
+      setMicTestError("Leave voice chat before starting mic test.");
+      return;
+    }
+    if (micTestBusy) return;
+
+    setMicTestBusy(true);
+    setMicTestError("");
+    try {
+      if (!(await ensureWindowsMediaStatus("microphone"))) {
+        setMicTestRunning(false);
+        return;
+      }
+      await stopMicTest();
+
+      const capturedStream = await requestVoiceMicrophoneStream();
+      const [capturedTrack] = capturedStream.getAudioTracks();
+      if (!capturedTrack) {
+        throw new Error("Microphone did not provide an audio track.");
+      }
+      if (capturedTrack?.applyConstraints) {
+        await capturedTrack
+          .applyConstraints(buildStrictVoiceAudioConstraints(voiceMicSettings))
+          .catch(() =>
+            capturedTrack
+              .applyConstraints(buildVoiceAudioConstraints(voiceMicSettings))
+              .catch(() => undefined),
+          );
+      }
+
+      const rnnoiseProcessedStream = await buildRnnoiseNoiseSuppressedStream(capturedStream);
+      const enhancedBaseStream = rnnoiseProcessedStream || capturedStream;
+      const voiceEnhancedStream = await buildVoiceEnhancementStream(enhancedBaseStream, voiceMicSettings);
+      const micStream = voiceEnhancedStream || enhancedBaseStream;
+      micTestStreamRef.current = micStream;
+
+      const levelContext = new AudioContext({ latencyHint: "interactive", sampleRate: 48000 });
+      const levelSource = levelContext.createMediaStreamSource(micStream);
+      const analyser = levelContext.createAnalyser();
+      analyser.fftSize = 2048;
+      analyser.smoothingTimeConstant = 0.82;
+      levelSource.connect(analyser);
+      const data = new Uint8Array(analyser.fftSize);
+      const tick = () => {
+        analyser.getByteTimeDomainData(data);
+        let rms = 0;
+        for (let i = 0; i < data.length; i += 1) {
+          const normalized = (data[i] - 128) / 128;
+          rms += normalized * normalized;
+        }
+        rms = Math.sqrt(rms / data.length);
+        const scaled = Math.max(0, Math.min(1, rms * 5.2));
+        setMicTestLevel(Math.round(scaled * 100));
+        micTestMeterRafRef.current = window.requestAnimationFrame(tick);
+      };
+      micTestMeterAudioContextRef.current = levelContext;
+      micTestMeterSourceRef.current = levelSource;
+      micTestMeterAnalyserRef.current = analyser;
+      micTestMeterRafRef.current = window.requestAnimationFrame(tick);
+
+      if (micTestMonitorEnabled) {
+        const monitorAudio = new Audio();
+        monitorAudio.autoplay = true;
+        monitorAudio.muted = false;
+        monitorAudio.volume = 0.85;
+        monitorAudio.srcObject = micStream;
+        micTestMonitorAudioRef.current = monitorAudio;
+        void monitorAudio.play().catch(() => undefined);
+      }
+
+      setMicTestRunning(true);
+      void refreshVoiceInputDevices();
+    } catch (err) {
+      await stopMicTest();
+      if (isPermissionDeniedMediaError(err)) {
+        setMicTestError("Microphone permission was denied. Allow microphone access for Glytch Chat and try again.");
+      } else {
+        setMicTestError(err instanceof Error ? err.message : "Could not start microphone test.");
+      }
+    } finally {
+      setMicTestBusy(false);
+    }
+  }, [
+    buildRnnoiseNoiseSuppressedStream,
+    buildVoiceEnhancementStream,
+    ensureWindowsMediaStatus,
+    micTestBusy,
+    micTestMonitorEnabled,
+    refreshVoiceInputDevices,
+    requestVoiceMicrophoneStream,
+    stopMicTest,
+    voiceMicSettings,
+    voiceRoomKey,
+  ]);
+
+  const handleRecordMicSample = useCallback(async () => {
+    if (!micTestRunning || !micTestStreamRef.current) {
+      setMicTestError("Start mic test before recording a sample.");
+      return;
+    }
+    if (micTestRecording) return;
+    if (typeof MediaRecorder === "undefined") {
+      setMicTestError("Mic sample recording is not supported in this browser/runtime.");
+      return;
+    }
+
+    setMicTestError("");
+    setMicTestRecording(true);
+    setMicTestSampleUrl((prev) => {
+      if (prev.startsWith("blob:")) {
+        URL.revokeObjectURL(prev);
+      }
+      return "";
+    });
+
+    try {
+      const stream = micTestStreamRef.current;
+      if (!stream) throw new Error("Mic stream is no longer active.");
+
+      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : MediaRecorder.isTypeSupported("audio/webm")
+          ? "audio/webm"
+          : "";
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      const chunks: BlobPart[] = [];
+
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          chunks.push(event.data);
+        }
+      };
+      recorder.onerror = () => {
+        setMicTestRecording(false);
+        setMicTestError("Mic sample recording failed.");
+      };
+      recorder.onstop = () => {
+        micTestRecorderRef.current = null;
+        setMicTestRecording(false);
+        if (chunks.length === 0) {
+          setMicTestError("Recorded sample was empty.");
+          return;
+        }
+        const sampleBlob = new Blob(chunks, { type: mimeType || "audio/webm" });
+        const sampleUrl = URL.createObjectURL(sampleBlob);
+        setMicTestSampleUrl((prev) => {
+          if (prev.startsWith("blob:")) {
+            URL.revokeObjectURL(prev);
+          }
+          return sampleUrl;
+        });
+      };
+
+      micTestRecorderRef.current = recorder;
+      recorder.start();
+      micTestRecordTimeoutRef.current = window.setTimeout(() => {
+        micTestRecordTimeoutRef.current = null;
+        if (recorder.state !== "inactive") {
+          recorder.stop();
+        }
+      }, 5000);
+    } catch (err) {
+      setMicTestRecording(false);
+      setMicTestError(err instanceof Error ? err.message : "Could not record sample.");
+    }
+  }, [micTestRecording, micTestRunning]);
+
   const closePeerConnection = useCallback((userId: string) => {
     const pendingDisconnectTimeoutId = peerDisconnectTimeoutsRef.current.get(userId);
     if (typeof pendingDisconnectTimeoutId === "number") {
@@ -9878,6 +10439,7 @@ export default function ChatDashboard({
     localStreamRef.current = null;
     void disposeLivekitVoicePipeline();
     void disposeRnnoiseVoicePipeline();
+    void disposeVoiceEnhancementPipeline();
     if (localScreenTrackRef.current) {
       localScreenTrackRef.current.onended = null;
     }
@@ -9926,7 +10488,7 @@ export default function ChatDashboard({
     pendingCandidatesRef.current.clear();
     signalSinceIdRef.current = 0;
     setSpeakingUserIds([]);
-  }, [closePeerConnection, currentUserId, disposeLivekitVoicePipeline, disposeRnnoiseVoicePipeline]);
+  }, [closePeerConnection, currentUserId, disposeLivekitVoicePipeline, disposeRnnoiseVoicePipeline, disposeVoiceEnhancementPipeline]);
 
   const stopVoiceSession = useCallback(async (notifyServer: boolean) => {
     const roomToLeave = voiceRoomKey;
@@ -10320,41 +10882,20 @@ export default function ChatDashboard({
       if (!(await ensureWindowsMediaStatus("microphone"))) {
         return;
       }
+      await stopMicTest();
       await disposeLivekitVoicePipeline();
       await disposeRnnoiseVoicePipeline();
+      await disposeVoiceEnhancementPipeline();
       await ensureSoundContext();
-      let capturedStream: MediaStream;
-      try {
-        capturedStream = await navigator.mediaDevices.getUserMedia({
-          audio: buildStrictVoiceAudioConstraints(),
-          video: false,
-        });
-      } catch {
-        try {
-          capturedStream = await navigator.mediaDevices.getUserMedia({
-            audio: buildVoiceAudioConstraints(),
-            video: false,
-          });
-        } catch {
-          capturedStream = await navigator.mediaDevices.getUserMedia({
-            audio: {
-              echoCancellation: true,
-              noiseSuppression: true,
-              autoGainControl: true,
-              channelCount: 1,
-            },
-            video: false,
-          });
-        }
-      }
+      const capturedStream = await requestVoiceMicrophoneStream();
 
       const [capturedTrack] = capturedStream.getAudioTracks();
       if (capturedTrack?.applyConstraints) {
         await capturedTrack
-          .applyConstraints(buildStrictVoiceAudioConstraints())
+          .applyConstraints(buildStrictVoiceAudioConstraints(voiceMicSettings))
           .catch(() =>
             capturedTrack
-              .applyConstraints(buildVoiceAudioConstraints())
+              .applyConstraints(buildVoiceAudioConstraints(voiceMicSettings))
               .catch(() => undefined),
           );
       }
@@ -10377,10 +10918,12 @@ export default function ChatDashboard({
       const rnnoiseProcessedStream = livekitProcessedStream
         ? null
         : await buildRnnoiseNoiseSuppressedStream(capturedStream);
-      const stream = livekitProcessedStream || rnnoiseProcessedStream || capturedStream;
+      const enhancementInputStream = livekitProcessedStream || rnnoiseProcessedStream || capturedStream;
+      const voiceEnhancedStream = await buildVoiceEnhancementStream(enhancementInputStream, voiceMicSettings);
+      const stream = voiceEnhancedStream || enhancementInputStream;
       localStreamRef.current = stream;
       applyLocalVoiceMute(effectiveVoiceMuted);
-      startSpeakingMeter(currentUserId, livekitInputStreamRef.current || rnnoiseInputStreamRef.current || stream);
+      startSpeakingMeter(currentUserId, stream);
       const latestSignalIdBeforeJoin = await getLatestVoiceSignalId(accessToken, room, currentUserId).catch(() => 0);
       signalSinceIdRef.current = latestSignalIdBeforeJoin;
       await joinVoiceRoom(accessToken, room, currentUserId, effectiveVoiceMuted, voiceDeafened);
@@ -12709,6 +13252,8 @@ export default function ChatDashboard({
                       ? "Appearance"
                     : tab === "accessibility"
                       ? "Accessibility"
+                      : tab === "mic"
+                        ? "Voice & Mic"
                       : tab === "updates"
                         ? "Updates"
                       : tab === "showcases"
@@ -13472,6 +14017,158 @@ export default function ChatDashboard({
                   {profileSaveBusy ? "Saving..." : "Save Accessibility Settings"}
                 </button>
               </form>
+            ) : settingsTab === "mic" ? (
+              <section className="settingsForm" aria-label="Voice and microphone settings">
+                <p className="sectionLabel">Voice & Microphone</p>
+                <label>
+                  Input Device
+                  <select
+                    value={normalizeMicInputDeviceId(voiceMicSettings.inputDeviceId)}
+                    onChange={(e) =>
+                      setVoiceMicSettings((prev) => ({
+                        ...prev,
+                        inputDeviceId: normalizeMicInputDeviceId(e.target.value),
+                      }))
+                    }
+                  >
+                    <option value="default">Default Microphone</option>
+                    {voiceInputDevices.map((device, index) => (
+                      <option key={`mic-device-${device.deviceId || index}`} value={device.deviceId}>
+                        {device.label || `Microphone ${index + 1}`}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Suppression Profile
+                  <select
+                    value={voiceMicSettings.suppressionProfile}
+                    onChange={(e) =>
+                      setVoiceMicSettings((prev) => ({
+                        ...prev,
+                        suppressionProfile: normalizeVoiceSuppressionProfile(e.target.value),
+                      }))
+                    }
+                  >
+                    <option value="balanced">Balanced</option>
+                    <option value="strong">Strong</option>
+                    <option value="ultra">Krisp-like (Max)</option>
+                  </select>
+                </label>
+                <label className="permissionToggle settingsToggle">
+                  <input
+                    type="checkbox"
+                    checked={voiceMicSettings.echoCancellation}
+                    onChange={(e) =>
+                      setVoiceMicSettings((prev) => ({
+                        ...prev,
+                        echoCancellation: e.target.checked,
+                      }))
+                    }
+                  />
+                  <span>Echo cancellation</span>
+                </label>
+                <label className="permissionToggle settingsToggle">
+                  <input
+                    type="checkbox"
+                    checked={voiceMicSettings.noiseSuppression}
+                    onChange={(e) =>
+                      setVoiceMicSettings((prev) => ({
+                        ...prev,
+                        noiseSuppression: e.target.checked,
+                      }))
+                    }
+                  />
+                  <span>Noise suppression</span>
+                </label>
+                <label className="permissionToggle settingsToggle">
+                  <input
+                    type="checkbox"
+                    checked={voiceMicSettings.autoGainControl}
+                    onChange={(e) =>
+                      setVoiceMicSettings((prev) => ({
+                        ...prev,
+                        autoGainControl: e.target.checked,
+                      }))
+                    }
+                  />
+                  <span>Automatic gain control</span>
+                </label>
+                <label className="permissionToggle settingsToggle">
+                  <input
+                    type="checkbox"
+                    checked={voiceMicSettings.voiceIsolation}
+                    onChange={(e) =>
+                      setVoiceMicSettings((prev) => ({
+                        ...prev,
+                        voiceIsolation: e.target.checked,
+                      }))
+                    }
+                  />
+                  <span>Prefer voice isolation when available</span>
+                </label>
+                <label>
+                  Input Gain ({voiceMicSettings.inputGainPercent}%)
+                  <input
+                    type="range"
+                    min={VOICE_MIC_INPUT_GAIN_MIN}
+                    max={VOICE_MIC_INPUT_GAIN_MAX}
+                    step={1}
+                    value={voiceMicSettings.inputGainPercent}
+                    onChange={(e) =>
+                      setVoiceMicSettings((prev) => ({
+                        ...prev,
+                        inputGainPercent: normalizeMicInputGainPercent(e.target.value),
+                      }))
+                    }
+                  />
+                </label>
+                <p className="smallMuted">
+                  Krisp-like mode combines RNNoise with speech-focused EQ, compression, and limiter tuning for clearer voice.
+                </p>
+                <p className="smallMuted">For best echo reduction, use headphones instead of open speakers.</p>
+                <div className="moderationActionRow">
+                  <button
+                    type="button"
+                    onClick={() => void (micTestRunning ? stopMicTest() : startMicTest())}
+                    disabled={micTestBusy || Boolean(voiceRoomKey)}
+                  >
+                    {micTestBusy ? "Starting..." : micTestRunning ? "Stop Mic Test" : "Start Mic Test"}
+                  </button>
+                  <button type="button" onClick={() => void handleRecordMicSample()} disabled={!micTestRunning || micTestRecording}>
+                    {micTestRecording ? "Recording 5s..." : "Record 5s Sample"}
+                  </button>
+                  {isWindowsElectronRuntime && (
+                    <button
+                      type="button"
+                      onClick={() => void openWindowsPrivacySettings("microphone")}
+                      disabled={windowsPrivacyOpenBusy === "microphone"}
+                    >
+                      {windowsPrivacyOpenBusy === "microphone" ? "Opening..." : "Mic Permissions"}
+                    </button>
+                  )}
+                </div>
+                {voiceRoomKey && <p className="smallMuted">Leave your current voice room before running mic test.</p>}
+                <label className="themeOption">
+                  <input
+                    type="checkbox"
+                    checked={micTestMonitorEnabled}
+                    onChange={(e) => setMicTestMonitorEnabled(e.target.checked)}
+                  />
+                  <span>Monitor my mic during test (recommended with headphones)</span>
+                </label>
+                <div className="micTestMeterShell" role="progressbar" aria-label="Microphone level" aria-valuemin={0} aria-valuemax={100} aria-valuenow={micTestLevel}>
+                  <div className={`micTestMeterFill${micTestLevel > 88 ? " danger" : micTestLevel > 70 ? " warn" : ""}`} style={{ width: `${micTestLevel}%` }} />
+                </div>
+                <p className="smallMuted">Live input level: {micTestLevel}%</p>
+                {micTestSampleUrl && (
+                  <label>
+                    Latest Mic Sample
+                    <audio className="micTestSamplePlayer" controls src={micTestSampleUrl} />
+                  </label>
+                )}
+                {micTestError && <p className="chatError">{micTestError}</p>}
+              </section>
             ) : settingsTab === "updates" ? (
               <section className="settingsForm" aria-label="Desktop updates">
                 <p className="sectionLabel">Desktop App Updates</p>
