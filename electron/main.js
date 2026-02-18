@@ -72,7 +72,46 @@ ipcMain.handle("electron:get-desktop-source-id", async (_event, preferredSourceI
   return preferredSource?.id || null;
 });
 
-ipcMain.handle("electron:get-app-version", async () => app.getVersion());
+function readVersionFromManifest(manifestPath) {
+  try {
+    if (!fs.existsSync(manifestPath)) return "";
+    const raw = fs.readFileSync(manifestPath, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return "";
+    if (typeof parsed.version !== "string") return "";
+    const normalized = parsed.version.trim();
+    if (!normalized || normalized === "0.0.0") return "";
+    return normalized;
+  } catch {
+    return "";
+  }
+}
+
+function resolvePackagedAppVersionFallback() {
+  const candidates = [
+    path.join(process.resourcesPath, "app.asar", "package.json"),
+    path.join(process.resourcesPath, "app", "package.json"),
+    path.join(__dirname, "..", "package.json"),
+  ];
+
+  for (const candidate of candidates) {
+    const resolved = readVersionFromManifest(candidate);
+    if (resolved) return resolved;
+  }
+  return "";
+}
+
+function resolveDesktopAppVersion() {
+  const runtimeVersion = (app.getVersion() || "").trim();
+  if (runtimeVersion && runtimeVersion !== "0.0.0") {
+    return runtimeVersion;
+  }
+  const fallbackVersion = resolvePackagedAppVersionFallback();
+  if (fallbackVersion) return fallbackVersion;
+  return runtimeVersion || "0.0.0";
+}
+
+ipcMain.handle("electron:get-app-version", async () => resolveDesktopAppVersion());
 
 function normalizeUpdateDownloadUrl(rawUrl) {
   if (typeof rawUrl !== "string" || !rawUrl.trim()) {

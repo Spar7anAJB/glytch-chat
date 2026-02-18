@@ -402,6 +402,7 @@ const PROFILE_COMMENT_MAX_LENGTH = 400;
 const SOUNDBOARD_MAX_CLIPS = 6;
 const SOUNDBOARD_MAX_CLIP_BYTES = 2 * 1024 * 1024;
 const SOUNDBOARD_STORAGE_KEY = "glytch.soundboard.clips.v1";
+const DESKTOP_AUTO_UPDATE_WINDOWS_STORAGE_KEY = "glytch.desktopAutoUpdateWindows.v1";
 const LEGACY_DEFAULT_DM_CHAT_BACKGROUND: BackgroundGradient = {
   from: "#122341",
   to: "#0a162b",
@@ -2172,6 +2173,16 @@ function compareSemanticVersions(a: string, b: string): number {
   return 0;
 }
 
+const BUILD_APP_VERSION = typeof __APP_VERSION__ === "string" && __APP_VERSION__.trim() ? __APP_VERSION__.trim() : "0.0.0";
+
+function normalizeInstalledAppVersion(rawVersion: string | null | undefined): string {
+  const normalized = typeof rawVersion === "string" ? rawVersion.trim() : "";
+  if (!normalized || normalized === "0.0.0") {
+    return BUILD_APP_VERSION;
+  }
+  return normalized;
+}
+
 function formatLocalDateTime(rawIso: string | null): string {
   if (!rawIso) return "Unknown";
   const parsed = new Date(rawIso);
@@ -2236,6 +2247,25 @@ function persistSoundboardToStorage(clips: SoundboardClip[]) {
   if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(SOUNDBOARD_STORAGE_KEY, JSON.stringify(clips.slice(0, SOUNDBOARD_MAX_CLIPS)));
+  } catch {
+    // Ignore localStorage quota failures.
+  }
+}
+
+function loadDesktopAutoUpdateWindowsFromStorage(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    const raw = window.localStorage.getItem(DESKTOP_AUTO_UPDATE_WINDOWS_STORAGE_KEY);
+    return raw === "1";
+  } catch {
+    return false;
+  }
+}
+
+function persistDesktopAutoUpdateWindowsToStorage(enabled: boolean) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(DESKTOP_AUTO_UPDATE_WINDOWS_STORAGE_KEY, enabled ? "1" : "0");
   } catch {
     // Ignore localStorage quota failures.
   }
@@ -2407,6 +2437,9 @@ export default function ChatDashboard({
   const [desktopUninstallBusy, setDesktopUninstallBusy] = useState(false);
   const [desktopUpdateNotice, setDesktopUpdateNotice] = useState("");
   const [desktopUpdateError, setDesktopUpdateError] = useState("");
+  const [desktopAutoUpdateWindowsEnabled, setDesktopAutoUpdateWindowsEnabled] = useState(() =>
+    loadDesktopAutoUpdateWindowsFromStorage(),
+  );
   const [selectedPatchNoteVersion, setSelectedPatchNoteVersion] = useState(PATCH_NOTES[0]?.version || "");
   const [isUserIdle, setIsUserIdle] = useState(false);
   const [profileSaveError, setProfileSaveError] = useState("");
@@ -2560,6 +2593,7 @@ export default function ChatDashboard({
   const glytchLastLoadedChannelIdRef = useRef<number | null>(null);
   const glytchLastLoadedMessageIdRef = useRef(0);
   const desktopUpdateAutoCheckRef = useRef(false);
+  const desktopAutoInstallAttemptRef = useRef("");
   const messageSnapshotKeyByContextRef = useRef<Record<string, string>>({});
   const activeMessageContextKeyRef = useRef<string | null>(null);
   const [membersPanelWidth, setMembersPanelWidth] = useState(() => {
@@ -3750,6 +3784,7 @@ export default function ChatDashboard({
       : normalizeDesktopUpdatePlatform(window.electronAPI?.platform) || inferDesktopPlatformFromNavigator();
   const isWindowsElectronRuntime = isElectronRuntime && electronDesktopPlatform === "windows";
   const hasInAppInstallerUpdateBridge = typeof window !== "undefined" && Boolean(window.electronAPI?.downloadAndInstallUpdate);
+  const supportsWindowsAutoInstall = isWindowsElectronRuntime && hasInAppInstallerUpdateBridge;
   const supportsDesktopUpdateAction =
     isElectronRuntime && (electronDesktopPlatform === "windows" || electronDesktopPlatform === "mac");
   const desktopUpdateActionLabel = hasInAppInstallerUpdateBridge ? "Install Update" : "Download Update";
@@ -3778,10 +3813,11 @@ export default function ChatDashboard({
     setDesktopUpdateNotice("");
 
     try {
-      let installedVersion = desktopAppVersion;
-      if (!installedVersion && window.electronAPI?.getAppVersion) {
-        installedVersion = await window.electronAPI.getAppVersion();
-        setDesktopAppVersion(installedVersion || "0.0.0");
+      let installedVersion = normalizeInstalledAppVersion(desktopAppVersion);
+      if ((!desktopAppVersion || desktopAppVersion === "0.0.0") && window.electronAPI?.getAppVersion) {
+        const resolvedVersion = normalizeInstalledAppVersion(await window.electronAPI.getAppVersion());
+        installedVersion = resolvedVersion;
+        setDesktopAppVersion(resolvedVersion);
       }
 
       const response = await fetch(`${apiBase}/api/updates/${electronDesktopPlatform}/latest`, {
@@ -3806,10 +3842,13 @@ export default function ChatDashboard({
       setDesktopUpdateDownloadUrl(downloadUrl);
       setDesktopUpdatePublishedAt(publishedAt);
       setDesktopUpdateNotice(
-        compareSemanticVersions(latestVersion, installedVersion || "0.0.0") > 0
+        compareSemanticVersions(latestVersion, installedVersion) > 0
           ? `Update ${latestVersion} is available.`
           : `You are up to date (v${installedVersion || latestVersion}).`,
       );
+      if (compareSemanticVersions(latestVersion, installedVersion) <= 0) {
+        desktopAutoInstallAttemptRef.current = "";
+      }
     } catch (err) {
       setDesktopUpdateError(err instanceof Error ? err.message : "Could not check for desktop updates.");
     } finally {
@@ -3925,17 +3964,27 @@ export default function ChatDashboard({
       .getAppVersion()
       .then((version) => {
         if (!mounted) return;
-        setDesktopAppVersion(version || "0.0.0");
+        setDesktopAppVersion(normalizeInstalledAppVersion(version));
       })
       .catch(() => {
         if (!mounted) return;
-        setDesktopAppVersion("0.0.0");
+        setDesktopAppVersion(normalizeInstalledAppVersion(""));
       });
 
     return () => {
       mounted = false;
     };
   }, [isElectronRuntime]);
+
+  useEffect(() => {
+    persistDesktopAutoUpdateWindowsToStorage(desktopAutoUpdateWindowsEnabled);
+  }, [desktopAutoUpdateWindowsEnabled]);
+
+  useEffect(() => {
+    if (!desktopAutoUpdateWindowsEnabled) {
+      desktopAutoInstallAttemptRef.current = "";
+    }
+  }, [desktopAutoUpdateWindowsEnabled]);
 
   useEffect(() => {
     if (!isElectronRuntime) return;
@@ -3945,6 +3994,30 @@ export default function ChatDashboard({
     desktopUpdateAutoCheckRef.current = true;
     void checkForDesktopAppUpdate();
   }, [checkForDesktopAppUpdate, desktopAppVersion, electronDesktopPlatform, isElectronRuntime]);
+
+  useEffect(() => {
+    if (!supportsWindowsAutoInstall) return;
+    if (!desktopAutoUpdateWindowsEnabled) return;
+    if (!isDesktopUpdateAvailable) return;
+    if (desktopUpdateBusy || desktopUpdateInstallBusy) return;
+    if (!desktopLatestVersion || !desktopUpdateDownloadUrl) return;
+
+    const attemptKey = `${desktopLatestVersion}|${desktopUpdateDownloadUrl}`;
+    if (desktopAutoInstallAttemptRef.current === attemptKey) return;
+    desktopAutoInstallAttemptRef.current = attemptKey;
+
+    setDesktopUpdateNotice(`Update ${desktopLatestVersion} found. Starting automatic install...`);
+    void handleInstallDesktopUpdate();
+  }, [
+    supportsWindowsAutoInstall,
+    desktopAutoUpdateWindowsEnabled,
+    isDesktopUpdateAvailable,
+    desktopUpdateBusy,
+    desktopUpdateInstallBusy,
+    desktopLatestVersion,
+    desktopUpdateDownloadUrl,
+    handleInstallDesktopUpdate,
+  ]);
 
   const isComposerInputFocused = useCallback(
     () =>
@@ -13440,6 +13513,24 @@ export default function ChatDashboard({
                           ? "macOS updates now run an in-app installer flow."
                           : "macOS updates open the latest DMG download for manual install."}
                       </p>
+                    )}
+                    {electronDesktopPlatform === "windows" && (
+                      <>
+                        <label className="themeOption">
+                          <input
+                            type="checkbox"
+                            checked={desktopAutoUpdateWindowsEnabled}
+                            onChange={(e) => setDesktopAutoUpdateWindowsEnabled(e.target.checked)}
+                            disabled={!hasInAppInstallerUpdateBridge}
+                          />
+                          <span>Auto-install updates on startup</span>
+                        </label>
+                        <p className="smallMuted">
+                          {hasInAppInstallerUpdateBridge
+                            ? "When enabled, Windows checks for updates on launch and installs automatically."
+                            : "Auto-install requires the latest desktop build with in-app updater support."}
+                        </p>
+                      </>
                     )}
                   </>
                 )}
