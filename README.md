@@ -189,11 +189,11 @@ Otherwise, the download buttons are shown as unavailable.
 The desktop app now exposes a **System Settings -> Accessibility -> Desktop App Version** panel in Electron builds.
 On Windows it can:
 
-1. Check `/api/updates/windows/latest` for newer versions.
-2. Download the installer from `/api/downloads/windows`.
-3. Launch the installer and close the current app so update can proceed.
+1. Check `/api/updates/{platform}/latest` for newer versions.
+2. Download installer from `/api/downloads/{platform}`.
+3. Launch installer flow and close current app so update can proceed.
 
-On macOS, the updater checks `/api/updates/mac/latest` and opens the DMG download URL for manual install.
+On macOS, the desktop app now attempts an in-app DMG install flow (download, mount, replace app, relaunch). If in-app update bridge is unavailable, it falls back to opening the DMG URL.
 
 For update detection to work, bump `package.json` version before building installers.
 

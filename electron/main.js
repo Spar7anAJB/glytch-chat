@@ -15,7 +15,9 @@ const shouldOpenDevTools = isDev && process.env.ELECTRON_OPEN_DEVTOOLS === "1";
 const appName = "Glytch Chat";
 const initialHashRoute = "/auth";
 const isWindows = process.platform === "win32";
+const isMac = process.platform === "darwin";
 const WINDOWS_UPDATER_MIN_BYTES = 5 * 1024 * 1024;
+const MAC_UPDATER_MIN_BYTES = 20 * 1024 * 1024;
 let installUpdateInFlight = false;
 const logoPathCandidates = isDev
   ? [path.join(__dirname, "..", "public", "logo.png"), path.join(__dirname, "..", "dist", "logo.png")]
@@ -89,6 +91,17 @@ function normalizeUpdateDownloadUrl(rawUrl) {
 }
 
 async function downloadWindowsInstaller(updateUrl) {
+  const buffer = await downloadInstallerBuffer(updateUrl, WINDOWS_UPDATER_MIN_BYTES);
+  const updatesDir = path.join(os.tmpdir(), "glytch-chat-updates");
+  fs.mkdirSync(updatesDir, { recursive: true });
+
+  const fileName = `glytch-chat-update-${Date.now()}.exe`;
+  const targetPath = path.join(updatesDir, fileName);
+  await fs.promises.writeFile(targetPath, buffer);
+  return targetPath;
+}
+
+async function downloadInstallerBuffer(updateUrl, minimumBytes) {
   const response = await fetch(updateUrl, {
     method: "GET",
     redirect: "follow",
@@ -99,14 +112,18 @@ async function downloadWindowsInstaller(updateUrl) {
   }
 
   const buffer = Buffer.from(await response.arrayBuffer());
-  if (buffer.length < WINDOWS_UPDATER_MIN_BYTES) {
+  if (buffer.length < minimumBytes) {
     throw new Error("Downloaded update file is too small to be a valid installer.");
   }
+  return buffer;
+}
 
+async function downloadMacInstaller(updateUrl) {
+  const buffer = await downloadInstallerBuffer(updateUrl, MAC_UPDATER_MIN_BYTES);
   const updatesDir = path.join(os.tmpdir(), "glytch-chat-updates");
   fs.mkdirSync(updatesDir, { recursive: true });
 
-  const fileName = `glytch-chat-update-${Date.now()}.exe`;
+  const fileName = `glytch-chat-update-${Date.now()}.dmg`;
   const targetPath = path.join(updatesDir, fileName);
   await fs.promises.writeFile(targetPath, buffer);
   return targetPath;
@@ -120,9 +137,65 @@ function launchWindowsInstaller(installerPath) {
   child.unref();
 }
 
+function resolveMacInstalledAppBundlePath() {
+  const exePath = app.getPath("exe");
+  const appBundlePath = path.resolve(exePath, "..", "..", "..");
+  if (appBundlePath.endsWith(".app")) {
+    return appBundlePath;
+  }
+  return path.join("/Applications", `${appName}.app`);
+}
+
+function launchMacInstaller(installerPath) {
+  const targetBundlePath = resolveMacInstalledAppBundlePath();
+  const scriptPath = path.join(os.tmpdir(), `glytch-chat-macos-update-${Date.now()}.sh`);
+  const scriptContent = `#!/bin/bash
+set -euo pipefail
+
+DMG_PATH="$1"
+TARGET_APP="$2"
+APP_NAME="$(basename "$TARGET_APP")"
+MOUNT_POINT="$(mktemp -d /tmp/glytch-update-mount-XXXXXX)"
+FALLBACK_TARGET="$HOME/Applications/$APP_NAME"
+
+cleanup() {
+  hdiutil detach "$MOUNT_POINT" -quiet >/dev/null 2>&1 || true
+  rm -rf "$MOUNT_POINT" >/dev/null 2>&1 || true
+  rm -f "$DMG_PATH" >/dev/null 2>&1 || true
+  rm -f "$0" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+sleep 1
+
+hdiutil attach "$DMG_PATH" -nobrowse -quiet -mountpoint "$MOUNT_POINT"
+SOURCE_APP="$(find "$MOUNT_POINT" -maxdepth 2 -type d -name "$APP_NAME" -print -quit)"
+if [ -z "$SOURCE_APP" ]; then
+  exit 1
+fi
+
+TARGET_DIR="$TARGET_APP"
+if [ ! -w "$(dirname "$TARGET_DIR")" ]; then
+  mkdir -p "$HOME/Applications"
+  TARGET_DIR="$FALLBACK_TARGET"
+fi
+
+rm -rf "$TARGET_DIR"
+cp -R "$SOURCE_APP" "$TARGET_DIR"
+open -a "$TARGET_DIR"
+`;
+
+  fs.writeFileSync(scriptPath, scriptContent, { mode: 0o700 });
+  const child = spawn("/bin/bash", [scriptPath, installerPath, targetBundlePath], {
+    detached: true,
+    stdio: "ignore",
+  });
+  child.unref();
+}
+
 ipcMain.handle("electron:download-and-install-update", async (_event, rawUrl) => {
-  if (!isWindows) {
-    throw new Error("In-app installer updates are currently only supported on Windows.");
+  if (!isWindows && !isMac) {
+    throw new Error("In-app installer updates are currently supported on Windows and macOS.");
   }
   if (installUpdateInFlight) {
     throw new Error("An update install is already in progress.");
@@ -135,13 +208,18 @@ ipcMain.handle("electron:download-and-install-update", async (_event, rawUrl) =>
 
   installUpdateInFlight = true;
   try {
-    const installerPath = await downloadWindowsInstaller(normalizedUrl);
-    launchWindowsInstaller(installerPath);
+    if (isWindows) {
+      const installerPath = await downloadWindowsInstaller(normalizedUrl);
+      launchWindowsInstaller(installerPath);
+    } else {
+      const installerPath = await downloadMacInstaller(normalizedUrl);
+      launchMacInstaller(installerPath);
+    }
 
-    // Exit shortly after launching installer so NSIS can replace app files cleanly.
+    // Exit shortly after launching installer helper so app files can be replaced cleanly.
     setTimeout(() => {
       app.quit();
-    }, 300);
+    }, isMac ? 700 : 300);
 
     return { ok: true };
   } finally {

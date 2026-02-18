@@ -3749,9 +3749,10 @@ export default function ChatDashboard({
       ? null
       : normalizeDesktopUpdatePlatform(window.electronAPI?.platform) || inferDesktopPlatformFromNavigator();
   const isWindowsElectronRuntime = isElectronRuntime && electronDesktopPlatform === "windows";
+  const hasInAppInstallerUpdateBridge = typeof window !== "undefined" && Boolean(window.electronAPI?.downloadAndInstallUpdate);
   const supportsDesktopUpdateAction =
     isElectronRuntime && (electronDesktopPlatform === "windows" || electronDesktopPlatform === "mac");
-  const desktopUpdateActionLabel = electronDesktopPlatform === "windows" ? "Install Update" : "Download Update";
+  const desktopUpdateActionLabel = hasInAppInstallerUpdateBridge ? "Install Update" : "Download Update";
   const selectedPatchNoteEntry =
     PATCH_NOTES.find((entry) => entry.version === selectedPatchNoteVersion) || PATCH_NOTES[0] || null;
   const isDesktopUpdateAvailable =
@@ -3840,10 +3841,13 @@ export default function ChatDashboard({
         await window.electronAPI.downloadAndInstallUpdate(desktopUpdateDownloadUrl);
         setDesktopUpdateNotice("Installer launched. Glytch Chat will close so the update can be applied.");
       } else if (electronDesktopPlatform === "mac") {
-        if (typeof window !== "undefined") {
+        if (window.electronAPI?.downloadAndInstallUpdate) {
+          await window.electronAPI.downloadAndInstallUpdate(desktopUpdateDownloadUrl);
+          setDesktopUpdateNotice("Update installer started. Glytch Chat will close and reopen when done.");
+        } else if (typeof window !== "undefined") {
           window.open(desktopUpdateDownloadUrl, "_blank", "noopener,noreferrer");
+          setDesktopUpdateNotice("Opened update download. Install the latest DMG to update Glytch Chat.");
         }
-        setDesktopUpdateNotice("Opened update download. Install the latest DMG to update Glytch Chat.");
       } else {
         throw new Error("Desktop update actions are not supported on this platform.");
       }
@@ -13429,7 +13433,11 @@ export default function ChatDashboard({
                       <p className="smallMuted">Update actions are currently available on Windows and macOS desktop builds.</p>
                     )}
                     {electronDesktopPlatform === "mac" && (
-                      <p className="smallMuted">macOS updates open the latest DMG download for manual install.</p>
+                      <p className="smallMuted">
+                        {hasInAppInstallerUpdateBridge
+                          ? "macOS updates now run an in-app installer flow."
+                          : "macOS updates open the latest DMG download for manual install."}
+                      </p>
                     )}
                   </>
                 )}
