@@ -1,3 +1,5 @@
+import { normalizeBackendApiBaseUrl } from "./apiBase";
+
 function toPublicAssetUrl(assetPath: string): string {
   const baseUrl = import.meta.env.BASE_URL || "/";
   const normalizedBase = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
@@ -31,7 +33,7 @@ const genericInstallerUrl = (import.meta.env.VITE_ELECTRON_INSTALLER_URL as stri
 const macInstallerUrl = (import.meta.env.VITE_ELECTRON_INSTALLER_URL_MAC as string | undefined)?.trim();
 const windowsInstallerUrl = (import.meta.env.VITE_ELECTRON_INSTALLER_URL_WIN as string | undefined)?.trim();
 const linuxInstallerUrl = (import.meta.env.VITE_ELECTRON_INSTALLER_URL_LINUX as string | undefined)?.trim();
-const apiBase = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/+$/, "");
+const apiBase = normalizeBackendApiBaseUrl(import.meta.env.VITE_API_URL as string | undefined);
 const backendDownloadsBase = apiBase ? `${apiBase}/api/downloads` : "/api/downloads";
 const canFallbackToBackendDownloads = Boolean(apiBase) || isLocalHostEnvironment();
 

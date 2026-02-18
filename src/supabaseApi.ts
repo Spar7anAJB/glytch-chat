@@ -1,3 +1,5 @@
+import { normalizeBackendApiBaseUrl } from "./lib/apiBase";
+
 export type AuthSession = {
   access_token: string;
   refresh_token: string;
@@ -308,7 +310,7 @@ export type VoiceSignal = {
   created_at: string;
 };
 
-const apiBase = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/+$/, "");
+const apiBase = normalizeBackendApiBaseUrl(import.meta.env.VITE_API_URL as string | undefined);
 const usingBackendRoutes = true;
 const supabaseBaseUrl = (import.meta.env.VITE_SUPABASE_URL as string | undefined)?.replace(/\/+$/, "");
 const profileBucket = (import.meta.env.VITE_SUPABASE_PROFILE_BUCKET as string | undefined) || "profile-media";

@@ -129,6 +129,7 @@ import {
   type VoiceParticipant,
   type VoiceSignal,
 } from "./supabaseApi";
+import { normalizeBackendApiBaseUrl } from "./lib/apiBase";
 import { RnnoiseWorkletNode, loadRnnoise } from "@sapphi-red/web-noise-suppressor";
 import rnnoiseWorkletPath from "@sapphi-red/web-noise-suppressor/rnnoiseWorklet.js?url";
 import rnnoiseWasmPath from "@sapphi-red/web-noise-suppressor/rnnoise.wasm?url";
@@ -3765,7 +3766,7 @@ export default function ChatDashboard({
       return;
     }
 
-    const apiBase = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/+$/, "");
+    const apiBase = normalizeBackendApiBaseUrl(import.meta.env.VITE_API_URL as string | undefined);
     if (!apiBase) {
       setDesktopUpdateError("Update checks require VITE_API_URL to point to your backend.");
       return;

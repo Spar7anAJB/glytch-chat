@@ -59,6 +59,8 @@ Backend:
 - `LIVEKIT_API_KEY` (required for LiveKit Krisp token minting)
 - `LIVEKIT_API_SECRET` (required for LiveKit Krisp token minting)
 - `LIVEKIT_KRISP_TOKEN_TTL_SECONDS` (optional; defaults to `300`; range `60-3600`)
+- `INSTALLER_URL_MAC` (optional; hosted `.dmg` URL used when `public/downloads/glytch-chat-installer.dmg` is not deployed)
+- `INSTALLER_VERSION_MAC` (optional; version string to report for macOS updates when using `INSTALLER_URL_MAC`)
 
 ### Media Moderation (Phase 2)
 
@@ -171,11 +173,18 @@ Those endpoints serve installers from:
 
 If an installer file is missing, the backend returns a 404 JSON error instead of serving a fallback HTML file.
 
+For macOS on Render (where `.dmg` is usually not committed because of GitHub file size limits), set:
+
+- `INSTALLER_URL_MAC` to your hosted DMG (for example a GitHub Release asset URL)
+- `INSTALLER_VERSION_MAC` to the DMG version (for example `0.2.2`)
+
+When configured, `/api/downloads/mac` redirects to the hosted DMG and `/api/updates/mac/latest` stays available.
+
 For static-only deployments (Cloudflare Pages/Workers assets without the Node backend), set explicit installer URLs via
 `VITE_ELECTRON_INSTALLER_URL_MAC`, `VITE_ELECTRON_INSTALLER_URL_WIN`, and optionally `VITE_ELECTRON_INSTALLER_URL_LINUX`.
 Otherwise, the download buttons are shown as unavailable.
 
-### Desktop in-app updater (Windows)
+### Desktop in-app updater (Windows + macOS)
 
 The desktop app now exposes a **System Settings -> Accessibility -> Desktop App Version** panel in Electron builds.
 On Windows it can:
@@ -183,6 +192,8 @@ On Windows it can:
 1. Check `/api/updates/windows/latest` for newer versions.
 2. Download the installer from `/api/downloads/windows`.
 3. Launch the installer and close the current app so update can proceed.
+
+On macOS, the updater checks `/api/updates/mac/latest` and opens the DMG download URL for manual install.
 
 For update detection to work, bump `package.json` version before building installers.
 

@@ -114,6 +114,21 @@ const DOWNLOADS_DIR = path.join(WORKSPACE_ROOT, "public", "downloads");
 const RELEASE_DIR = path.join(WORKSPACE_ROOT, "release");
 const DOWNLOADS_UPDATES_MANIFEST_PATH = path.join(DOWNLOADS_DIR, "updates.json");
 const PACKAGE_JSON_PATH = path.join(WORKSPACE_ROOT, "package.json");
+const INSTALLER_URL_GENERIC = normalizeExternalInstallerUrl(
+  process.env.INSTALLER_URL || process.env.VITE_ELECTRON_INSTALLER_URL || "",
+);
+const INSTALLER_URL_MAC = normalizeExternalInstallerUrl(
+  process.env.INSTALLER_URL_MAC || process.env.VITE_ELECTRON_INSTALLER_URL_MAC || INSTALLER_URL_GENERIC,
+);
+const INSTALLER_URL_WINDOWS = normalizeExternalInstallerUrl(
+  process.env.INSTALLER_URL_WIN || process.env.VITE_ELECTRON_INSTALLER_URL_WIN || INSTALLER_URL_GENERIC,
+);
+const INSTALLER_URL_LINUX = normalizeExternalInstallerUrl(
+  process.env.INSTALLER_URL_LINUX || process.env.VITE_ELECTRON_INSTALLER_URL_LINUX || INSTALLER_URL_GENERIC,
+);
+const INSTALLER_VERSION_MAC = (process.env.INSTALLER_VERSION_MAC || "").trim();
+const INSTALLER_VERSION_WINDOWS = (process.env.INSTALLER_VERSION_WIN || "").trim();
+const INSTALLER_VERSION_LINUX = (process.env.INSTALLER_VERSION_LINUX || "").trim();
 
 const INSTALLER_FILE_MAP = {
   mac: {
@@ -121,6 +136,8 @@ const INSTALLER_FILE_MAP = {
     contentType: "application/x-apple-diskimage",
     matchesReleaseArtifact: (candidate) => candidate.name.toLowerCase().endsWith(".dmg"),
     buildCommand: "npm run electron:installer:mac",
+    externalUrl: INSTALLER_URL_MAC,
+    externalVersion: INSTALLER_VERSION_MAC,
   },
   windows: {
     fileName: "glytch-chat-setup.exe",
@@ -143,12 +160,16 @@ const INSTALLER_FILE_MAP = {
       );
     },
     buildCommand: "npm run electron:installer:win",
+    externalUrl: INSTALLER_URL_WINDOWS,
+    externalVersion: INSTALLER_VERSION_WINDOWS,
   },
   linux: {
     fileName: "glytch-chat.AppImage",
     contentType: "application/octet-stream",
     matchesReleaseArtifact: (candidate) => candidate.name.endsWith(".AppImage"),
     buildCommand: "npm run electron:installer:all",
+    externalUrl: INSTALLER_URL_LINUX,
+    externalVersion: INSTALLER_VERSION_LINUX,
   },
 };
 
@@ -158,6 +179,20 @@ function parseBooleanEnv(rawValue, defaultValue) {
   if (normalized === "true" || normalized === "1" || normalized === "yes" || normalized === "on") return true;
   if (normalized === "false" || normalized === "0" || normalized === "no" || normalized === "off") return false;
   return defaultValue;
+}
+
+function normalizeExternalInstallerUrl(rawValue) {
+  if (typeof rawValue !== "string" || !rawValue.trim()) return "";
+
+  try {
+    const parsed = new URL(rawValue.trim());
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+      return "";
+    }
+    return parsed.toString();
+  } catch {
+    return "";
+  }
 }
 
 function clampNumber(value, min, max, fallback) {
@@ -1344,6 +1379,19 @@ function resolveInstallerSource(descriptor) {
   return null;
 }
 
+function resolveExternalInstallerSource(descriptor) {
+  if (!descriptor || typeof descriptor.externalUrl !== "string") return null;
+  const normalized = normalizeExternalInstallerUrl(descriptor.externalUrl);
+  return normalized || null;
+}
+
+function resolveDescriptorVersionFallback(descriptor, packageVersion) {
+  if (descriptor && typeof descriptor.externalVersion === "string" && descriptor.externalVersion.trim()) {
+    return descriptor.externalVersion.trim();
+  }
+  return packageVersion;
+}
+
 let cachedPackageVersion = null;
 
 function readPackageVersion() {
@@ -1451,6 +1499,13 @@ function handleInstallerNotFound(res, platform, descriptor) {
   });
 }
 
+function redirectToExternalInstaller(res, externalUrl) {
+  res.statusCode = 302;
+  res.setHeader("Location", externalUrl);
+  res.setHeader("Cache-Control", "no-store");
+  res.end();
+}
+
 function streamInstaller(res, req, filePath, descriptor) {
   const stats = fs.statSync(filePath);
   res.statusCode = 200;
@@ -1494,6 +1549,11 @@ function handleInstallerDownload(req, res, pathname) {
   const descriptor = INSTALLER_FILE_MAP[platform];
   const resolved = resolveInstallerSource(descriptor);
   if (!resolved) {
+    const externalUrl = resolveExternalInstallerSource(descriptor);
+    if (externalUrl) {
+      redirectToExternalInstaller(res, externalUrl);
+      return;
+    }
     handleInstallerNotFound(res, platform, descriptor);
     return;
   }
@@ -1534,6 +1594,38 @@ function handleInstallerUpdateCheck(req, res, pathname) {
   const descriptor = INSTALLER_FILE_MAP[platform];
   const resolved = resolveInstallerSource(descriptor);
   if (!resolved) {
+    const externalUrl = resolveExternalInstallerSource(descriptor);
+    if (externalUrl) {
+      const packageVersion = readPackageVersion();
+      const fallbackVersion = resolveDescriptorVersionFallback(descriptor, packageVersion);
+      const latestVersion = resolveManifestVersionForPlatform(platform, fallbackVersion);
+      const downloadPath = `${DOWNLOADS_PREFIX}${platform}`;
+      const downloadUrl = absoluteUrlForPath(req, downloadPath);
+
+      const payload = {
+        platform,
+        version: latestVersion,
+        downloadPath,
+        downloadUrl,
+        fileName: descriptor.fileName,
+        sizeBytes: 0,
+        source: "external",
+        publishedAt: new Date().toISOString(),
+        sha256: null,
+      };
+
+      res.setHeader("Cache-Control", "no-store");
+      if (method === "HEAD") {
+        res.writeHead(200, {
+          "Content-Type": "application/json; charset=utf-8",
+        });
+        res.end();
+        return;
+      }
+
+      sendJson(res, 200, payload);
+      return;
+    }
     handleInstallerNotFound(res, platform, descriptor);
     return;
   }
@@ -1596,6 +1688,7 @@ const server = createServer(async (req, res) => {
       service: "glytch-backend",
       version: readPackageVersion(),
       renderCommit: process.env.RENDER_GIT_COMMIT || null,
+      externalMacInstallerConfigured: Boolean(resolveExternalInstallerSource(INSTALLER_FILE_MAP.mac)),
       supabaseConfigured: Boolean(SUPABASE_URL),
       livekitKrispConfigured: isLivekitKrispConfigured(),
       giphyConfigured: Boolean(GIPHY_API_KEY),

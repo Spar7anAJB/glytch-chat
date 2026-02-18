@@ -27,3 +27,7 @@ services:
         sync: false
       - key: LIVEKIT_KRISP_TOKEN_TTL_SECONDS
         value: "300"
+      - key: INSTALLER_URL_MAC
+        sync: false
+      - key: INSTALLER_VERSION_MAC
+        sync: false
