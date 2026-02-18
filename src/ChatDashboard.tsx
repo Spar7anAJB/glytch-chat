@@ -2252,6 +2252,38 @@ type PatchNoteEntry = {
 
 const PATCH_NOTES: PatchNoteEntry[] = [
   {
+    version: "0.1.5",
+    date: "2026-02-18",
+    bugFixes: [
+      "Upgraded Max voice AI with deeper speech-vs-noise classification using periodicity, spectral flatness, and centroid validation.",
+      "Added adaptive per-frequency noise profile learning so suppression better matches each room and fan profile over time.",
+      "Strengthened keyboard click rejection with transient holdoff and confidence decay to prevent accidental gate opening.",
+    ],
+    newFeatures: [
+      "New multi-stage speech confidence model combines voice-band SNR, speech signature strength, and non-speech penalties before opening mic audio.",
+      "Max mode now keeps a relaxed intermediate gate for soft trailing words while still aggressively muting non-voice background.",
+    ],
+    knownIssues: [
+      "Extremely loud nearby speech sources (TV/speakers close to the mic) can still occasionally be classified as voice.",
+    ],
+  },
+  {
+    version: "0.1.4",
+    date: "2026-02-18",
+    bugFixes: [
+      "Improved Max suppression with keyboard-click transient rejection so short mechanical key spikes are less likely to open the mic.",
+      "Added fan-like noise rejection logic in Max mode to reduce steady PC fan leakage during silence.",
+      "Tightened voice gating decisions with speech-confidence tracking to better separate voice from non-voice bursts.",
+    ],
+    newFeatures: [
+      "Introduced an upgraded voice-only AI suppression path in Max mode focused on speech isolation and enhancement.",
+      "Expanded Max mode audio shaping with stronger low-end rumble control before enhancement/compression.",
+    ],
+    knownIssues: [
+      "Very loud nearby voices (for example TV or speakers near the mic) may still trigger opening in some rooms.",
+    ],
+  },
+  {
     version: "0.1.3",
     date: "2026-02-18",
     bugFixes: [
@@ -3621,6 +3653,7 @@ export default function ChatDashboard({
         const audioContext = new AudioContext({ latencyHint: "interactive", sampleRate: 48000 });
         const sourceNode = audioContext.createMediaStreamSource(inputStream);
         const highpassNode = audioContext.createBiquadFilter();
+        const lowShelfNode = audioContext.createBiquadFilter();
         const lowpassNode = audioContext.createBiquadFilter();
         const presenceNode = audioContext.createBiquadFilter();
         const deEssNode = audioContext.createBiquadFilter();
@@ -3639,6 +3672,10 @@ export default function ChatDashboard({
         highpassNode.type = "highpass";
         highpassNode.frequency.value = profileIsBalanced ? 80 : profileIsUltra ? 115 : 96;
         highpassNode.Q.value = 0.75;
+
+        lowShelfNode.type = "lowshelf";
+        lowShelfNode.frequency.value = profileIsBalanced ? 145 : profileIsUltra ? 185 : 165;
+        lowShelfNode.gain.value = profileIsBalanced ? -1.8 : profileIsUltra ? -5.2 : -3.5;
 
         lowpassNode.type = "lowpass";
         lowpassNode.frequency.value = profileIsBalanced ? 11200 : profileIsUltra ? 7600 : 9000;
@@ -3674,7 +3711,8 @@ export default function ChatDashboard({
         outputGainNode.gain.value = normalizeMicInputGainPercent(settings.inputGainPercent) / 100;
 
         sourceNode.connect(highpassNode);
-        highpassNode.connect(lowpassNode);
+        highpassNode.connect(lowShelfNode);
+        lowShelfNode.connect(lowpassNode);
         lowpassNode.connect(presenceNode);
         presenceNode.connect(deEssNode);
         deEssNode.connect(compressorNode);
@@ -3685,34 +3723,60 @@ export default function ChatDashboard({
         gateGainNode.connect(outputGainNode);
         outputGainNode.connect(destinationNode);
 
-        // Voice-prioritized adaptive VAD gate: keeps the mic mostly closed unless a speech signature is present.
+        // Multi-feature voice AI gate: learns room noise and opens only on persistent speech signatures.
         const gateData = new Uint8Array(gateAnalyser.fftSize);
         const gateFreqData = new Uint8Array(gateFrequencyAnalyser.frequencyBinCount);
+        const previousGateFreqData = new Uint8Array(gateFrequencyAnalyser.frequencyBinCount);
+        const currentSpectrumPower = new Float32Array(gateFrequencyAnalyser.frequencyBinCount);
+        const adaptiveNoiseProfile = new Float32Array(gateFrequencyAnalyser.frequencyBinCount);
+        let noiseProfileInitialized = false;
         let smoothedRms = 0;
         let smoothedVoiceRatio = profileIsUltra ? 0.42 : profileIsBalanced ? 0.36 : 0.39;
         let smoothedSpeechSignature = profileIsUltra ? 0.14 : profileIsBalanced ? 0.09 : 0.11;
         let smoothedZeroCrossingRate = 0.08;
+        let smoothedSpectralFlux = 0;
+        let smoothedCrestFactor = 2.8;
+        let smoothedSpectralFlatness = profileIsUltra ? 0.36 : 0.42;
+        let smoothedSpectralCentroidHz = profileIsUltra ? 1850 : 2100;
+        let smoothedPeriodicity = 0;
+        let speechConfidence = 0;
+        let speechEvidenceSmoothed = 0;
         let ambientFloor = profileIsUltra ? 0.0075 : profileIsBalanced ? 0.0095 : 0.0085;
         let ambientVoiceRatio = profileIsUltra ? 0.24 : profileIsBalanced ? 0.3 : 0.27;
         let ambientSpeechSignature = profileIsUltra ? 0.1 : profileIsBalanced ? 0.07 : 0.085;
         let gateOpen = false;
         let gateHoldUntil = 0;
-        const calibrationEndsAt = Date.now() + (profileIsUltra ? 2400 : 1700);
+        let clickRejectUntil = 0;
+        const calibrationEndsAt = Date.now() + (profileIsUltra ? 2800 : 2000);
         const minimumOpenThreshold = profileIsUltra ? 0.0175 : profileIsBalanced ? 0.024 : 0.0205;
         const minimumCloseThreshold = minimumOpenThreshold * 0.58;
         const floorOpenMultiplier = profileIsUltra ? 2.8 : profileIsBalanced ? 2.05 : 2.35;
         const floorCloseMultiplier = profileIsUltra ? 1.95 : profileIsBalanced ? 1.45 : 1.7;
-        const closedGain = profileIsUltra ? 0.006 : profileIsBalanced ? 0.1 : 0.04;
-        const holdMs = profileIsUltra ? 340 : profileIsBalanced ? 220 : 280;
+        const closedGain = profileIsUltra ? 0.004 : profileIsBalanced ? 0.1 : 0.035;
+        const holdMs = profileIsUltra ? 380 : profileIsBalanced ? 230 : 300;
         const voiceRatioMargin = profileIsUltra ? 0.17 : profileIsBalanced ? 0.1 : 0.14;
         const speechSignatureMargin = profileIsUltra ? 0.11 : profileIsBalanced ? 0.07 : 0.09;
         const baseVoiceRatioThreshold = profileIsUltra ? 0.5 : profileIsBalanced ? 0.42 : 0.47;
         const baseSpeechSignatureThreshold = profileIsUltra ? 0.19 : profileIsBalanced ? 0.11 : 0.16;
         const zeroCrossingMin = profileIsUltra ? 0.018 : 0.012;
         const zeroCrossingMax = profileIsUltra ? 0.19 : 0.24;
+        const crestClickThreshold = profileIsUltra ? 4.3 : 4.75;
+        const fluxClickThreshold = profileIsUltra ? 0.1 : 0.125;
+        const clickRejectMs = profileIsUltra ? 240 : 170;
+        const speechConfidenceOpenThreshold = profileIsUltra ? 0.62 : 0.54;
+        const speechConfidenceCloseThreshold = profileIsUltra ? 0.24 : 0.18;
+        const speechEvidenceOpenThreshold = profileIsUltra ? 0.52 : 0.44;
+        const speechEvidenceCloseThreshold = profileIsUltra ? 0.25 : 0.2;
+        const noiseProfileCalibrationAlpha = 0.9;
+        const noiseProfileLearnAlpha = profileIsUltra ? 0.968 : 0.954;
         const nyquist = audioContext.sampleRate / 2;
         const binFromHz = (hz: number) =>
           Math.max(0, Math.min(gateFreqData.length - 1, Math.round((hz / nyquist) * (gateFreqData.length - 1))));
+        const clamp01 = (value: number) => Math.min(1, Math.max(0, value));
+        const scoreRange = (value: number, low: number, high: number) => {
+          if (high <= low) return value >= high ? 1 : 0;
+          return clamp01((value - low) / (high - low));
+        };
         const analysisBandStart = binFromHz(80);
         const analysisBandEnd = binFromHz(11000);
         const voiceBandStart = binFromHz(220);
@@ -3726,10 +3790,42 @@ export default function ChatDashboard({
           const start = Math.max(0, Math.min(gateFreqData.length - 1, startBin));
           const end = Math.max(start, Math.min(gateFreqData.length - 1, endBin));
           for (let i = start; i <= end; i += 1) {
-            const normalized = gateFreqData[i] / 255;
-            energy += normalized * normalized;
+            energy += currentSpectrumPower[i];
           }
           return energy;
+        };
+        const computeBandSnr = (startBin: number, endBin: number) => {
+          let signal = 0;
+          let noise = 0;
+          const start = Math.max(0, Math.min(gateFreqData.length - 1, startBin));
+          const end = Math.max(start, Math.min(gateFreqData.length - 1, endBin));
+          for (let i = start; i <= end; i += 1) {
+            signal += currentSpectrumPower[i];
+            noise += adaptiveNoiseProfile[i];
+          }
+          return (signal + 1e-7) / (noise + 1e-7);
+        };
+        const estimatePeriodicity = () => {
+          const minLag = Math.floor(audioContext.sampleRate / 330);
+          const maxLag = Math.min(gateData.length - 8, Math.ceil(audioContext.sampleRate / 85));
+          let bestCorrelation = 0;
+          for (let lag = minLag; lag <= maxLag; lag += 4) {
+            let correlation = 0;
+            let energyA = 0;
+            let energyB = 0;
+            for (let i = 0; i + lag < gateData.length; i += 2) {
+              const sampleA = (gateData[i] - 128) / 128;
+              const sampleB = (gateData[i + lag] - 128) / 128;
+              correlation += sampleA * sampleB;
+              energyA += sampleA * sampleA;
+              energyB += sampleB * sampleB;
+            }
+            const normalized = correlation / Math.sqrt(energyA * energyB + 1e-8);
+            if (normalized > bestCorrelation) {
+              bestCorrelation = normalized;
+            }
+          }
+          return clamp01(bestCorrelation);
         };
 
         const updateGate = () => {
@@ -3737,11 +3833,14 @@ export default function ChatDashboard({
           gateFrequencyAnalyser.getByteFrequencyData(gateFreqData);
 
           let rms = 0;
+          let peakAbs = 0;
           let zeroCrossings = 0;
           let previousSign = 0;
           for (let i = 0; i < gateData.length; i += 1) {
             const normalized = (gateData[i] - 128) / 128;
+            const absNormalized = Math.abs(normalized);
             rms += normalized * normalized;
+            if (absNormalized > peakAbs) peakAbs = absNormalized;
             const sign = normalized > 0.02 ? 1 : normalized < -0.02 ? -1 : 0;
             if (i > 0 && sign !== 0 && previousSign !== 0 && sign !== previousSign) {
               zeroCrossings += 1;
@@ -3751,7 +3850,39 @@ export default function ChatDashboard({
             }
           }
           rms = Math.sqrt(rms / gateData.length);
+          const crestFactor = peakAbs / Math.max(1e-5, rms);
           const zeroCrossingRate = zeroCrossings / gateData.length;
+
+          let spectralFlux = 0;
+          let fluxBins = 0;
+          let flatnessLogSum = 0;
+          let flatnessLinearSum = 0;
+          let centroidNumerator = 0;
+          for (let i = analysisBandStart; i <= analysisBandEnd; i += 1) {
+            const normalized = gateFreqData[i] / 255;
+            const power = normalized * normalized;
+            currentSpectrumPower[i] = power;
+            spectralFlux += Math.abs(gateFreqData[i] - previousGateFreqData[i]) / 255;
+            previousGateFreqData[i] = gateFreqData[i];
+            flatnessLogSum += Math.log(power + 1e-8);
+            flatnessLinearSum += power;
+            const hz = (i / (gateFreqData.length - 1)) * nyquist;
+            centroidNumerator += hz * power;
+            fluxBins += 1;
+          }
+          spectralFlux = fluxBins > 0 ? spectralFlux / fluxBins : 0;
+          const spectralFlatness =
+            fluxBins > 0
+              ? Math.exp(flatnessLogSum / fluxBins) / Math.max(1e-8, flatnessLinearSum / fluxBins)
+              : 1;
+          const spectralCentroidHz = centroidNumerator / Math.max(1e-8, flatnessLinearSum);
+
+          if (!noiseProfileInitialized) {
+            for (let i = analysisBandStart; i <= analysisBandEnd; i += 1) {
+              adaptiveNoiseProfile[i] = currentSpectrumPower[i];
+            }
+            noiseProfileInitialized = true;
+          }
 
           const totalEnergy = computeBandEnergy(analysisBandStart, analysisBandEnd) + 1e-7;
           const voiceEnergy = computeBandEnergy(voiceBandStart, voiceBandEnd);
@@ -3760,12 +3891,18 @@ export default function ChatDashboard({
           const voiceRatio = voiceEnergy / totalEnergy;
           const rumbleRatio = rumbleEnergy / totalEnergy;
           const highNoiseRatio = highNoiseEnergy / totalEnergy;
-          const speechSignature = Math.max(0, voiceRatio - rumbleRatio * 0.88 - highNoiseRatio * 0.7);
+          const speechSignature = Math.max(0, voiceRatio - rumbleRatio * 0.9 - highNoiseRatio * 0.72);
+          const periodicity = estimatePeriodicity();
 
           smoothedRms = smoothedRms * 0.84 + rms * 0.16;
           smoothedVoiceRatio = smoothedVoiceRatio * 0.8 + voiceRatio * 0.2;
           smoothedSpeechSignature = smoothedSpeechSignature * 0.82 + speechSignature * 0.18;
           smoothedZeroCrossingRate = smoothedZeroCrossingRate * 0.78 + zeroCrossingRate * 0.22;
+          smoothedSpectralFlux = smoothedSpectralFlux * 0.68 + spectralFlux * 0.32;
+          smoothedCrestFactor = smoothedCrestFactor * 0.74 + crestFactor * 0.26;
+          smoothedSpectralFlatness = smoothedSpectralFlatness * 0.74 + spectralFlatness * 0.26;
+          smoothedSpectralCentroidHz = smoothedSpectralCentroidHz * 0.72 + spectralCentroidHz * 0.28;
+          smoothedPeriodicity = smoothedPeriodicity * 0.76 + periodicity * 0.24;
 
           const nowMs = Date.now();
           if (!gateOpen) {
@@ -3802,15 +3939,112 @@ export default function ChatDashboard({
             Math.max(baseSpeechSignatureThreshold, ambientSpeechSignature + speechSignatureMargin),
           );
           const dynamicSpeechSignatureCloseThreshold = Math.max(0.04, dynamicSpeechSignatureThreshold - 0.06);
+
+          const clickLikeTransient =
+            smoothedCrestFactor >= crestClickThreshold &&
+            smoothedSpectralFlux >= fluxClickThreshold &&
+            smoothedSpeechSignature < dynamicSpeechSignatureThreshold * 0.94;
+          if (clickLikeTransient) {
+            clickRejectUntil = nowMs + clickRejectMs;
+          }
+          const clickRejectActive = nowMs < clickRejectUntil;
+
+          const voiceSnr = computeBandSnr(voiceBandStart, voiceBandEnd);
+          const rumbleSnr = computeBandSnr(rumbleBandStart, rumbleBandEnd);
+          const highNoiseSnr = computeBandSnr(highNoiseBandStart, highNoiseBandEnd);
+          const shouldLearnNoiseProfile =
+            !gateOpen ||
+            nowMs < calibrationEndsAt ||
+            speechConfidence < speechConfidenceOpenThreshold * 0.42;
+          if (shouldLearnNoiseProfile) {
+            const alpha = nowMs < calibrationEndsAt ? noiseProfileCalibrationAlpha : noiseProfileLearnAlpha;
+            for (let i = analysisBandStart; i <= analysisBandEnd; i += 1) {
+              adaptiveNoiseProfile[i] = adaptiveNoiseProfile[i] * alpha + currentSpectrumPower[i] * (1 - alpha);
+            }
+          }
+
           const hasVoiceBandFocus = smoothedVoiceRatio >= dynamicVoiceRatioThreshold;
           const hasSpeechSignature = smoothedSpeechSignature >= dynamicSpeechSignatureThreshold;
           const hasVoiceLikeZeroCrossing =
             smoothedZeroCrossingRate >= zeroCrossingMin && smoothedZeroCrossingRate <= zeroCrossingMax;
-          const voiceDetected = hasVoiceBandFocus && hasSpeechSignature && hasVoiceLikeZeroCrossing;
+          const periodicityScore = scoreRange(smoothedPeriodicity, 0.1, 0.62);
+          const voiceSnrScore = scoreRange(voiceSnr, 1.15, 3.05);
+          const signatureScore = scoreRange(
+            smoothedSpeechSignature,
+            dynamicSpeechSignatureThreshold * 0.72,
+            dynamicSpeechSignatureThreshold * 1.7,
+          );
+          const voiceRatioScore = scoreRange(
+            smoothedVoiceRatio,
+            dynamicVoiceRatioThreshold * 0.84,
+            Math.min(0.92, dynamicVoiceRatioThreshold * 1.4),
+          );
+          const flatnessPenalty = scoreRange(
+            smoothedSpectralFlatness,
+            profileIsUltra ? 0.58 : 0.64,
+            profileIsUltra ? 0.9 : 0.93,
+          );
+          const centroidPenalty =
+            scoreRange(Math.abs(smoothedSpectralCentroidHz - 2200), 1700, profileIsUltra ? 4600 : 5200) *
+            (1 - periodicityScore * 0.32);
+          const fanLikeNoise =
+            rumbleRatio > 0.28 &&
+            highNoiseRatio < 0.22 &&
+            smoothedSpectralFlux < (profileIsUltra ? 0.088 : 0.1) &&
+            smoothedPeriodicity < 0.25 &&
+            smoothedSpeechSignature < dynamicSpeechSignatureThreshold * 0.74;
+          const spectralNoiseLike =
+            smoothedSpectralFlatness > (profileIsUltra ? 0.79 : 0.84) &&
+            smoothedPeriodicity < (profileIsUltra ? 0.21 : 0.18);
+          const speechEvidenceRaw =
+            0.31 * voiceSnrScore +
+            0.21 * signatureScore +
+            0.16 * periodicityScore +
+            0.13 * voiceRatioScore +
+            0.1 * (hasVoiceLikeZeroCrossing ? 1 : 0) +
+            0.09 * (hasVoiceBandFocus ? 1 : 0) -
+            0.2 * flatnessPenalty -
+            0.11 * centroidPenalty -
+            0.1 * scoreRange(rumbleSnr, 1.55, 3.2) * scoreRange(rumbleRatio, 0.22, 0.5) -
+            0.08 * scoreRange(highNoiseSnr, 1.5, 3.1) * scoreRange(highNoiseRatio, 0.22, 0.5) -
+            (clickRejectActive ? 0.22 : 0) -
+            (fanLikeNoise ? 0.24 : 0) -
+            (spectralNoiseLike ? 0.16 : 0);
+          const speechEvidence = clamp01(speechEvidenceRaw);
+          speechEvidenceSmoothed = speechEvidenceSmoothed * 0.72 + speechEvidence * 0.28;
+
+          const baseVoiceDetected =
+            hasVoiceBandFocus &&
+            hasSpeechSignature &&
+            hasVoiceLikeZeroCrossing &&
+            speechEvidenceSmoothed >= speechEvidenceOpenThreshold &&
+            !clickRejectActive &&
+            !fanLikeNoise &&
+            !spectralNoiseLike;
+
+          if (baseVoiceDetected) {
+            speechConfidence = Math.min(1, speechConfidence + 0.06 + speechEvidenceSmoothed * (profileIsUltra ? 0.2 : 0.17));
+          } else {
+            speechConfidence = Math.max(
+              0,
+              speechConfidence -
+                (profileIsUltra ? 0.108 : 0.094) -
+                (clickRejectActive ? 0.03 : 0) -
+                (fanLikeNoise ? 0.026 : 0),
+            );
+          }
+
+          const voiceDetected =
+            baseVoiceDetected &&
+            speechConfidence >= speechConfidenceOpenThreshold &&
+            speechEvidenceSmoothed >= speechEvidenceOpenThreshold;
           const loudVoiceOverride =
-            smoothedRms >= dynamicOpenThreshold * 1.55 &&
+            smoothedRms >= dynamicOpenThreshold * 1.68 &&
+            speechEvidenceSmoothed >= speechEvidenceOpenThreshold * 0.96 &&
             smoothedVoiceRatio >= dynamicVoiceRatioCloseThreshold &&
-            smoothedSpeechSignature >= dynamicSpeechSignatureCloseThreshold;
+            smoothedSpeechSignature >= dynamicSpeechSignatureCloseThreshold &&
+            !clickRejectActive &&
+            !fanLikeNoise;
 
           if ((smoothedRms >= dynamicOpenThreshold && voiceDetected) || loudVoiceOverride) {
             gateOpen = true;
@@ -3819,16 +4053,26 @@ export default function ChatDashboard({
             const voiceSignatureDropped =
               smoothedVoiceRatio <= dynamicVoiceRatioCloseThreshold ||
               smoothedSpeechSignature <= dynamicSpeechSignatureCloseThreshold ||
-              smoothedZeroCrossingRate <= zeroCrossingMin * 0.65 ||
-              smoothedZeroCrossingRate >= zeroCrossingMax * 1.24;
+              smoothedZeroCrossingRate <= zeroCrossingMin * 0.62 ||
+              smoothedZeroCrossingRate >= zeroCrossingMax * 1.28 ||
+              speechConfidence <= speechConfidenceCloseThreshold ||
+              speechEvidenceSmoothed <= speechEvidenceCloseThreshold ||
+              clickRejectActive ||
+              fanLikeNoise ||
+              spectralNoiseLike;
             if (smoothedRms <= dynamicCloseThreshold || voiceSignatureDropped) {
               gateOpen = false;
             }
           }
 
-          const targetGain = gateOpen ? 1 : closedGain;
+          const relaxedClosedGain = Math.min(0.1, closedGain * 2.2);
+          const targetGain = gateOpen
+            ? 1
+            : speechConfidence > speechConfidenceCloseThreshold && speechEvidenceSmoothed > speechEvidenceCloseThreshold
+              ? relaxedClosedGain
+              : closedGain;
           try {
-            gateGainNode.gain.setTargetAtTime(targetGain, audioContext.currentTime, gateOpen ? 0.009 : 0.055);
+            gateGainNode.gain.setTargetAtTime(targetGain, audioContext.currentTime, gateOpen ? 0.008 : 0.058);
           } catch {
             gateGainNode.gain.value = targetGain;
           }
@@ -14348,7 +14592,7 @@ export default function ChatDashboard({
                   />
                 </label>
                 <p className="smallMuted">
-                  Max mode uses dual-pass RNNoise plus voice-only detection gating, voice-focused EQ, compression, and limiting.
+                  Max mode uses dual-pass RNNoise plus voice-only AI gating with keyboard click/fan rejection, voice-focused EQ, compression, and limiting.
                 </p>
                 <p className="smallMuted">For best echo reduction, use headphones instead of open speakers.</p>
                 <div className="moderationActionRow">
