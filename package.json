@@ -10,7 +10,7 @@
     "dev:full": "node scripts/dev-full.mjs",
     "backend:dev": "node --watch backend/server.mjs",
     "backend:start": "node backend/server.mjs",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && node scripts/prune-cf-assets.mjs",
     "deploy:cf": "node scripts/prune-cf-assets.mjs && npx --yes wrangler deploy",
     "electron:dev": "node electron/dev-runner.mjs",
     "electron:start": "npm run build && node electron/run-electron.mjs",
