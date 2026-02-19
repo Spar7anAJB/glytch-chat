@@ -11,7 +11,7 @@
     "backend:dev": "node --watch backend/server.mjs",
     "backend:start": "node backend/server.mjs",
     "build": "tsc -b && vite build",
-    "deploy:cf": "npx --yes wrangler deploy",
+    "deploy:cf": "node scripts/prune-cf-assets.mjs && npx --yes wrangler deploy",
     "electron:dev": "node electron/dev-runner.mjs",
     "electron:start": "npm run build && node electron/run-electron.mjs",
     "electron:installer:clean": "node -e \"require('node:fs').rmSync('release',{recursive:true,force:true})\"",
