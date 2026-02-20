@@ -51,7 +51,7 @@ impl VoiceCoreState {
 
     fn update_coefficients(&mut self) {
         let dt = 1.0 / self.sample_rate;
-        let highpass_hz = 100.0;
+        let highpass_hz = 90.0;
         let speech_lowpass_hz = 3600.0;
         let rumble_lowpass_hz = 170.0;
 
@@ -167,9 +167,9 @@ pub extern "C" fn ve_analyze_frame(input_ptr: u32, frame_size: u32) {
             voice_energy += speech_band * speech_band;
             rumble_energy += rumble_band * rumble_band;
 
-            let sign = if highpassed > 0.0025 {
+            let sign = if highpassed > 0.0019 {
                 1
-            } else if highpassed < -0.0025 {
+            } else if highpassed < -0.0019 {
                 -1
             } else {
                 0

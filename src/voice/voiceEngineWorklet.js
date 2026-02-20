@@ -372,7 +372,7 @@ class VoiceEngineProcessor extends AudioWorkletProcessor {
 
   updateFilterCoefficients() {
     const dt = 1 / sampleRate
-    const highpassHz = 100
+    const highpassHz = 90
     const speechLowpassHz = 3600
     const rumbleLowpassHz = 170
 
@@ -558,7 +558,7 @@ class VoiceEngineProcessor extends AudioWorkletProcessor {
         voiceEnergy += speechBand * speechBand
         rumbleEnergy += rumbleBand * rumbleBand
 
-        const sign = highpassed > 0.0025 ? 1 : highpassed < -0.0025 ? -1 : 0
+        const sign = highpassed > 0.0019 ? 1 : highpassed < -0.0019 ? -1 : 0
         if (i > 0 && sign !== 0 && lastSign !== 0 && sign !== lastSign) {
           zeroCrossings += 1
         }
@@ -608,8 +608,17 @@ class VoiceEngineProcessor extends AudioWorkletProcessor {
 
     this.smoothedNearFieldScore = this.smoothedNearFieldScore * 0.74 + nearFieldScore * 0.26
 
-    const openThreshold = 0.5 - this.config.strength * 0.08 - (this.config.targetSpeakerLock ? 0.02 : 0)
-    const closeThreshold = 0.2 + this.config.strength * 0.04
+    const farFieldSpeechScore = scoreRange(speechLikelihood, 0.32, 0.82) * scoreRange(features.snr, 0.98, 2.4)
+    const farFieldOpenRelax =
+      this.config.strength >= 0.9 ? 0.095 * farFieldSpeechScore : 0.055 * farFieldSpeechScore
+    const farFieldCloseRelax =
+      this.config.strength >= 0.9 ? 0.018 * farFieldSpeechScore : 0.01 * farFieldSpeechScore
+    const openThreshold = clamp(
+      0.5 - this.config.strength * 0.08 - (this.config.targetSpeakerLock ? 0.02 : 0) - farFieldOpenRelax,
+      0.26,
+      0.55,
+    )
+    const closeThreshold = clamp(0.2 + this.config.strength * 0.04 - farFieldCloseRelax, 0.14, 0.35)
     if (this.smoothedNearFieldScore >= openThreshold) {
       this.isSpeaking = true
       this.speakingHoldBlocks = 8
@@ -621,18 +630,19 @@ class VoiceEngineProcessor extends AudioWorkletProcessor {
       }
     }
 
+    const highStrengthProfile = this.config.strength >= 0.9
     const onsetSpeechCandidate =
       !this.isSpeaking &&
-      features.onsetScore >= 0.4 &&
-      speechLikelihood >= 0.4 &&
-      nearFieldScore >= openThreshold * 0.68 &&
-      snr >= 1.04
+      features.onsetScore >= (highStrengthProfile ? 0.3 : 0.4) &&
+      speechLikelihood >= (highStrengthProfile ? 0.34 : 0.4) &&
+      nearFieldScore >= openThreshold * (highStrengthProfile ? 0.62 : 0.68) &&
+      snr >= (highStrengthProfile ? 0.98 : 1.04)
     const softSpeechRescueCandidate =
       !this.isSpeaking &&
-      speechLikelihood >= 0.42 &&
-      features.onsetScore >= 0.22 &&
-      features.voiceRatioScore >= 0.28 &&
-      snr >= 1.1
+      speechLikelihood >= (highStrengthProfile ? 0.36 : 0.42) &&
+      features.onsetScore >= (highStrengthProfile ? 0.17 : 0.22) &&
+      features.voiceRatioScore >= (highStrengthProfile ? 0.22 : 0.28) &&
+      snr >= (highStrengthProfile ? 1.02 : 1.1)
     if (this.isSpeaking) {
       this.speechAttackBlocks = Math.max(this.speechAttackBlocks, 4)
     } else if (onsetSpeechCandidate) {
@@ -675,11 +685,17 @@ class VoiceEngineProcessor extends AudioWorkletProcessor {
     }
     if (!this.isSpeaking && speechLikelihood >= 0.45 && features.voiceRatioScore >= 0.26 && snr >= 1.08) {
       const farFieldAssistFloor =
-        this.config.strength >= 0.9 ? 0.72 + 0.14 * speechLikelihood : 0.66 + 0.2 * speechLikelihood
-      targetGain = Math.max(targetGain, clamp(farFieldAssistFloor, 0.66, 0.88))
+        this.config.strength >= 0.9
+          ? 0.78 + 0.16 * speechLikelihood + 0.06 * features.voiceRatioScore
+          : 0.66 + 0.2 * speechLikelihood
+      targetGain = Math.max(
+        targetGain,
+        clamp(farFieldAssistFloor, this.config.strength >= 0.9 ? 0.76 : 0.66, this.config.strength >= 0.9 ? 0.94 : 0.88),
+      )
     }
     if (this.speechAttackBlocks > 0) {
-      const onsetFloor = 0.82 + 0.14 * speechLikelihood
+      const onsetFloorBase = this.config.strength >= 0.9 ? 0.88 : 0.82
+      const onsetFloor = onsetFloorBase + 0.12 * speechLikelihood
       targetGain = Math.max(targetGain, onsetFloor)
     }
 
@@ -721,6 +737,9 @@ class VoiceEngineProcessor extends AudioWorkletProcessor {
       }
     }
 
+    const runtimeBackend =
+      useRustCore && hasRustMetrics && renderedByRust ? "rust_wasm_active" : "js_fallback"
+
     for (let ch = 1; ch < outputChannels.length; ch += 1) {
       outputChannels[ch].set(firstOutput)
     }
@@ -743,6 +762,7 @@ class VoiceEngineProcessor extends AudioWorkletProcessor {
         targetCalibrationActive: this.targetCalibrationFramesRemaining > 0,
         targetCalibrationProgress: this.getTargetCalibrationProgress(),
         runtimeMode: this.runtimeMode,
+        runtimeBackend,
       })
     }
 
