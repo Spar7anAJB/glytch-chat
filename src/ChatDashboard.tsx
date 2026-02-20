@@ -1844,6 +1844,18 @@ function clampVoiceVolume(volume: number): number {
   return Math.max(0, Math.min(2, volume));
 }
 
+function resolveRemoteVoiceOutputGain(volume: number): number {
+  const normalized = clampVoiceVolume(volume);
+  if (normalized <= 0) return 0;
+  // Requested scaling:
+  // 100% slider -> ~800% output gain
+  // 200% slider -> ~1000% output gain
+  if (normalized <= 1) {
+    return normalized * 8;
+  }
+  return Math.min(10, 8 + (normalized - 1) * 2);
+}
+
 function normalizeVoiceSuppressionProfile(raw: unknown): VoiceSuppressionProfile {
   if (raw === "balanced" || raw === "strong" || raw === "ultra") return raw;
   return DEFAULT_VOICE_MIC_SETTINGS.suppressionProfile;
@@ -3279,7 +3291,11 @@ export default function ChatDashboard({
   const shouldShowVoiceControls =
     (viewMode === "dm" && (Boolean(activeConversationId) || Boolean(voiceRoomKey))) ||
     (viewMode === "glytch" && activeChannel?.kind === "voice");
-  const shouldRenderHeaderActions = shouldShowVoiceControls || shouldShowQuickThemeControl;
+  const canOpenActiveGlytchSettings =
+    viewMode === "glytch" &&
+    Boolean(activeGlytch) &&
+    (isActiveGlytchOwner || (isActiveGlytchRoleAccessResolved && canAccessGlytchSettingsInActiveGlytch));
+  const shouldRenderHeaderActions = shouldShowVoiceControls || shouldShowQuickThemeControl || canOpenActiveGlytchSettings;
   const effectiveVoiceMuted = voiceMuted || voiceDeafened;
   const canModerateCurrentVoiceRoom =
     Boolean(voiceRoomKey) &&
@@ -4622,27 +4638,29 @@ export default function ChatDashboard({
 
       const applyToVoiceAudio = (userId: string, audioEl: HTMLAudioElement) => {
         const requestedVolume = clampVoiceVolume(requestedVolumes[userId] ?? 1);
+        const effectiveOutputGain = resolveRemoteVoiceOutputGain(requestedVolume);
         const gainNode = ensureRemoteAudioGainNode(userId, audioEl, "voice");
         audioEl.muted = false;
         audioEl.volume = 1;
         if (gainNode) {
-          gainNode.gain.value = isVoiceDeafened ? 0 : requestedVolume;
+          gainNode.gain.value = isVoiceDeafened ? 0 : effectiveOutputGain;
           return;
         }
         audioEl.muted = isVoiceDeafened;
-        audioEl.volume = Math.min(1, requestedVolume);
+        audioEl.volume = Math.min(1, effectiveOutputGain);
       };
       const applyToScreenShareAudio = (userId: string, audioEl: HTMLAudioElement) => {
         const requestedVolume = clampVoiceVolume(requestedVolumes[userId] ?? 1);
+        const effectiveOutputGain = resolveRemoteVoiceOutputGain(requestedVolume);
         const gainNode = ensureRemoteAudioGainNode(userId, audioEl, "screen");
         audioEl.muted = false;
         audioEl.volume = 1;
         if (gainNode) {
-          gainNode.gain.value = isVoiceDeafened || isScreenAudioMuted ? 0 : requestedVolume;
+          gainNode.gain.value = isVoiceDeafened || isScreenAudioMuted ? 0 : effectiveOutputGain;
           return;
         }
         audioEl.muted = isVoiceDeafened || isScreenAudioMuted;
-        audioEl.volume = Math.min(1, requestedVolume);
+        audioEl.volume = Math.min(1, effectiveOutputGain);
       };
 
       if (targetUserId) {
@@ -4670,6 +4688,7 @@ export default function ChatDashboard({
   const handleSetRemoteUserVolume = useCallback(
     (userId: string, volume: number) => {
       const nextVolume = clampVoiceVolume(volume);
+      const effectiveOutputGain = resolveRemoteVoiceOutputGain(nextVolume);
       remoteUserVolumesRef.current = {
         ...remoteUserVolumesRef.current,
         [userId]: nextVolume,
@@ -4681,22 +4700,22 @@ export default function ChatDashboard({
 
       const voiceGainNode = remoteVoiceGainNodesRef.current.get(userId);
       if (voiceGainNode) {
-        voiceGainNode.gain.value = voiceDeafenedRef.current ? 0 : nextVolume;
+        voiceGainNode.gain.value = voiceDeafenedRef.current ? 0 : effectiveOutputGain;
       }
       const screenGainNode = remoteScreenGainNodesRef.current.get(userId);
       if (screenGainNode) {
-        screenGainNode.gain.value = voiceDeafenedRef.current || screenShareAudioMutedRef.current ? 0 : nextVolume;
+        screenGainNode.gain.value = voiceDeafenedRef.current || screenShareAudioMutedRef.current ? 0 : effectiveOutputGain;
       }
 
       const voiceAudioEl = remoteAudioElsRef.current.get(userId);
       if (voiceAudioEl) {
         voiceAudioEl.muted = false;
-        voiceAudioEl.volume = voiceGainNode ? 1 : Math.min(1, nextVolume);
+        voiceAudioEl.volume = voiceGainNode ? 1 : Math.min(1, effectiveOutputGain);
       }
       const screenAudioEl = remoteScreenAudioElsRef.current.get(userId);
       if (screenAudioEl) {
         screenAudioEl.muted = false;
-        screenAudioEl.volume = screenGainNode ? 1 : Math.min(1, nextVolume);
+        screenAudioEl.volume = screenGainNode ? 1 : Math.min(1, effectiveOutputGain);
       }
     },
     [],
@@ -14736,6 +14755,22 @@ export default function ChatDashboard({
           </div>
           {shouldRenderHeaderActions && (
             <div className="chatHeaderActions">
+              {canOpenActiveGlytchSettings && activeGlytch && (
+                <button
+                  type="button"
+                  className="voiceButton iconOnly glytchHeaderSettingsButton"
+                  aria-label={`Open settings for ${activeGlytch.name}`}
+                  title={`Open settings for ${activeGlytch.name}`}
+                  onClick={() => {
+                    setGlytchSettingsTab("profile");
+                    setViewMode("glytch-settings");
+                  }}
+                >
+                  <span className="voiceButtonIcon" aria-hidden="true">
+                    <img src={settingsIconAssetUrl} alt="" />
+                  </span>
+                </button>
+              )}
               {shouldShowVoiceControls &&
                 (voiceRoomKey ? (
                   <>
