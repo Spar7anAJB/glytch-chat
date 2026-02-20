@@ -2903,6 +2903,9 @@ export default function ChatDashboard({
   const remoteScreenPromoteTimeoutsRef = useRef<Map<string, number>>(new Map());
   const remoteScreenDemoteTimeoutsRef = useRef<Map<string, number>>(new Map());
   const remoteAudioElsRef = useRef<Map<string, HTMLAudioElement>>(new Map());
+  const remoteUserVolumesRef = useRef<Record<string, number>>({});
+  const voiceDeafenedRef = useRef(false);
+  const screenShareAudioMutedRef = useRef(false);
   const remoteOutputAudioContextRef = useRef<AudioContext | null>(null);
   const remoteVoiceAudioSourceNodesRef = useRef<Map<string, MediaElementAudioSourceNode>>(new Map());
   const remoteVoiceGainNodesRef = useRef<Map<string, GainNode>>(new Map());
@@ -2927,9 +2930,12 @@ export default function ChatDashboard({
   const voiceEnhancementDestinationNodeRef = useRef<MediaStreamAudioDestinationNode | null>(null);
   const voiceEnhancementInputStreamRef = useRef<MediaStream | null>(null);
   const voiceEnhancementOutputGainNodeRef = useRef<GainNode | null>(null);
+  const voiceEnhancementLoudnessGuardGainRef = useRef<GainNode | null>(null);
   const voiceEnhancementGateIntervalRef = useRef<number | null>(null);
   const voiceEnhancementAnalyserRef = useRef<AnalyserNode | null>(null);
   const voiceEnhancementFrequencyAnalyserRef = useRef<AnalyserNode | null>(null);
+  const voiceEnhancementInputLevelAnalyserRef = useRef<AnalyserNode | null>(null);
+  const voiceEnhancementOutputLevelAnalyserRef = useRef<AnalyserNode | null>(null);
   const micTestStreamRef = useRef<MediaStream | null>(null);
   const micTestMonitorAudioRef = useRef<HTMLAudioElement | null>(null);
   const micTestMeterAudioContextRef = useRef<AudioContext | null>(null);
@@ -3897,8 +3903,12 @@ export default function ChatDashboard({
     const sourceNode = voiceEnhancementSourceNodeRef.current;
     const destinationNode = voiceEnhancementDestinationNodeRef.current;
     const inputStream = voiceEnhancementInputStreamRef.current;
+    const outputGainNode = voiceEnhancementOutputGainNodeRef.current;
+    const loudnessGuardGainNode = voiceEnhancementLoudnessGuardGainRef.current;
     const analyserNode = voiceEnhancementAnalyserRef.current;
     const frequencyAnalyserNode = voiceEnhancementFrequencyAnalyserRef.current;
+    const inputLevelAnalyserNode = voiceEnhancementInputLevelAnalyserRef.current;
+    const outputLevelAnalyserNode = voiceEnhancementOutputLevelAnalyserRef.current;
     const gateIntervalId = voiceEnhancementGateIntervalRef.current;
 
     voiceEnhancementAudioContextRef.current = null;
@@ -3906,8 +3916,11 @@ export default function ChatDashboard({
     voiceEnhancementDestinationNodeRef.current = null;
     voiceEnhancementInputStreamRef.current = null;
     voiceEnhancementOutputGainNodeRef.current = null;
+    voiceEnhancementLoudnessGuardGainRef.current = null;
     voiceEnhancementAnalyserRef.current = null;
     voiceEnhancementFrequencyAnalyserRef.current = null;
+    voiceEnhancementInputLevelAnalyserRef.current = null;
+    voiceEnhancementOutputLevelAnalyserRef.current = null;
     voiceEnhancementGateIntervalRef.current = null;
 
     if (typeof gateIntervalId === "number") {
@@ -3925,12 +3938,32 @@ export default function ChatDashboard({
       // Ignore disconnect failures.
     }
     try {
+      outputGainNode?.disconnect();
+    } catch {
+      // Ignore disconnect failures.
+    }
+    try {
+      loudnessGuardGainNode?.disconnect();
+    } catch {
+      // Ignore disconnect failures.
+    }
+    try {
       analyserNode?.disconnect();
     } catch {
       // Ignore disconnect failures.
     }
     try {
       frequencyAnalyserNode?.disconnect();
+    } catch {
+      // Ignore disconnect failures.
+    }
+    try {
+      inputLevelAnalyserNode?.disconnect();
+    } catch {
+      // Ignore disconnect failures.
+    }
+    try {
+      outputLevelAnalyserNode?.disconnect();
     } catch {
       // Ignore disconnect failures.
     }
@@ -3965,7 +3998,10 @@ export default function ChatDashboard({
         const gateGainNode = audioContext.createGain();
         const gateAnalyser = audioContext.createAnalyser();
         const gateFrequencyAnalyser = audioContext.createAnalyser();
+        const inputLevelAnalyserNode = audioContext.createAnalyser();
+        const outputLevelAnalyserNode = audioContext.createAnalyser();
         const outputGainNode = audioContext.createGain();
+        const loudnessGuardGainNode = audioContext.createGain();
         const destinationNode = audioContext.createMediaStreamDestination();
 
         const profile = settings.suppressionProfile;
@@ -3993,11 +4029,11 @@ export default function ChatDashboard({
         deEssNode.frequency.value = 6400;
         deEssNode.gain.value = profileIsBalanced ? -0.8 : profileIsUltra ? -2.5 : -1.7;
 
-        compressorNode.threshold.value = profileIsBalanced ? -21 : profileIsUltra ? -25 : -23;
-        compressorNode.knee.value = 24;
-        compressorNode.ratio.value = profileIsBalanced ? 2.2 : profileIsUltra ? 2.9 : 2.5;
+        compressorNode.threshold.value = profileIsBalanced ? -14 : profileIsUltra ? -18 : -16;
+        compressorNode.knee.value = 18;
+        compressorNode.ratio.value = profileIsBalanced ? 1.45 : profileIsUltra ? 1.8 : 1.6;
         compressorNode.attack.value = 0.003;
-        compressorNode.release.value = profileIsUltra ? 0.2 : 0.18;
+        compressorNode.release.value = profileIsUltra ? 0.16 : 0.14;
 
         limiterNode.threshold.value = -7;
         limiterNode.knee.value = 0;
@@ -4009,11 +4045,17 @@ export default function ChatDashboard({
         gateAnalyser.smoothingTimeConstant = 0.88;
         gateFrequencyAnalyser.fftSize = 2048;
         gateFrequencyAnalyser.smoothingTimeConstant = 0.72;
+        inputLevelAnalyserNode.fftSize = 1024;
+        inputLevelAnalyserNode.smoothingTimeConstant = 0.86;
+        outputLevelAnalyserNode.fftSize = 1024;
+        outputLevelAnalyserNode.smoothingTimeConstant = 0.86;
         gateGainNode.gain.value = 1;
 
         outputGainNode.gain.value = Math.min(1, normalizeMicInputGainPercent(settings.inputGainPercent) / 100);
+        loudnessGuardGainNode.gain.value = 1;
 
         sourceNode.connect(highpassNode);
+        sourceNode.connect(inputLevelAnalyserNode);
         highpassNode.connect(lowShelfNode);
         lowShelfNode.connect(lowpassNode);
         lowpassNode.connect(presenceNode);
@@ -4024,16 +4066,23 @@ export default function ChatDashboard({
         limiterNode.connect(gateAnalyser);
         limiterNode.connect(gateFrequencyAnalyser);
         gateGainNode.connect(outputGainNode);
-        outputGainNode.connect(destinationNode);
+        outputGainNode.connect(outputLevelAnalyserNode);
+        outputGainNode.connect(loudnessGuardGainNode);
+        loudnessGuardGainNode.connect(destinationNode);
 
         // Multi-feature voice AI gate: learns room noise and opens only on persistent speech signatures.
         const gateData = new Uint8Array(gateAnalyser.fftSize);
         const gateFreqData = new Uint8Array(gateFrequencyAnalyser.frequencyBinCount);
+        const inputLevelData = new Uint8Array(inputLevelAnalyserNode.fftSize);
+        const outputLevelData = new Uint8Array(outputLevelAnalyserNode.fftSize);
         const previousGateFreqData = new Uint8Array(gateFrequencyAnalyser.frequencyBinCount);
         const currentSpectrumPower = new Float32Array(gateFrequencyAnalyser.frequencyBinCount);
         const adaptiveNoiseProfile = new Float32Array(gateFrequencyAnalyser.frequencyBinCount);
         let noiseProfileInitialized = false;
         let smoothedRms = 0;
+        let smoothedInputRms = 0;
+        let smoothedOutputRms = 0;
+        let loudnessGuard = 1;
         let smoothedVoiceRatio = profileIsUltra ? 0.42 : profileIsBalanced ? 0.36 : 0.39;
         let smoothedSpeechSignature = profileIsUltra ? 0.14 : profileIsBalanced ? 0.09 : 0.11;
         let smoothedZeroCrossingRate = 0.08;
@@ -4051,27 +4100,28 @@ export default function ChatDashboard({
         let gateHoldUntil = 0;
         let clickRejectUntil = 0;
         const calibrationEndsAt = Date.now() + (profileIsUltra ? 2800 : 2000);
-        const minimumOpenThreshold = profileIsUltra ? 0.0175 : profileIsBalanced ? 0.024 : 0.0205;
-        const minimumCloseThreshold = minimumOpenThreshold * 0.58;
-        const floorOpenMultiplier = profileIsUltra ? 2.8 : profileIsBalanced ? 2.05 : 2.35;
-        const floorCloseMultiplier = profileIsUltra ? 1.95 : profileIsBalanced ? 1.45 : 1.7;
-        const closedGain = profileIsUltra ? 0.004 : profileIsBalanced ? 0.1 : 0.035;
-        const holdMs = profileIsUltra ? 380 : profileIsBalanced ? 230 : 300;
-        const voiceRatioMargin = profileIsUltra ? 0.17 : profileIsBalanced ? 0.1 : 0.14;
-        const speechSignatureMargin = profileIsUltra ? 0.11 : profileIsBalanced ? 0.07 : 0.09;
-        const baseVoiceRatioThreshold = profileIsUltra ? 0.5 : profileIsBalanced ? 0.42 : 0.47;
-        const baseSpeechSignatureThreshold = profileIsUltra ? 0.19 : profileIsBalanced ? 0.11 : 0.16;
+        const minimumOpenThreshold = profileIsUltra ? 0.016 : profileIsBalanced ? 0.022 : 0.019;
+        const minimumCloseThreshold = minimumOpenThreshold * 0.56;
+        const floorOpenMultiplier = profileIsUltra ? 2.55 : profileIsBalanced ? 1.95 : 2.2;
+        const floorCloseMultiplier = profileIsUltra ? 1.75 : profileIsBalanced ? 1.34 : 1.58;
+        const closedGain = profileIsUltra ? 0.006 : profileIsBalanced ? 0.085 : 0.03;
+        const holdMs = profileIsUltra ? 460 : profileIsBalanced ? 300 : 360;
+        const voiceRatioMargin = profileIsUltra ? 0.14 : profileIsBalanced ? 0.085 : 0.12;
+        const speechSignatureMargin = profileIsUltra ? 0.095 : profileIsBalanced ? 0.06 : 0.08;
+        const baseVoiceRatioThreshold = profileIsUltra ? 0.46 : profileIsBalanced ? 0.4 : 0.44;
+        const baseSpeechSignatureThreshold = profileIsUltra ? 0.17 : profileIsBalanced ? 0.1 : 0.145;
         const zeroCrossingMin = profileIsUltra ? 0.018 : 0.012;
         const zeroCrossingMax = profileIsUltra ? 0.19 : 0.24;
         const crestClickThreshold = profileIsUltra ? 4.3 : 4.75;
         const fluxClickThreshold = profileIsUltra ? 0.1 : 0.125;
         const clickRejectMs = profileIsUltra ? 240 : 170;
-        const speechConfidenceOpenThreshold = profileIsUltra ? 0.62 : 0.54;
-        const speechConfidenceCloseThreshold = profileIsUltra ? 0.24 : 0.18;
-        const speechEvidenceOpenThreshold = profileIsUltra ? 0.52 : 0.44;
-        const speechEvidenceCloseThreshold = profileIsUltra ? 0.25 : 0.2;
+        const speechConfidenceOpenThreshold = profileIsUltra ? 0.56 : 0.48;
+        const speechConfidenceCloseThreshold = profileIsUltra ? 0.2 : 0.14;
+        const speechEvidenceOpenThreshold = profileIsUltra ? 0.46 : 0.39;
+        const speechEvidenceCloseThreshold = profileIsUltra ? 0.2 : 0.16;
         const noiseProfileCalibrationAlpha = 0.9;
         const noiseProfileLearnAlpha = profileIsUltra ? 0.968 : 0.954;
+        const minLoudnessGuard = profileIsUltra ? 0.62 : profileIsBalanced ? 0.72 : 0.67;
         const nyquist = audioContext.sampleRate / 2;
         const binFromHz = (hz: number) =>
           Math.max(0, Math.min(gateFreqData.length - 1, Math.round((hz / nyquist) * (gateFreqData.length - 1))));
@@ -4130,10 +4180,24 @@ export default function ChatDashboard({
           }
           return clamp01(bestCorrelation);
         };
+        const computeRmsFromWaveData = (waveData: Uint8Array) => {
+          let sumSquares = 0;
+          for (let i = 0; i < waveData.length; i += 1) {
+            const sample = (waveData[i] - 128) / 128;
+            sumSquares += sample * sample;
+          }
+          return Math.sqrt(sumSquares / waveData.length);
+        };
 
         const updateGate = () => {
           gateAnalyser.getByteTimeDomainData(gateData);
           gateFrequencyAnalyser.getByteFrequencyData(gateFreqData);
+          inputLevelAnalyserNode.getByteTimeDomainData(inputLevelData);
+          outputLevelAnalyserNode.getByteTimeDomainData(outputLevelData);
+          const inputRms = computeRmsFromWaveData(inputLevelData);
+          const outputRms = computeRmsFromWaveData(outputLevelData);
+          smoothedInputRms = smoothedInputRms * 0.84 + inputRms * 0.16;
+          smoothedOutputRms = smoothedOutputRms * 0.84 + outputRms * 0.16;
 
           let rms = 0;
           let peakAbs = 0;
@@ -4379,6 +4443,26 @@ export default function ChatDashboard({
           } catch {
             gateGainNode.gain.value = targetGain;
           }
+
+          // Hard guard: voice AI can attenuate, but never increase perceived loudness over dry mic.
+          let targetLoudnessGuard = loudnessGuard;
+          if (smoothedInputRms > 0.002) {
+            const allowedOutputRms = smoothedInputRms * 1.02 + 0.00035;
+            const outputBoostRatio = smoothedOutputRms / Math.max(1e-5, allowedOutputRms);
+            if (outputBoostRatio > 1) {
+              targetLoudnessGuard = Math.max(minLoudnessGuard, 1 / outputBoostRatio);
+            } else {
+              targetLoudnessGuard = Math.min(1, loudnessGuard + (gateOpen ? 0.012 : 0.006));
+            }
+          } else {
+            targetLoudnessGuard = Math.min(1, loudnessGuard + 0.01);
+          }
+          loudnessGuard = loudnessGuard * 0.78 + targetLoudnessGuard * 0.22;
+          try {
+            loudnessGuardGainNode.gain.setTargetAtTime(loudnessGuard, audioContext.currentTime, 0.038);
+          } catch {
+            loudnessGuardGainNode.gain.value = loudnessGuard;
+          }
         };
 
         updateGate();
@@ -4393,8 +4477,11 @@ export default function ChatDashboard({
         voiceEnhancementDestinationNodeRef.current = destinationNode;
         voiceEnhancementInputStreamRef.current = inputStream;
         voiceEnhancementOutputGainNodeRef.current = outputGainNode;
+        voiceEnhancementLoudnessGuardGainRef.current = loudnessGuardGainNode;
         voiceEnhancementAnalyserRef.current = gateAnalyser;
         voiceEnhancementFrequencyAnalyserRef.current = gateFrequencyAnalyser;
+        voiceEnhancementInputLevelAnalyserRef.current = inputLevelAnalyserNode;
+        voiceEnhancementOutputLevelAnalyserRef.current = outputLevelAnalyserNode;
 
         return destinationNode.stream;
       } catch {
@@ -4529,28 +4616,32 @@ export default function ChatDashboard({
 
   const applyRemoteAudioOutput = useCallback(
     (targetUserId?: string) => {
+      const requestedVolumes = remoteUserVolumesRef.current;
+      const isVoiceDeafened = voiceDeafenedRef.current;
+      const isScreenAudioMuted = screenShareAudioMutedRef.current;
+
       const applyToVoiceAudio = (userId: string, audioEl: HTMLAudioElement) => {
-        const requestedVolume = clampVoiceVolume(remoteUserVolumes[userId] ?? 1);
+        const requestedVolume = clampVoiceVolume(requestedVolumes[userId] ?? 1);
         const gainNode = ensureRemoteAudioGainNode(userId, audioEl, "voice");
         audioEl.muted = false;
         audioEl.volume = 1;
         if (gainNode) {
-          gainNode.gain.value = voiceDeafened ? 0 : requestedVolume;
+          gainNode.gain.value = isVoiceDeafened ? 0 : requestedVolume;
           return;
         }
-        audioEl.muted = voiceDeafened;
+        audioEl.muted = isVoiceDeafened;
         audioEl.volume = Math.min(1, requestedVolume);
       };
       const applyToScreenShareAudio = (userId: string, audioEl: HTMLAudioElement) => {
-        const requestedVolume = clampVoiceVolume(remoteUserVolumes[userId] ?? 1);
+        const requestedVolume = clampVoiceVolume(requestedVolumes[userId] ?? 1);
         const gainNode = ensureRemoteAudioGainNode(userId, audioEl, "screen");
         audioEl.muted = false;
         audioEl.volume = 1;
         if (gainNode) {
-          gainNode.gain.value = voiceDeafened || screenShareAudioMuted ? 0 : requestedVolume;
+          gainNode.gain.value = isVoiceDeafened || isScreenAudioMuted ? 0 : requestedVolume;
           return;
         }
-        audioEl.muted = voiceDeafened || screenShareAudioMuted;
+        audioEl.muted = isVoiceDeafened || isScreenAudioMuted;
         audioEl.volume = Math.min(1, requestedVolume);
       };
 
@@ -4573,12 +4664,16 @@ export default function ChatDashboard({
         applyToScreenShareAudio(userId, audioEl);
       });
     },
-    [ensureRemoteAudioGainNode, remoteUserVolumes, screenShareAudioMuted, voiceDeafened],
+    [ensureRemoteAudioGainNode],
   );
 
   const handleSetRemoteUserVolume = useCallback(
     (userId: string, volume: number) => {
       const nextVolume = clampVoiceVolume(volume);
+      remoteUserVolumesRef.current = {
+        ...remoteUserVolumesRef.current,
+        [userId]: nextVolume,
+      };
       setRemoteUserVolumes((prev) => ({
         ...prev,
         [userId]: nextVolume,
@@ -4586,11 +4681,11 @@ export default function ChatDashboard({
 
       const voiceGainNode = remoteVoiceGainNodesRef.current.get(userId);
       if (voiceGainNode) {
-        voiceGainNode.gain.value = voiceDeafened ? 0 : nextVolume;
+        voiceGainNode.gain.value = voiceDeafenedRef.current ? 0 : nextVolume;
       }
       const screenGainNode = remoteScreenGainNodesRef.current.get(userId);
       if (screenGainNode) {
-        screenGainNode.gain.value = voiceDeafened || screenShareAudioMuted ? 0 : nextVolume;
+        screenGainNode.gain.value = voiceDeafenedRef.current || screenShareAudioMutedRef.current ? 0 : nextVolume;
       }
 
       const voiceAudioEl = remoteAudioElsRef.current.get(userId);
@@ -4604,7 +4699,7 @@ export default function ChatDashboard({
         screenAudioEl.volume = screenGainNode ? 1 : Math.min(1, nextVolume);
       }
     },
-    [screenShareAudioMuted, voiceDeafened],
+    [],
   );
 
   useEffect(() => {
@@ -4703,8 +4798,20 @@ export default function ChatDashboard({
   };
 
   useEffect(() => {
+    remoteUserVolumesRef.current = remoteUserVolumes;
+  }, [remoteUserVolumes]);
+
+  useEffect(() => {
+    voiceDeafenedRef.current = voiceDeafened;
+  }, [voiceDeafened]);
+
+  useEffect(() => {
+    screenShareAudioMutedRef.current = screenShareAudioMuted;
+  }, [screenShareAudioMuted]);
+
+  useEffect(() => {
     applyRemoteAudioOutput();
-  }, [applyRemoteAudioOutput]);
+  }, [applyRemoteAudioOutput, remoteUserVolumes, screenShareAudioMuted, voiceDeafened]);
 
   useEffect(() => {
     applyLocalVoiceMute(effectiveVoiceMuted);
