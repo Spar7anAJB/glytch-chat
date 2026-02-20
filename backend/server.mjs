@@ -103,9 +103,11 @@ const RPC_PREFIX = "/api/rpc/";
 const REST_PREFIX = "/api/rest/";
 const STORAGE_OBJECT_PREFIX = "/api/storage/object/";
 const STORAGE_SIGN_PREFIX = "/api/storage/sign/";
+const LEGACY_SUPABASE_PREFIX = "/api/supabase/";
 const MEDIA_PROFILE_UPLOAD_PREFIX = "/api/media/profile-upload/";
 const MEDIA_GLYTCH_ICON_UPLOAD_PREFIX = "/api/media/glytch-icon-upload/";
 const MEDIA_MESSAGE_UPLOAD_PREFIX = "/api/media/message-upload/";
+const MEDIA_MESSAGE_PROXY_PREFIX = "/api/media/message/";
 const MEDIA_MESSAGE_INGEST_PATH = "/api/media/message-ingest";
 const LIVEKIT_KRISP_TOKEN_PATH = "/api/voice/livekit-token";
 const UPDATES_PREFIX = "/api/updates/";
@@ -1299,6 +1301,31 @@ async function handleGifSearch(res, parsedUrl) {
   });
 }
 
+async function relayLegacyMessageMedia(req, res, pathname, search) {
+  const method = req.method || "GET";
+  if (method !== "GET" && method !== "HEAD") {
+    sendJson(res, 405, { error: "Method not allowed." });
+    return;
+  }
+
+  const encodedSuffix = pathname.slice(MEDIA_MESSAGE_PROXY_PREFIX.length);
+  if (!encodedSuffix) {
+    sendJson(res, 400, { error: "Missing message media path." });
+    return;
+  }
+
+  let objectPath = decodePath(encodedSuffix).replace(/^\/+/, "");
+  if (objectPath.startsWith(`${MESSAGE_BUCKET}/`)) {
+    objectPath = objectPath.slice(MESSAGE_BUCKET.length + 1);
+  }
+  if (!isSafeStorageObjectPath(objectPath)) {
+    sendJson(res, 400, { error: "Invalid message media path." });
+    return;
+  }
+
+  await forwardSupabase(req, res, `/storage/v1/object/public/${MESSAGE_BUCKET}/${encodePath(objectPath)}${search}`);
+}
+
 function normalizeInstallerPlatform(rawPlatform) {
   const value = (rawPlatform || "").trim().toLowerCase().replace(/\/+$/, "");
   if (!value) return null;
@@ -1725,6 +1752,11 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  if (pathname.startsWith(MEDIA_MESSAGE_PROXY_PREFIX)) {
+    await relayLegacyMessageMedia(req, res, pathname, search);
+    return;
+  }
+
   if (pathname.startsWith(MEDIA_PROFILE_UPLOAD_PREFIX)) {
     await uploadModeratedProfileMedia(req, res, parsedUrl, pathname);
     return;
@@ -1787,6 +1819,16 @@ const server = createServer(async (req, res) => {
       return;
     }
     await forwardSupabase(req, res, `/storage/v1/object/sign/${suffix}${search}`);
+    return;
+  }
+
+  if (pathname.startsWith(LEGACY_SUPABASE_PREFIX)) {
+    const suffix = pathname.slice(LEGACY_SUPABASE_PREFIX.length).replace(/^\/+/, "");
+    if (!suffix) {
+      sendJson(res, 400, { error: "Missing Supabase proxy path." });
+      return;
+    }
+    await forwardSupabase(req, res, `/${suffix}${search}`);
     return;
   }
 
