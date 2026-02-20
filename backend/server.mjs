@@ -1335,6 +1335,14 @@ function decodePathRepeated(rawValue) {
   return decoded;
 }
 
+function normalizePathnameForRouteMatch(pathname) {
+  const normalized = typeof pathname === "string" ? pathname.trim() : "";
+  if (!normalized) return "/";
+  const withLeadingSlash = normalized.startsWith("/") ? normalized : `/${normalized}`;
+  const withoutLeadingSlashes = withLeadingSlash.replace(/^\/+/, "");
+  return `/${decodePathRepeated(withoutLeadingSlashes)}`;
+}
+
 function normalizeLegacyMessageMediaObjectPath(rawValue, depth = 0) {
   if (typeof rawValue !== "string") return "";
   let normalized = rawValue.trim();
@@ -1408,10 +1416,17 @@ function normalizeLegacyMessageMediaObjectPath(rawValue, depth = 0) {
 
 function resolveLegacyMessageMediaObjectPath(pathname, parsedUrl, basePath, basePathWithSlash) {
   const candidates = [];
+  const decodedPathname = normalizePathnameForRouteMatch(pathname);
 
   if (pathname.startsWith(basePathWithSlash)) {
     candidates.push(pathname.slice(basePathWithSlash.length));
   } else if (pathname === basePath) {
+    candidates.push("");
+  }
+
+  if (decodedPathname.startsWith(basePathWithSlash)) {
+    candidates.push(decodedPathname.slice(basePathWithSlash.length));
+  } else if (decodedPathname === basePath) {
     candidates.push("");
   }
 
@@ -1841,6 +1856,7 @@ const server = createServer(async (req, res) => {
 
   const parsedUrl = new URL(req.url || "/", "http://localhost");
   const { pathname, search } = parsedUrl;
+  const decodedPathname = normalizePathnameForRouteMatch(pathname);
 
   if (pathname === "/api/health") {
     const gifServiceAvailable = Boolean(GIPHY_API_KEY || TENOR_API_KEY);
@@ -1884,7 +1900,12 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  if (pathname === MEDIA_MESSAGE_PROXY_PATH || pathname.startsWith(MEDIA_MESSAGE_PROXY_PREFIX)) {
+  if (
+    pathname === MEDIA_MESSAGE_PROXY_PATH ||
+    pathname.startsWith(MEDIA_MESSAGE_PROXY_PREFIX) ||
+    decodedPathname === MEDIA_MESSAGE_PROXY_PATH ||
+    decodedPathname.startsWith(MEDIA_MESSAGE_PROXY_PREFIX)
+  ) {
     await relayLegacyMessageMedia(req, res, pathname, parsedUrl, search);
     return;
   }
@@ -1899,7 +1920,12 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  if (pathname === MEDIA_MESSAGE_UPLOAD_PATH || pathname.startsWith(MEDIA_MESSAGE_UPLOAD_PREFIX)) {
+  if (
+    pathname === MEDIA_MESSAGE_UPLOAD_PATH ||
+    pathname.startsWith(MEDIA_MESSAGE_UPLOAD_PREFIX) ||
+    decodedPathname === MEDIA_MESSAGE_UPLOAD_PATH ||
+    decodedPathname.startsWith(MEDIA_MESSAGE_UPLOAD_PREFIX)
+  ) {
     await uploadModeratedMessageMedia(req, res, parsedUrl, pathname);
     return;
   }
@@ -1964,8 +1990,10 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  console.warn(`[backend] 404 ${req.method || "GET"} ${pathname}`);
   sendJson(res, 404, {
     error: "Not found.",
+    path: pathname,
   });
 });
 

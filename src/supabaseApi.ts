@@ -879,11 +879,13 @@ function extractMessageAssetPath(value: string): string | null {
   try {
     const parsed = new URL(trimmed);
     const pathname = parsed.pathname || "";
+    const decodedPathname = decodePathSafely(pathname);
     const queryPathKeys = ["objectPath", "path", "file", "attachment", "attachmentUrl", "url", "src"];
     for (const key of queryPathKeys) {
       const normalized = tryNormalizePathCandidate(parsed.searchParams.get(key));
       if (normalized) return normalized;
     }
+    const candidatePathnames = Array.from(new Set([pathname, decodedPathname]));
     const pathPrefixes = [
       `/storage/v1/object/public/${messageBucket}/`,
       `/storage/v1/object/sign/${messageBucket}/`,
@@ -902,36 +904,40 @@ function extractMessageAssetPath(value: string): string | null {
       `/api/supabase/storage/v1/object/authenticated/${messageBucket}/`,
       `/api/supabase/storage/v1/object/${messageBucket}/`,
     ];
-    for (const prefix of pathPrefixes) {
-      if (pathname.startsWith(prefix)) {
-        const normalized = normalizeMessageAssetObjectPath(pathname.slice(prefix.length));
-        if (normalized) return normalized;
+    for (const pathCandidate of candidatePathnames) {
+      for (const prefix of pathPrefixes) {
+        if (pathCandidate.startsWith(prefix)) {
+          const normalized = normalizeMessageAssetObjectPath(pathCandidate.slice(prefix.length));
+          if (normalized) return normalized;
+        }
       }
     }
 
-    const bucketPathMatch = pathname.match(new RegExp(`/${messageBucket}/(.+)$`));
-    if (bucketPathMatch && bucketPathMatch[1]) {
-      const normalized = normalizeMessageAssetObjectPath(bucketPathMatch[1]);
-      if (normalized) return normalized;
-    }
-
-    const backendMediaPathMatch = pathname.match(/\/api\/media\/message\/(.+)$/);
-    if (backendMediaPathMatch && backendMediaPathMatch[1]) {
-      const normalized = normalizeMessageAssetObjectPath(backendMediaPathMatch[1]);
-      if (normalized) return normalized;
-    }
-
-    const backendUploadPathMatch = pathname.match(/\/api\/media\/message-upload\/(.+)$/);
-    if (backendUploadPathMatch && backendUploadPathMatch[1]) {
-      const normalized = normalizeMessageAssetObjectPath(backendUploadPathMatch[1]);
-      if (normalized) return normalized;
-    }
-
-    const backendMediaPathMatchNoSlash = pathname.match(/\/api\/media\/message(?:-upload)?$/);
-    if (backendMediaPathMatchNoSlash) {
-      for (const key of queryPathKeys) {
-        const normalized = tryNormalizePathCandidate(parsed.searchParams.get(key));
+    for (const pathCandidate of candidatePathnames) {
+      const bucketPathMatch = pathCandidate.match(new RegExp(`/${messageBucket}/(.+)$`));
+      if (bucketPathMatch && bucketPathMatch[1]) {
+        const normalized = normalizeMessageAssetObjectPath(bucketPathMatch[1]);
         if (normalized) return normalized;
+      }
+
+      const backendMediaPathMatch = pathCandidate.match(/\/api\/media\/message\/(.+)$/);
+      if (backendMediaPathMatch && backendMediaPathMatch[1]) {
+        const normalized = normalizeMessageAssetObjectPath(backendMediaPathMatch[1]);
+        if (normalized) return normalized;
+      }
+
+      const backendUploadPathMatch = pathCandidate.match(/\/api\/media\/message-upload\/(.+)$/);
+      if (backendUploadPathMatch && backendUploadPathMatch[1]) {
+        const normalized = normalizeMessageAssetObjectPath(backendUploadPathMatch[1]);
+        if (normalized) return normalized;
+      }
+
+      const backendMediaPathMatchNoSlash = pathCandidate.match(/\/api\/media\/message(?:-upload)?$/);
+      if (backendMediaPathMatchNoSlash) {
+        for (const key of queryPathKeys) {
+          const normalized = tryNormalizePathCandidate(parsed.searchParams.get(key));
+          if (normalized) return normalized;
+        }
       }
     }
   } catch {
