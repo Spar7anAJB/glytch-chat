@@ -448,6 +448,23 @@ function buildPublicMessageAssetUrl(objectPath: string) {
   return `${getSupabasePublicBaseUrl()}/storage/v1/object/public/${messageBucket}/${encodePath(objectPath)}`;
 }
 
+function absolutizeAttachmentCandidate(pathOrUrl: string) {
+  const normalized = pathOrUrl.trim();
+  if (!normalized) return normalized;
+  if (/^https?:\/\//i.test(normalized)) return normalized;
+  if (normalized.startsWith("/api/")) {
+    return apiBase ? `${apiBase}${normalized}` : normalized;
+  }
+  if (normalized.startsWith("/storage/v1/") || normalized.startsWith("/object/")) {
+    try {
+      return toAbsoluteStorageUrl(normalized);
+    } catch {
+      return normalized;
+    }
+  }
+  return normalized;
+}
+
 function toAbsoluteStorageUrl(pathOrUrl: string) {
   if (pathOrUrl.startsWith("http://") || pathOrUrl.startsWith("https://")) {
     return pathOrUrl;
@@ -1838,7 +1855,7 @@ export async function resolveMessageAttachmentUrl(
   if (!attachmentUrl) return null;
   assertConfig();
   const objectPath = extractMessageAssetPath(attachmentUrl);
-  if (!objectPath) return attachmentUrl;
+  if (!objectPath) return absolutizeAttachmentCandidate(attachmentUrl);
   const normalizedInput = attachmentUrl.trim();
   const isAbsoluteHttpInput = /^https?:\/\//i.test(normalizedInput);
   const inputLooksPublic =
@@ -1851,10 +1868,11 @@ export async function resolveMessageAttachmentUrl(
   } catch {
     // Keep raw attachment URL/path as fallback.
   }
-  const fallbackUrl =
+  const fallbackUrl = absolutizeAttachmentCandidate(
     inputLooksPublic && isAbsoluteHttpInput
       ? normalizedInput
-      : canonicalPublicUrl || normalizedInput;
+      : canonicalPublicUrl || normalizedInput,
+  );
 
   const cached = messageSignedUrlCache.get(objectPath);
   if (cached && cached.expiresAt - Date.now() > MESSAGE_SIGN_URL_REFRESH_BUFFER_MS) {

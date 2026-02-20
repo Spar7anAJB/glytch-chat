@@ -610,6 +610,23 @@ async function relayFetchResponse(res, upstream) {
 
 async function uploadModeratedMessageMedia(req, res, parsedUrl, pathname) {
   const method = req.method || "GET";
+  const encodedObjectPath = pathname.slice(MEDIA_MESSAGE_UPLOAD_PREFIX.length);
+  if (method === "GET" || method === "HEAD") {
+    if (!encodedObjectPath) {
+      sendJson(res, 400, { error: "Missing message media path." });
+      return;
+    }
+    let objectPath = decodePath(encodedObjectPath).replace(/^\/+/, "");
+    if (objectPath.startsWith(`${MESSAGE_BUCKET}/`)) {
+      objectPath = objectPath.slice(MESSAGE_BUCKET.length + 1);
+    }
+    if (!isSafeStorageObjectPath(objectPath)) {
+      sendJson(res, 400, { error: "Invalid message media path." });
+      return;
+    }
+    await forwardSupabase(req, res, `/storage/v1/object/public/${MESSAGE_BUCKET}/${encodePath(objectPath)}${parsedUrl.search}`);
+    return;
+  }
   if (method !== "POST") {
     sendJson(res, 405, { error: "Method not allowed." });
     return;
@@ -628,7 +645,6 @@ async function uploadModeratedMessageMedia(req, res, parsedUrl, pathname) {
     return;
   }
 
-  const encodedObjectPath = pathname.slice(MEDIA_MESSAGE_UPLOAD_PREFIX.length);
   if (!encodedObjectPath) {
     sendJson(res, 400, { error: "Missing upload path." });
     return;
