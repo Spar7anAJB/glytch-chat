@@ -829,6 +829,12 @@ function extractMessageAssetPath(value: string): string | null {
   const trimmed = value.trim();
   if (!trimmed) return null;
 
+  const tryNormalizePathCandidate = (candidate: string | null | undefined): string | null => {
+    if (typeof candidate !== "string") return null;
+    const normalized = normalizeMessageAssetObjectPath(candidate);
+    return normalized || null;
+  };
+
   const directPath = normalizeMessageAssetObjectPath(trimmed);
   if (directPath) {
     return directPath;
@@ -857,9 +863,27 @@ function extractMessageAssetPath(value: string): string | null {
     }
   }
 
+  if (trimmed.startsWith("/api/media/message-upload") || trimmed.startsWith("/api/media/message")) {
+    try {
+      const parsedRelative = new URL(trimmed, "http://localhost");
+      const queryPathKeys = ["objectPath", "path", "file", "attachment", "attachmentUrl", "url", "src"];
+      for (const key of queryPathKeys) {
+        const normalized = tryNormalizePathCandidate(parsedRelative.searchParams.get(key));
+        if (normalized) return normalized;
+      }
+    } catch {
+      // Ignore malformed relative URL candidates.
+    }
+  }
+
   try {
     const parsed = new URL(trimmed);
     const pathname = parsed.pathname || "";
+    const queryPathKeys = ["objectPath", "path", "file", "attachment", "attachmentUrl", "url", "src"];
+    for (const key of queryPathKeys) {
+      const normalized = tryNormalizePathCandidate(parsed.searchParams.get(key));
+      if (normalized) return normalized;
+    }
     const pathPrefixes = [
       `/storage/v1/object/public/${messageBucket}/`,
       `/storage/v1/object/sign/${messageBucket}/`,
@@ -870,6 +894,8 @@ function extractMessageAssetPath(value: string): string | null {
       `/api/storage/object/authenticated/${messageBucket}/`,
       `/api/storage/object/${messageBucket}/`,
       `/api/media/message/${messageBucket}/`,
+      `/api/media/message/`,
+      `/api/media/message-upload/${messageBucket}/`,
       `/api/media/message-upload/`,
       `/api/supabase/storage/v1/object/public/${messageBucket}/`,
       `/api/supabase/storage/v1/object/sign/${messageBucket}/`,
@@ -899,6 +925,14 @@ function extractMessageAssetPath(value: string): string | null {
     if (backendUploadPathMatch && backendUploadPathMatch[1]) {
       const normalized = normalizeMessageAssetObjectPath(backendUploadPathMatch[1]);
       if (normalized) return normalized;
+    }
+
+    const backendMediaPathMatchNoSlash = pathname.match(/\/api\/media\/message(?:-upload)?$/);
+    if (backendMediaPathMatchNoSlash) {
+      for (const key of queryPathKeys) {
+        const normalized = tryNormalizePathCandidate(parsed.searchParams.get(key));
+        if (normalized) return normalized;
+      }
     }
   } catch {
     // Not a valid URL.

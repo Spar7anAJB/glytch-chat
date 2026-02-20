@@ -106,7 +106,9 @@ const STORAGE_SIGN_PREFIX = "/api/storage/sign/";
 const LEGACY_SUPABASE_PREFIX = "/api/supabase/";
 const MEDIA_PROFILE_UPLOAD_PREFIX = "/api/media/profile-upload/";
 const MEDIA_GLYTCH_ICON_UPLOAD_PREFIX = "/api/media/glytch-icon-upload/";
+const MEDIA_MESSAGE_UPLOAD_PATH = "/api/media/message-upload";
 const MEDIA_MESSAGE_UPLOAD_PREFIX = "/api/media/message-upload/";
+const MEDIA_MESSAGE_PROXY_PATH = "/api/media/message";
 const MEDIA_MESSAGE_PROXY_PREFIX = "/api/media/message/";
 const MEDIA_MESSAGE_INGEST_PATH = "/api/media/message-ingest";
 const LIVEKIT_KRISP_TOKEN_PATH = "/api/voice/livekit-token";
@@ -610,15 +612,16 @@ async function relayFetchResponse(res, upstream) {
 
 async function uploadModeratedMessageMedia(req, res, parsedUrl, pathname) {
   const method = req.method || "GET";
-  const encodedObjectPath = pathname.slice(MEDIA_MESSAGE_UPLOAD_PREFIX.length);
   if (method === "GET" || method === "HEAD") {
-    if (!encodedObjectPath) {
+    const objectPath = resolveLegacyMessageMediaObjectPath(
+      pathname,
+      parsedUrl,
+      MEDIA_MESSAGE_UPLOAD_PATH,
+      MEDIA_MESSAGE_UPLOAD_PREFIX,
+    );
+    if (!objectPath) {
       sendJson(res, 400, { error: "Missing message media path." });
       return;
-    }
-    let objectPath = decodePath(encodedObjectPath).replace(/^\/+/, "");
-    if (objectPath.startsWith(`${MESSAGE_BUCKET}/`)) {
-      objectPath = objectPath.slice(MESSAGE_BUCKET.length + 1);
     }
     if (!isSafeStorageObjectPath(objectPath)) {
       sendJson(res, 400, { error: "Invalid message media path." });
@@ -631,6 +634,7 @@ async function uploadModeratedMessageMedia(req, res, parsedUrl, pathname) {
     sendJson(res, 405, { error: "Method not allowed." });
     return;
   }
+  const encodedObjectPath = pathname.slice(MEDIA_MESSAGE_UPLOAD_PREFIX.length);
 
   if (!SUPABASE_URL) {
     sendJson(res, 500, {
@@ -1317,23 +1321,135 @@ async function handleGifSearch(res, parsedUrl) {
   });
 }
 
-async function relayLegacyMessageMedia(req, res, pathname, search) {
+function decodePathRepeated(rawValue) {
+  let decoded = rawValue;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const next = decodeURIComponent(decoded);
+      if (next === decoded) break;
+      decoded = next;
+    } catch {
+      break;
+    }
+  }
+  return decoded;
+}
+
+function normalizeLegacyMessageMediaObjectPath(rawValue, depth = 0) {
+  if (typeof rawValue !== "string") return "";
+  let normalized = rawValue.trim();
+  if (!normalized) return "";
+
+  try {
+    const parsed = new URL(normalized);
+    normalized = `${parsed.pathname}${parsed.search}`;
+  } catch {
+    // Raw value is not an absolute URL.
+  }
+
+  normalized = normalized.replace(/^\/+/, "");
+  const queryIndex = normalized.indexOf("?");
+  let queryPart = "";
+  if (queryIndex >= 0) {
+    queryPart = normalized.slice(queryIndex + 1);
+    normalized = normalized.slice(0, queryIndex);
+  }
+  normalized = decodePathRepeated(normalized);
+
+  const pathPrefixes = [
+    `${MESSAGE_BUCKET}/`,
+    `storage/v1/object/public/${MESSAGE_BUCKET}/`,
+    `storage/v1/object/sign/${MESSAGE_BUCKET}/`,
+    `storage/v1/object/authenticated/${MESSAGE_BUCKET}/`,
+    `storage/v1/object/${MESSAGE_BUCKET}/`,
+    `api/storage/object/public/${MESSAGE_BUCKET}/`,
+    `api/storage/sign/${MESSAGE_BUCKET}/`,
+    `api/storage/object/authenticated/${MESSAGE_BUCKET}/`,
+    `api/storage/object/${MESSAGE_BUCKET}/`,
+    `api/media/message/${MESSAGE_BUCKET}/`,
+    `api/media/message-upload/${MESSAGE_BUCKET}/`,
+    "api/media/message/",
+    "api/media/message-upload/",
+    `api/supabase/storage/v1/object/public/${MESSAGE_BUCKET}/`,
+    `api/supabase/storage/v1/object/sign/${MESSAGE_BUCKET}/`,
+    `api/supabase/storage/v1/object/authenticated/${MESSAGE_BUCKET}/`,
+    `api/supabase/storage/v1/object/${MESSAGE_BUCKET}/`,
+  ];
+
+  for (const prefix of pathPrefixes) {
+    if (normalized.startsWith(prefix)) {
+      normalized = normalized.slice(prefix.length);
+      break;
+    }
+  }
+
+  if (normalized.startsWith("dm/") || normalized.startsWith("group/") || normalized.startsWith("glytch/")) {
+    return normalized;
+  }
+
+  const embeddedMatch = normalized.match(/(?:^|\/)((?:dm|group|glytch)\/.+)$/);
+  if (embeddedMatch && embeddedMatch[1]) {
+    return embeddedMatch[1];
+  }
+
+  if (queryPart && depth < 2) {
+    const params = new URLSearchParams(queryPart);
+    const queryPathKeys = ["objectPath", "path", "file", "attachment", "attachmentUrl", "url", "src"];
+    for (const key of queryPathKeys) {
+      const raw = params.get(key);
+      if (!raw) continue;
+      const candidate = normalizeLegacyMessageMediaObjectPath(raw, depth + 1);
+      if (candidate) return candidate;
+    }
+  }
+
+  return "";
+}
+
+function resolveLegacyMessageMediaObjectPath(pathname, parsedUrl, basePath, basePathWithSlash) {
+  const candidates = [];
+
+  if (pathname.startsWith(basePathWithSlash)) {
+    candidates.push(pathname.slice(basePathWithSlash.length));
+  } else if (pathname === basePath) {
+    candidates.push("");
+  }
+
+  const queryPathKeys = ["objectPath", "path", "file", "attachment", "attachmentUrl", "url", "src"];
+  for (const key of queryPathKeys) {
+    const raw = parsedUrl.searchParams.get(key);
+    if (!raw) continue;
+    candidates.push(raw);
+  }
+
+  for (const candidate of candidates) {
+    const normalized = normalizeLegacyMessageMediaObjectPath(candidate);
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  return "";
+}
+
+async function relayLegacyMessageMedia(req, res, pathname, parsedUrl, search) {
   const method = req.method || "GET";
   if (method !== "GET" && method !== "HEAD") {
     sendJson(res, 405, { error: "Method not allowed." });
     return;
   }
 
-  const encodedSuffix = pathname.slice(MEDIA_MESSAGE_PROXY_PREFIX.length);
-  if (!encodedSuffix) {
+  const objectPath = resolveLegacyMessageMediaObjectPath(
+    pathname,
+    parsedUrl,
+    MEDIA_MESSAGE_PROXY_PATH,
+    MEDIA_MESSAGE_PROXY_PREFIX,
+  );
+  if (!objectPath) {
     sendJson(res, 400, { error: "Missing message media path." });
     return;
   }
 
-  let objectPath = decodePath(encodedSuffix).replace(/^\/+/, "");
-  if (objectPath.startsWith(`${MESSAGE_BUCKET}/`)) {
-    objectPath = objectPath.slice(MESSAGE_BUCKET.length + 1);
-  }
   if (!isSafeStorageObjectPath(objectPath)) {
     sendJson(res, 400, { error: "Invalid message media path." });
     return;
@@ -1768,8 +1884,8 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  if (pathname.startsWith(MEDIA_MESSAGE_PROXY_PREFIX)) {
-    await relayLegacyMessageMedia(req, res, pathname, search);
+  if (pathname === MEDIA_MESSAGE_PROXY_PATH || pathname.startsWith(MEDIA_MESSAGE_PROXY_PREFIX)) {
+    await relayLegacyMessageMedia(req, res, pathname, parsedUrl, search);
     return;
   }
 
@@ -1783,7 +1899,7 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  if (pathname.startsWith(MEDIA_MESSAGE_UPLOAD_PREFIX)) {
+  if (pathname === MEDIA_MESSAGE_UPLOAD_PATH || pathname.startsWith(MEDIA_MESSAGE_UPLOAD_PREFIX)) {
     await uploadModeratedMessageMedia(req, res, parsedUrl, pathname);
     return;
   }
