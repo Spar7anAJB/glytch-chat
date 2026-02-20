@@ -138,6 +138,7 @@ import { RnnoiseWorkletNode, loadRnnoise } from "@sapphi-red/web-noise-suppresso
 import rnnoiseWorkletPath from "@sapphi-red/web-noise-suppressor/rnnoiseWorklet.js?url";
 import rnnoiseWasmPath from "@sapphi-red/web-noise-suppressor/rnnoise.wasm?url";
 import rnnoiseSimdWasmPath from "@sapphi-red/web-noise-suppressor/rnnoise_simd.wasm?url";
+import voiceEngineWorkletPath from "./voice/voiceEngineWorklet.js?url";
 
 type ChatDashboardProps = {
   currentUserId: string;
@@ -435,6 +436,7 @@ const SOUNDBOARD_MAX_CLIP_BYTES = 2 * 1024 * 1024;
 const SOUNDBOARD_STORAGE_KEY = "glytch.soundboard.clips.v1";
 const DESKTOP_AUTO_UPDATE_WINDOWS_STORAGE_KEY = "glytch.desktopAutoUpdateWindows.v1";
 const VOICE_MIC_SETTINGS_STORAGE_KEY = "glytch.voice.mic.settings.v1";
+const VOICE_TARGET_PROFILE_STORAGE_KEY = "glytch.voice.targetProfile.v1";
 const LEGACY_DEFAULT_DM_CHAT_BACKGROUND: BackgroundGradient = {
   from: "#122341",
   to: "#0a162b",
@@ -584,9 +586,26 @@ const DM_REPLY_MESSAGE_PREFIX = "[[DM_REPLY]]";
 const MISSING_SELF_PARTICIPANT_MAX_MISSES = 8;
 const RNNOISE_ENABLED = String(import.meta.env.VITE_RNNOISE_ENABLED || "true").toLowerCase() !== "false";
 const LIVEKIT_KRISP_ENABLED = String(import.meta.env.VITE_LIVEKIT_KRISP_ENABLED || "false").toLowerCase() === "true";
+const VOICE_ENGINE_ENABLED = String(import.meta.env.VITE_VOICE_ENGINE_ENABLED || "true").toLowerCase() !== "false";
+const VOICE_ENGINE_RUNTIME_MODE: VoiceEngineRuntimeMode =
+  String(import.meta.env.VITE_VOICE_ENGINE_RUNTIME || "heuristic").toLowerCase() === "neural_stub"
+    ? "neural_stub"
+    : "heuristic";
+const VOICE_RENDER_LEAK_GUARD_ENABLED =
+  String(import.meta.env.VITE_VOICE_RENDER_LEAK_GUARD_ENABLED || "true").toLowerCase() !== "false";
+const VOICE_TARGET_LOCK_SENSITIVITY_MIN = 30;
+const VOICE_TARGET_LOCK_SENSITIVITY_MAX = 100;
+const VOICE_TARGET_LOCK_SENSITIVITY_DEFAULT = 62;
+const VOICE_TARGET_LOCK_CALIBRATION_DURATION_MS = 8000;
+const VOICE_TARGET_PROFILE_VOICE_RATIO_DEFAULT = 0.36;
+const VOICE_TARGET_PROFILE_ZCR_DEFAULT = 0.1;
+const VOICE_TARGET_PROFILE_SNR_SCORE_DEFAULT = 0.42;
+const VOICE_TARGET_PROFILE_PERSIST_MIN_CONFIDENCE = 0.4;
+const VOICE_TARGET_PROFILE_PERSIST_INTERVAL_MS = 2000;
 const VOICE_MIC_INPUT_GAIN_MIN = 70;
 const VOICE_MIC_INPUT_GAIN_MAX = 100;
 const VOICE_MIC_INPUT_GAIN_DEFAULT = 100;
+const VOICE_ENGINE_TRACE_MAX_POINTS = 80;
 const SHOWCASE_KIND_LABELS: Record<ShowcaseKind, string> = {
   text: "Text",
   links: "Links",
@@ -1004,24 +1023,67 @@ type LivekitKrispSessionCredentials = {
 };
 
 type VoiceSuppressionProfile = "balanced" | "strong" | "ultra";
+type VoiceEngineRuntimeMode = "heuristic" | "neural_stub";
+type VoiceEngineRuntimeSetting = "auto" | VoiceEngineRuntimeMode;
 
 type VoiceMicSettings = {
   inputDeviceId: string;
   suppressionProfile: VoiceSuppressionProfile;
+  voiceEngineRuntime: VoiceEngineRuntimeSetting;
   echoCancellation: boolean;
   noiseSuppression: boolean;
   autoGainControl: boolean;
   voiceIsolation: boolean;
+  targetSpeakerLock: boolean;
+  targetSpeakerLockSensitivityPercent: number;
   inputGainPercent: number;
+};
+
+type VoiceEngineMetrics = {
+  nearFieldScore: number;
+  suppressionGain: number;
+  noiseFloor: number;
+  speechLikelihood: number;
+  targetMatchScore: number;
+  targetProfileVoiceRatio: number;
+  targetProfileZcr: number;
+  targetProfileSnrScore: number;
+  targetProfileConfidence: number;
+  targetProfileFrozen: boolean;
+  targetLockSensitivity: number;
+  targetCalibrationActive: boolean;
+  targetCalibrationProgress: number;
+  runtimeMode: VoiceEngineRuntimeMode;
+};
+
+type VoiceEngineMetricTrace = {
+  nearFieldScore: number[];
+  suppressionGain: number[];
+  speechLikelihood: number[];
+  targetMatchScore: number[];
+};
+
+type VoiceEngineTargetProfileSnapshot = {
+  targetProfileVoiceRatio: number;
+  targetProfileZcr: number;
+  targetProfileSnrScore: number;
+  targetProfileConfidence: number;
+  targetProfileFrozen: boolean;
+  targetLockSensitivity: number;
+  runtimeMode: VoiceEngineRuntimeMode;
+  updatedAtMs: number;
 };
 
 const DEFAULT_VOICE_MIC_SETTINGS: VoiceMicSettings = {
   inputDeviceId: "default",
   suppressionProfile: "strong",
+  voiceEngineRuntime: "auto",
   echoCancellation: true,
   noiseSuppression: true,
   autoGainControl: false,
   voiceIsolation: true,
+  targetSpeakerLock: false,
+  targetSpeakerLockSensitivityPercent: VOICE_TARGET_LOCK_SENSITIVITY_DEFAULT,
   inputGainPercent: VOICE_MIC_INPUT_GAIN_DEFAULT,
 };
 
@@ -1856,9 +1918,89 @@ function resolveRemoteVoiceOutputGain(volume: number): number {
   return Math.min(10, 8 + (normalized - 1) * 2);
 }
 
+function normalizeVoiceEngineMetric(raw: unknown): number {
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(1, value));
+}
+
+function createDefaultVoiceEngineMetrics(): VoiceEngineMetrics {
+  return {
+    nearFieldScore: 0,
+    suppressionGain: 1,
+    noiseFloor: 0,
+    speechLikelihood: 0,
+    targetMatchScore: 0,
+    targetProfileVoiceRatio: VOICE_TARGET_PROFILE_VOICE_RATIO_DEFAULT,
+    targetProfileZcr: VOICE_TARGET_PROFILE_ZCR_DEFAULT,
+    targetProfileSnrScore: VOICE_TARGET_PROFILE_SNR_SCORE_DEFAULT,
+    targetProfileConfidence: 0,
+    targetProfileFrozen: false,
+    targetLockSensitivity: VOICE_TARGET_LOCK_SENSITIVITY_DEFAULT / 100,
+    targetCalibrationActive: false,
+    targetCalibrationProgress: 0,
+    runtimeMode: VOICE_ENGINE_RUNTIME_MODE,
+  };
+}
+
+function createEmptyVoiceEngineMetricTrace(): VoiceEngineMetricTrace {
+  return {
+    nearFieldScore: [],
+    suppressionGain: [],
+    speechLikelihood: [],
+    targetMatchScore: [],
+  };
+}
+
+function appendVoiceEngineTracePoint(points: number[], value: number): number[] {
+  if (points.length >= VOICE_ENGINE_TRACE_MAX_POINTS) {
+    return [...points.slice(points.length - VOICE_ENGINE_TRACE_MAX_POINTS + 1), value];
+  }
+  return [...points, value];
+}
+
+function buildVoiceEngineSparklinePath(values: number[], width = 168, height = 34): string {
+  if (values.length === 0) return "";
+  if (values.length === 1) {
+    const y = height - values[0] * height;
+    return `M0 ${y.toFixed(2)} L${width} ${y.toFixed(2)}`;
+  }
+  const stepX = width / (values.length - 1);
+  return values
+    .map((value, index) => {
+      const x = index * stepX;
+      const y = height - value * height;
+      return `${index === 0 ? "M" : "L"}${x.toFixed(2)} ${y.toFixed(2)}`;
+    })
+    .join(" ");
+}
+
 function normalizeVoiceSuppressionProfile(raw: unknown): VoiceSuppressionProfile {
   if (raw === "balanced" || raw === "strong" || raw === "ultra") return raw;
   return DEFAULT_VOICE_MIC_SETTINGS.suppressionProfile;
+}
+
+function normalizeVoiceEngineRuntimeSetting(raw: unknown): VoiceEngineRuntimeSetting {
+  if (raw === "heuristic" || raw === "neural_stub") return raw;
+  return "auto";
+}
+
+function resolveVoiceEngineRuntimeMode(setting: VoiceEngineRuntimeSetting): VoiceEngineRuntimeMode {
+  if (setting === "heuristic" || setting === "neural_stub") return setting;
+  return VOICE_ENGINE_RUNTIME_MODE;
+}
+
+function normalizeVoiceEngineRuntimeMode(raw: unknown): VoiceEngineRuntimeMode {
+  return raw === "neural_stub" ? "neural_stub" : "heuristic";
+}
+
+function normalizeTargetSpeakerLockSensitivityPercent(raw: unknown): number {
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return VOICE_TARGET_LOCK_SENSITIVITY_DEFAULT;
+  return Math.max(
+    VOICE_TARGET_LOCK_SENSITIVITY_MIN,
+    Math.min(VOICE_TARGET_LOCK_SENSITIVITY_MAX, Math.round(parsed)),
+  );
 }
 
 function normalizeMicInputGainPercent(raw: unknown): number {
@@ -2585,6 +2727,64 @@ function persistDesktopAutoUpdateWindowsToStorage(enabled: boolean) {
   }
 }
 
+function voiceTargetProfileStorageKeyForUser(userId: string): string {
+  const normalizedUserId = userId.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "");
+  if (!normalizedUserId) return VOICE_TARGET_PROFILE_STORAGE_KEY;
+  return `${VOICE_TARGET_PROFILE_STORAGE_KEY}.${normalizedUserId}`;
+}
+
+function loadVoiceEngineTargetProfileFromStorage(userId: string): VoiceEngineTargetProfileSnapshot | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(voiceTargetProfileStorageKeyForUser(userId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<VoiceEngineTargetProfileSnapshot> | null;
+    if (!parsed || typeof parsed !== "object") return null;
+    const targetProfileConfidence = normalizeVoiceEngineMetric(parsed.targetProfileConfidence);
+    if (targetProfileConfidence < 0.22) return null;
+    return {
+      targetProfileVoiceRatio: normalizeVoiceEngineMetric(parsed.targetProfileVoiceRatio),
+      targetProfileZcr: normalizeVoiceEngineMetric(parsed.targetProfileZcr),
+      targetProfileSnrScore: normalizeVoiceEngineMetric(parsed.targetProfileSnrScore),
+      targetProfileConfidence,
+      targetProfileFrozen: Boolean(parsed.targetProfileFrozen),
+      targetLockSensitivity: normalizeVoiceEngineMetric(parsed.targetLockSensitivity),
+      runtimeMode: normalizeVoiceEngineRuntimeMode(parsed.runtimeMode),
+      updatedAtMs: Math.max(0, Math.round(Number(parsed.updatedAtMs) || 0)),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function persistVoiceEngineTargetProfileToStorage(userId: string, profile: VoiceEngineTargetProfileSnapshot) {
+  if (typeof window === "undefined") return;
+  try {
+    const safeProfile: VoiceEngineTargetProfileSnapshot = {
+      targetProfileVoiceRatio: normalizeVoiceEngineMetric(profile.targetProfileVoiceRatio),
+      targetProfileZcr: normalizeVoiceEngineMetric(profile.targetProfileZcr),
+      targetProfileSnrScore: normalizeVoiceEngineMetric(profile.targetProfileSnrScore),
+      targetProfileConfidence: normalizeVoiceEngineMetric(profile.targetProfileConfidence),
+      targetProfileFrozen: Boolean(profile.targetProfileFrozen),
+      targetLockSensitivity: normalizeVoiceEngineMetric(profile.targetLockSensitivity),
+      runtimeMode: normalizeVoiceEngineRuntimeMode(profile.runtimeMode),
+      updatedAtMs: Math.max(0, Math.round(Number(profile.updatedAtMs) || Date.now())),
+    };
+    window.localStorage.setItem(voiceTargetProfileStorageKeyForUser(userId), JSON.stringify(safeProfile));
+  } catch {
+    // Ignore localStorage quota failures.
+  }
+}
+
+function clearVoiceEngineTargetProfileFromStorage(userId: string) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(voiceTargetProfileStorageKeyForUser(userId));
+  } catch {
+    // Ignore localStorage failures.
+  }
+}
+
 function loadVoiceMicSettingsFromStorage(): VoiceMicSettings {
   if (typeof window === "undefined") return { ...DEFAULT_VOICE_MIC_SETTINGS };
   try {
@@ -2595,12 +2795,20 @@ function loadVoiceMicSettingsFromStorage(): VoiceMicSettings {
     return {
       inputDeviceId: normalizeMicInputDeviceId(source.inputDeviceId),
       suppressionProfile: normalizeVoiceSuppressionProfile(source.suppressionProfile),
+      voiceEngineRuntime: normalizeVoiceEngineRuntimeSetting(source.voiceEngineRuntime),
       echoCancellation:
         typeof source.echoCancellation === "boolean" ? source.echoCancellation : DEFAULT_VOICE_MIC_SETTINGS.echoCancellation,
       noiseSuppression:
         typeof source.noiseSuppression === "boolean" ? source.noiseSuppression : DEFAULT_VOICE_MIC_SETTINGS.noiseSuppression,
       autoGainControl: false,
       voiceIsolation: typeof source.voiceIsolation === "boolean" ? source.voiceIsolation : DEFAULT_VOICE_MIC_SETTINGS.voiceIsolation,
+      targetSpeakerLock:
+        typeof source.targetSpeakerLock === "boolean"
+          ? source.targetSpeakerLock
+          : DEFAULT_VOICE_MIC_SETTINGS.targetSpeakerLock,
+      targetSpeakerLockSensitivityPercent: normalizeTargetSpeakerLockSensitivityPercent(
+        source.targetSpeakerLockSensitivityPercent,
+      ),
       inputGainPercent: normalizeMicInputGainPercent(source.inputGainPercent),
     };
   } catch {
@@ -2791,6 +2999,16 @@ export default function ChatDashboard({
     loadDesktopAutoUpdateWindowsFromStorage(),
   );
   const [voiceMicSettings, setVoiceMicSettings] = useState<VoiceMicSettings>(() => loadVoiceMicSettingsFromStorage());
+  const [voiceEngineDebugOpen, setVoiceEngineDebugOpen] = useState(false);
+  const [voiceEngineDebugMetrics, setVoiceEngineDebugMetrics] = useState<VoiceEngineMetrics>(() =>
+    createDefaultVoiceEngineMetrics(),
+  );
+  const [voiceEngineDebugTrace, setVoiceEngineDebugTrace] = useState<VoiceEngineMetricTrace>(() =>
+    createEmptyVoiceEngineMetricTrace(),
+  );
+  const [voiceEngineSavedTargetProfileAvailable, setVoiceEngineSavedTargetProfileAvailable] = useState(() =>
+    Boolean(loadVoiceEngineTargetProfileFromStorage(currentUserId)),
+  );
   const [voiceInputDevices, setVoiceInputDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedPatchNoteVersion, setSelectedPatchNoteVersion] = useState(PATCH_NOTES[0]?.version || "");
   const [isUserIdle, setIsUserIdle] = useState(false);
@@ -2919,11 +3137,14 @@ export default function ChatDashboard({
   const voiceDeafenedRef = useRef(false);
   const screenShareAudioMutedRef = useRef(false);
   const remoteOutputAudioContextRef = useRef<AudioContext | null>(null);
+  const remoteOutputMasterGainRef = useRef<GainNode | null>(null);
+  const remoteOutputAnalyserRef = useRef<AnalyserNode | null>(null);
   const remoteVoiceAudioSourceNodesRef = useRef<Map<string, MediaElementAudioSourceNode>>(new Map());
   const remoteVoiceGainNodesRef = useRef<Map<string, GainNode>>(new Map());
   const remoteScreenAudioSourceNodesRef = useRef<Map<string, MediaElementAudioSourceNode>>(new Map());
   const remoteScreenGainNodesRef = useRef<Map<string, GainNode>>(new Map());
   const speakingAnalyserCleanupRef = useRef<Map<string, () => void>>(new Map());
+  const speakingAnalyserVersionRef = useRef<Map<string, number>>(new Map());
   const livekitAudioTrackRef = useRef<LivekitAudioTrackAdapter | null>(null);
   const livekitProcessorRef = useRef<LivekitKrispProcessorAdapter | null>(null);
   const livekitAudioContextRef = useRef<AudioContext | null>(null);
@@ -2937,6 +3158,13 @@ export default function ChatDashboard({
   const rnnoiseInputStreamRef = useRef<MediaStream | null>(null);
   const rnnoiseWasmBinaryRef = useRef<ArrayBuffer | null>(null);
   const rnnoiseUnavailableLoggedRef = useRef(false);
+  const voiceEngineWorkletLoadedRef = useRef(false);
+  const voiceEngineUnavailableLoggedRef = useRef(false);
+  const voiceEngineNodeRef = useRef<AudioWorkletNode | null>(null);
+  const voiceEngineLatestMetricsRef = useRef<VoiceEngineMetrics>(createDefaultVoiceEngineMetrics());
+  const voiceEngineDebugOpenRef = useRef(false);
+  const voiceEngineTargetLockStateRef = useRef<boolean>(voiceMicSettings.targetSpeakerLock);
+  const voiceEngineTargetProfilePersistAtMsRef = useRef(0);
   const voiceEnhancementAudioContextRef = useRef<AudioContext | null>(null);
   const voiceEnhancementSourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const voiceEnhancementDestinationNodeRef = useRef<MediaStreamAudioDestinationNode | null>(null);
@@ -3845,6 +4073,16 @@ export default function ChatDashboard({
     console.warn(`[voice] RNNoise unavailable: ${reason}`);
   }, []);
 
+  const logVoiceEngineFallbackReason = useCallback((reason: string, details?: unknown) => {
+    if (voiceEngineUnavailableLoggedRef.current) return;
+    voiceEngineUnavailableLoggedRef.current = true;
+    if (details !== undefined) {
+      console.warn(`[voice] Voice engine unavailable: ${reason}`, details);
+      return;
+    }
+    console.warn(`[voice] Voice engine unavailable: ${reason}`);
+  }, []);
+
   const buildRnnoiseNoiseSuppressedStream = useCallback(
     async (inputStream: MediaStream, settings?: VoiceMicSettings): Promise<MediaStream | null> => {
       if (!RNNOISE_ENABLED) {
@@ -3919,6 +4157,7 @@ export default function ChatDashboard({
     const sourceNode = voiceEnhancementSourceNodeRef.current;
     const destinationNode = voiceEnhancementDestinationNodeRef.current;
     const inputStream = voiceEnhancementInputStreamRef.current;
+    const voiceEngineNode = voiceEngineNodeRef.current;
     const outputGainNode = voiceEnhancementOutputGainNodeRef.current;
     const loudnessGuardGainNode = voiceEnhancementLoudnessGuardGainRef.current;
     const analyserNode = voiceEnhancementAnalyserRef.current;
@@ -3931,6 +4170,9 @@ export default function ChatDashboard({
     voiceEnhancementSourceNodeRef.current = null;
     voiceEnhancementDestinationNodeRef.current = null;
     voiceEnhancementInputStreamRef.current = null;
+    voiceEngineNodeRef.current = null;
+    voiceEngineLatestMetricsRef.current = createDefaultVoiceEngineMetrics();
+    voiceEngineTargetProfilePersistAtMsRef.current = 0;
     voiceEnhancementOutputGainNodeRef.current = null;
     voiceEnhancementLoudnessGuardGainRef.current = null;
     voiceEnhancementAnalyserRef.current = null;
@@ -3945,6 +4187,14 @@ export default function ChatDashboard({
 
     try {
       sourceNode?.disconnect();
+    } catch {
+      // Ignore disconnect failures.
+    }
+    try {
+      if (voiceEngineNode?.port) {
+        voiceEngineNode.port.onmessage = null;
+      }
+      voiceEngineNode?.disconnect();
     } catch {
       // Ignore disconnect failures.
     }
@@ -3992,7 +4242,8 @@ export default function ChatDashboard({
     inputStream?.getTracks().forEach((track) => {
       track.stop();
     });
-  }, []);
+    setSpeakingUserIds((prev) => prev.filter((id) => id !== currentUserId));
+  }, [currentUserId]);
 
   const buildVoiceEnhancementStream = useCallback(
     async (inputStream: MediaStream, settings: VoiceMicSettings): Promise<MediaStream | null> => {
@@ -4069,6 +4320,15 @@ export default function ChatDashboard({
 
         outputGainNode.gain.value = Math.min(1, normalizeMicInputGainPercent(settings.inputGainPercent) / 100);
         loudnessGuardGainNode.gain.value = 1;
+        const voiceEngineStrength = profileIsUltra ? 0.94 : profileIsBalanced ? 0.58 : 0.78;
+        const voiceEngineMinSuppressionGain = profileIsUltra ? 0.08 : profileIsBalanced ? 0.22 : 0.14;
+        const voiceEngineNearFieldBias = profileIsUltra ? 0.56 : profileIsBalanced ? 0.45 : 0.51;
+        const voiceEnginePresenceBoost = profileIsUltra ? 0.28 : profileIsBalanced ? 0.18 : 0.23;
+        const voiceEngineRumbleDamp = profileIsUltra ? 0.5 : profileIsBalanced ? 0.35 : 0.42;
+        const voiceEngineRuntimeMode = resolveVoiceEngineRuntimeMode(settings.voiceEngineRuntime);
+        const voiceEngineTargetSpeakerLock = settings.targetSpeakerLock;
+        const voiceEngineTargetLockSensitivity =
+          normalizeTargetSpeakerLockSensitivityPercent(settings.targetSpeakerLockSensitivityPercent) / 100;
 
         sourceNode.connect(highpassNode);
         sourceNode.connect(inputLevelAnalyserNode);
@@ -4078,9 +4338,136 @@ export default function ChatDashboard({
         presenceNode.connect(deEssNode);
         deEssNode.connect(compressorNode);
         compressorNode.connect(limiterNode);
-        limiterNode.connect(gateGainNode);
-        limiterNode.connect(gateAnalyser);
-        limiterNode.connect(gateFrequencyAnalyser);
+        let enhancementNode: AudioNode = limiterNode;
+        voiceEngineNodeRef.current = null;
+        if (VOICE_ENGINE_ENABLED && typeof AudioWorkletNode !== "undefined") {
+          try {
+            if (!voiceEngineWorkletLoadedRef.current) {
+              await audioContext.audioWorklet.addModule(voiceEngineWorkletPath);
+              voiceEngineWorkletLoadedRef.current = true;
+            }
+            const voiceEngineNode = new AudioWorkletNode(audioContext, "voice-engine-processor", {
+              numberOfInputs: 1,
+              numberOfOutputs: 1,
+              outputChannelCount: [1],
+              channelCount: 1,
+              channelCountMode: "explicit",
+              processorOptions: {
+                strength: voiceEngineStrength,
+                minSuppressionGain: voiceEngineMinSuppressionGain,
+                nearFieldBias: voiceEngineNearFieldBias,
+                presenceBoost: voiceEnginePresenceBoost,
+                rumbleDamp: voiceEngineRumbleDamp,
+                runtimeMode: voiceEngineRuntimeMode,
+                targetSpeakerLock: voiceEngineTargetSpeakerLock,
+                targetLockSensitivity: voiceEngineTargetLockSensitivity,
+              },
+            });
+            voiceEngineNodeRef.current = voiceEngineNode;
+            const savedTargetProfile = voiceEngineTargetSpeakerLock
+              ? loadVoiceEngineTargetProfileFromStorage(currentUserId)
+              : null;
+            if (savedTargetProfile) {
+              voiceEngineNode.port.postMessage({
+                type: "loadTargetProfile",
+                profile: {
+                  ...savedTargetProfile,
+                  runtimeMode: voiceEngineRuntimeMode,
+                  targetLockSensitivity: voiceEngineTargetLockSensitivity,
+                },
+              });
+              voiceEngineTargetProfilePersistAtMsRef.current = Date.now();
+            } else {
+              voiceEngineTargetProfilePersistAtMsRef.current = 0;
+            }
+            if (voiceEngineTargetSpeakerLock) {
+              setVoiceEngineSavedTargetProfileAvailable(Boolean(savedTargetProfile));
+            }
+            voiceEngineNode.port.onmessage = (event) => {
+              const payload = event.data as
+                | {
+                    type?: string;
+                    nearFieldScore?: unknown;
+                    suppressionGain?: unknown;
+                    noiseFloor?: unknown;
+                    speechLikelihood?: unknown;
+                    targetMatchScore?: unknown;
+                    targetProfileVoiceRatio?: unknown;
+                    targetProfileZcr?: unknown;
+                    targetProfileSnrScore?: unknown;
+                    targetProfileConfidence?: unknown;
+                    targetProfileFrozen?: unknown;
+                    targetLockSensitivity?: unknown;
+                    targetCalibrationActive?: unknown;
+                    targetCalibrationProgress?: unknown;
+                    runtimeMode?: unknown;
+                  }
+                | undefined;
+              if (!payload || payload.type !== "metrics") return;
+              const runtimeMode = payload.runtimeMode === "neural_stub" ? "neural_stub" : "heuristic";
+              const nextMetrics: VoiceEngineMetrics = {
+                nearFieldScore: normalizeVoiceEngineMetric(payload.nearFieldScore),
+                suppressionGain: normalizeVoiceEngineMetric(payload.suppressionGain),
+                noiseFloor: normalizeVoiceEngineMetric(payload.noiseFloor),
+                speechLikelihood: normalizeVoiceEngineMetric(payload.speechLikelihood),
+                targetMatchScore: normalizeVoiceEngineMetric(payload.targetMatchScore),
+                targetProfileVoiceRatio: normalizeVoiceEngineMetric(payload.targetProfileVoiceRatio),
+                targetProfileZcr: normalizeVoiceEngineMetric(payload.targetProfileZcr),
+                targetProfileSnrScore: normalizeVoiceEngineMetric(payload.targetProfileSnrScore),
+                targetProfileConfidence: normalizeVoiceEngineMetric(payload.targetProfileConfidence),
+                targetProfileFrozen: Boolean(payload.targetProfileFrozen),
+                targetLockSensitivity: normalizeVoiceEngineMetric(payload.targetLockSensitivity),
+                targetCalibrationActive: Boolean(payload.targetCalibrationActive),
+                targetCalibrationProgress: normalizeVoiceEngineMetric(payload.targetCalibrationProgress),
+                runtimeMode,
+              };
+              voiceEngineLatestMetricsRef.current = nextMetrics;
+              if (voiceEngineTargetLockStateRef.current) {
+                const shouldPersistProfile =
+                  nextMetrics.targetProfileFrozen ||
+                  nextMetrics.targetProfileConfidence >= VOICE_TARGET_PROFILE_PERSIST_MIN_CONFIDENCE;
+                if (shouldPersistProfile) {
+                  const nowMs = Date.now();
+                  if (
+                    nowMs - voiceEngineTargetProfilePersistAtMsRef.current >=
+                    VOICE_TARGET_PROFILE_PERSIST_INTERVAL_MS
+                  ) {
+                    persistVoiceEngineTargetProfileToStorage(currentUserId, {
+                      targetProfileVoiceRatio: nextMetrics.targetProfileVoiceRatio,
+                      targetProfileZcr: nextMetrics.targetProfileZcr,
+                      targetProfileSnrScore: nextMetrics.targetProfileSnrScore,
+                      targetProfileConfidence: nextMetrics.targetProfileConfidence,
+                      targetProfileFrozen: nextMetrics.targetProfileFrozen,
+                      targetLockSensitivity: nextMetrics.targetLockSensitivity,
+                      runtimeMode: nextMetrics.runtimeMode,
+                      updatedAtMs: nowMs,
+                    });
+                    voiceEngineTargetProfilePersistAtMsRef.current = nowMs;
+                    setVoiceEngineSavedTargetProfileAvailable(true);
+                  }
+                }
+              }
+              if (!voiceEngineDebugOpenRef.current) return;
+              setVoiceEngineDebugMetrics(nextMetrics);
+              setVoiceEngineDebugTrace((prev) => ({
+                nearFieldScore: appendVoiceEngineTracePoint(prev.nearFieldScore, nextMetrics.nearFieldScore),
+                suppressionGain: appendVoiceEngineTracePoint(prev.suppressionGain, nextMetrics.suppressionGain),
+                speechLikelihood: appendVoiceEngineTracePoint(prev.speechLikelihood, nextMetrics.speechLikelihood),
+                targetMatchScore: appendVoiceEngineTracePoint(prev.targetMatchScore, nextMetrics.targetMatchScore),
+              }));
+            };
+            enhancementNode.connect(voiceEngineNode);
+            enhancementNode = voiceEngineNode;
+          } catch (err) {
+            logVoiceEngineFallbackReason("startup failed; using DSP-only path.", err);
+          }
+        } else if (VOICE_ENGINE_ENABLED && typeof AudioWorkletNode === "undefined") {
+          logVoiceEngineFallbackReason("AudioWorklet is not supported on this runtime.");
+        }
+
+        enhancementNode.connect(gateGainNode);
+        enhancementNode.connect(gateAnalyser);
+        enhancementNode.connect(gateFrequencyAnalyser);
         gateGainNode.connect(outputGainNode);
         outputGainNode.connect(outputLevelAnalyserNode);
         outputGainNode.connect(loudnessGuardGainNode);
@@ -4089,6 +4476,7 @@ export default function ChatDashboard({
         // Multi-feature voice AI gate: learns room noise and opens only on persistent speech signatures.
         const gateData = new Uint8Array(gateAnalyser.fftSize);
         const gateFreqData = new Uint8Array(gateFrequencyAnalyser.frequencyBinCount);
+        const remoteRenderData = new Uint8Array(gateAnalyser.fftSize);
         const inputLevelData = new Uint8Array(inputLevelAnalyserNode.fftSize);
         const outputLevelData = new Uint8Array(outputLevelAnalyserNode.fftSize);
         const previousGateFreqData = new Uint8Array(gateFrequencyAnalyser.frequencyBinCount);
@@ -4098,6 +4486,9 @@ export default function ChatDashboard({
         let smoothedRms = 0;
         let smoothedInputRms = 0;
         let smoothedOutputRms = 0;
+        let smoothedRenderRms = 0;
+        let smoothedRenderLeakCorrelation = 0;
+        let smoothedRenderLeakLikelihood = 0;
         let loudnessGuard = 1;
         let smoothedVoiceRatio = profileIsUltra ? 0.42 : profileIsBalanced ? 0.36 : 0.39;
         let smoothedSpeechSignature = profileIsUltra ? 0.14 : profileIsBalanced ? 0.09 : 0.11;
@@ -4114,7 +4505,13 @@ export default function ChatDashboard({
         let ambientSpeechSignature = profileIsUltra ? 0.1 : profileIsBalanced ? 0.07 : 0.085;
         let gateOpen = false;
         let gateHoldUntil = 0;
+        let gatePreOpenUntil = 0;
+        let softSpeechRescueUntil = 0;
+        let speechAttackUntil = 0;
+        let localSpeakingHoldUntil = 0;
+        let localSpeakingVisualState = false;
         let clickRejectUntil = 0;
+        let previousSmoothedRms = 0;
         const calibrationEndsAt = Date.now() + (profileIsUltra ? 2800 : 2000);
         const minimumOpenThreshold = profileIsUltra ? 0.016 : profileIsBalanced ? 0.022 : 0.019;
         const minimumCloseThreshold = minimumOpenThreshold * 0.56;
@@ -4131,13 +4528,29 @@ export default function ChatDashboard({
         const crestClickThreshold = profileIsUltra ? 4.3 : 4.75;
         const fluxClickThreshold = profileIsUltra ? 0.1 : 0.125;
         const clickRejectMs = profileIsUltra ? 240 : 170;
-        const speechConfidenceOpenThreshold = profileIsUltra ? 0.56 : 0.48;
+        const speechConfidenceOpenThreshold = profileIsUltra ? 0.54 : 0.46;
         const speechConfidenceCloseThreshold = profileIsUltra ? 0.2 : 0.14;
         const speechEvidenceOpenThreshold = profileIsUltra ? 0.46 : 0.39;
         const speechEvidenceCloseThreshold = profileIsUltra ? 0.2 : 0.16;
         const noiseProfileCalibrationAlpha = 0.9;
         const noiseProfileLearnAlpha = profileIsUltra ? 0.968 : 0.954;
         const minLoudnessGuard = profileIsUltra ? 0.62 : profileIsBalanced ? 0.72 : 0.67;
+        const renderLeakCorrelationLow = profileIsUltra ? 0.36 : profileIsBalanced ? 0.43 : 0.39;
+        const renderLeakCorrelationHigh = profileIsUltra ? 0.79 : profileIsBalanced ? 0.85 : 0.82;
+        const renderLeakRmsLow = profileIsUltra ? 0.0024 : profileIsBalanced ? 0.0032 : 0.0028;
+        const renderLeakRmsHigh = profileIsUltra ? 0.027 : profileIsBalanced ? 0.034 : 0.03;
+        const renderLeakLikelihoodCloseThreshold = profileIsUltra ? 0.54 : profileIsBalanced ? 0.64 : 0.6;
+        const renderLeakPenaltyWeight = profileIsUltra ? 0.28 : profileIsBalanced ? 0.2 : 0.24;
+        const onsetPreOpenMs = profileIsUltra ? 300 : profileIsBalanced ? 240 : 270;
+        const onsetRmsRiseThreshold = profileIsUltra ? 0.0016 : profileIsBalanced ? 0.0022 : 0.0019;
+        const onsetOpenThresholdScale = profileIsUltra ? 0.74 : profileIsBalanced ? 0.8 : 0.77;
+        const onsetSpeechEvidenceScale = profileIsUltra ? 0.62 : profileIsBalanced ? 0.68 : 0.65;
+        const onsetVoiceDominanceThreshold = profileIsUltra ? 0.46 : 0.42;
+        const softSpeechRescueMs = profileIsUltra ? 240 : profileIsBalanced ? 200 : 220;
+        const preOpenGainTarget = profileIsUltra ? 0.68 : profileIsBalanced ? 0.62 : 0.66;
+        const speechAttackBoostMs = profileIsUltra ? 190 : profileIsBalanced ? 150 : 170;
+        const speechAttackGainFloor = profileIsUltra ? 0.9 : profileIsBalanced ? 0.84 : 0.88;
+        const softSpeechGainFloor = profileIsUltra ? 0.76 : profileIsBalanced ? 0.7 : 0.74;
         const nyquist = audioContext.sampleRate / 2;
         const binFromHz = (hz: number) =>
           Math.max(0, Math.min(gateFreqData.length - 1, Math.round((hz / nyquist) * (gateFreqData.length - 1))));
@@ -4204,6 +4617,38 @@ export default function ChatDashboard({
           }
           return Math.sqrt(sumSquares / waveData.length);
         };
+        const estimateRenderLeakCorrelation = (micWaveData: Uint8Array, renderWaveData: Uint8Array) => {
+          const maxLag = Math.min(144, renderWaveData.length - 8);
+          let bestCorrelation = 0;
+          for (let lag = 0; lag <= maxLag; lag += 8) {
+            let correlation = 0;
+            let micEnergy = 0;
+            let renderEnergy = 0;
+            for (let i = lag; i < micWaveData.length; i += 4) {
+              const micSample = (micWaveData[i] - 128) / 128;
+              const renderSample = (renderWaveData[i - lag] - 128) / 128;
+              correlation += micSample * renderSample;
+              micEnergy += micSample * micSample;
+              renderEnergy += renderSample * renderSample;
+            }
+            const normalized = Math.abs(correlation / Math.sqrt(micEnergy * renderEnergy + 1e-8));
+            if (normalized > bestCorrelation) {
+              bestCorrelation = normalized;
+            }
+          }
+          return clamp01(bestCorrelation);
+        };
+
+        const syncLocalSpeakingVisual = (nextState: boolean) => {
+          if (nextState === localSpeakingVisualState) return;
+          localSpeakingVisualState = nextState;
+          setSpeakingUserIds((prev) => {
+            const hasCurrentUser = prev.includes(currentUserId);
+            if (nextState && !hasCurrentUser) return [...prev, currentUserId];
+            if (!nextState && hasCurrentUser) return prev.filter((id) => id !== currentUserId);
+            return prev;
+          });
+        };
 
         const updateGate = () => {
           gateAnalyser.getByteTimeDomainData(gateData);
@@ -4214,6 +4659,23 @@ export default function ChatDashboard({
           const outputRms = computeRmsFromWaveData(outputLevelData);
           smoothedInputRms = smoothedInputRms * 0.84 + inputRms * 0.16;
           smoothedOutputRms = smoothedOutputRms * 0.84 + outputRms * 0.16;
+          let renderRms = 0;
+          let renderLeakCorrelation = 0;
+          if (VOICE_RENDER_LEAK_GUARD_ENABLED) {
+            const remoteOutputAnalyser = remoteOutputAnalyserRef.current;
+            if (remoteOutputAnalyser) {
+              try {
+                remoteOutputAnalyser.getByteTimeDomainData(remoteRenderData);
+                renderRms = computeRmsFromWaveData(remoteRenderData);
+                renderLeakCorrelation = estimateRenderLeakCorrelation(gateData, remoteRenderData);
+              } catch {
+                renderRms = 0;
+                renderLeakCorrelation = 0;
+              }
+            }
+          }
+          smoothedRenderRms = smoothedRenderRms * 0.82 + renderRms * 0.18;
+          smoothedRenderLeakCorrelation = smoothedRenderLeakCorrelation * 0.74 + renderLeakCorrelation * 0.26;
 
           let rms = 0;
           let peakAbs = 0;
@@ -4286,6 +4748,8 @@ export default function ChatDashboard({
           smoothedSpectralFlatness = smoothedSpectralFlatness * 0.74 + spectralFlatness * 0.26;
           smoothedSpectralCentroidHz = smoothedSpectralCentroidHz * 0.72 + spectralCentroidHz * 0.28;
           smoothedPeriodicity = smoothedPeriodicity * 0.76 + periodicity * 0.24;
+          const rmsRise = smoothedRms - previousSmoothedRms;
+          previousSmoothedRms = smoothedRms;
 
           const nowMs = Date.now();
           if (!gateOpen) {
@@ -4335,10 +4799,18 @@ export default function ChatDashboard({
           const voiceSnr = computeBandSnr(voiceBandStart, voiceBandEnd);
           const rumbleSnr = computeBandSnr(rumbleBandStart, rumbleBandEnd);
           const highNoiseSnr = computeBandSnr(highNoiseBandStart, highNoiseBandEnd);
+          const renderLeakLikelihood =
+            VOICE_RENDER_LEAK_GUARD_ENABLED
+              ? scoreRange(smoothedRenderLeakCorrelation, renderLeakCorrelationLow, renderLeakCorrelationHigh) *
+                scoreRange(smoothedRenderRms, renderLeakRmsLow, renderLeakRmsHigh)
+              : 0;
+          smoothedRenderLeakLikelihood = smoothedRenderLeakLikelihood * 0.74 + renderLeakLikelihood * 0.26;
+          const renderLeakLikely = smoothedRenderLeakLikelihood >= renderLeakLikelihoodCloseThreshold;
           const shouldLearnNoiseProfile =
             !gateOpen ||
             nowMs < calibrationEndsAt ||
-            speechConfidence < speechConfidenceOpenThreshold * 0.42;
+            speechConfidence < speechConfidenceOpenThreshold * 0.42 ||
+            renderLeakLikely;
           if (shouldLearnNoiseProfile) {
             const alpha = nowMs < calibrationEndsAt ? noiseProfileCalibrationAlpha : noiseProfileLearnAlpha;
             for (let i = analysisBandStart; i <= analysisBandEnd; i += 1) {
@@ -4379,6 +4851,18 @@ export default function ChatDashboard({
           const spectralNoiseLike =
             smoothedSpectralFlatness > (profileIsUltra ? 0.79 : 0.84) &&
             smoothedPeriodicity < (profileIsUltra ? 0.21 : 0.18);
+          const voiceDominanceScore =
+            scoreRange(voiceSnr, 1.45, 3.4) *
+            scoreRange(
+              smoothedSpeechSignature,
+              dynamicSpeechSignatureThreshold * 0.82,
+              dynamicSpeechSignatureThreshold * 1.75,
+            );
+          const renderLeakLikelyWithoutSpeechDominance = renderLeakLikely && voiceDominanceScore < (profileIsUltra ? 0.56 : 0.5);
+          const renderLeakPenalty =
+            VOICE_RENDER_LEAK_GUARD_ENABLED
+              ? renderLeakPenaltyWeight * smoothedRenderLeakLikelihood * (1 - voiceDominanceScore * 0.55)
+              : 0;
           const speechEvidenceRaw =
             0.31 * voiceSnrScore +
             0.21 * signatureScore +
@@ -4392,9 +4876,45 @@ export default function ChatDashboard({
             0.08 * scoreRange(highNoiseSnr, 1.5, 3.1) * scoreRange(highNoiseRatio, 0.22, 0.5) -
             (clickRejectActive ? 0.22 : 0) -
             (fanLikeNoise ? 0.24 : 0) -
-            (spectralNoiseLike ? 0.16 : 0);
+            (spectralNoiseLike ? 0.16 : 0) -
+            renderLeakPenalty;
           const speechEvidence = clamp01(speechEvidenceRaw);
           speechEvidenceSmoothed = speechEvidenceSmoothed * 0.72 + speechEvidence * 0.28;
+          const onsetSpeechCandidate =
+            !gateOpen &&
+            smoothedRms >= dynamicOpenThreshold * onsetOpenThresholdScale &&
+            rmsRise >= onsetRmsRiseThreshold &&
+            hasVoiceLikeZeroCrossing &&
+            (voiceDominanceScore >= onsetVoiceDominanceThreshold ||
+              speechEvidenceSmoothed >= speechEvidenceOpenThreshold * onsetSpeechEvidenceScale) &&
+            !clickRejectActive &&
+            !fanLikeNoise &&
+            !spectralNoiseLike &&
+            !renderLeakLikelyWithoutSpeechDominance;
+          if (onsetSpeechCandidate) {
+            gatePreOpenUntil = nowMs + onsetPreOpenMs;
+            speechAttackUntil = Math.max(speechAttackUntil, nowMs + speechAttackBoostMs);
+          }
+
+          const relativeVoiceLift = smoothedVoiceRatio - ambientVoiceRatio;
+          const relativeSpeechSignatureLift = smoothedSpeechSignature - ambientSpeechSignature;
+          const softSpeechRescueCandidate =
+            !gateOpen &&
+            smoothedRms >= dynamicOpenThreshold * (profileIsUltra ? 0.72 : 0.76) &&
+            speechEvidenceSmoothed >= speechEvidenceOpenThreshold * (profileIsUltra ? 0.6 : 0.66) &&
+            voiceDominanceScore >= (profileIsUltra ? 0.38 : 0.34) &&
+            relativeVoiceLift >= (profileIsUltra ? 0.035 : 0.028) &&
+            relativeSpeechSignatureLift >= (profileIsUltra ? 0.012 : 0.008) &&
+            hasVoiceLikeZeroCrossing &&
+            !clickRejectActive &&
+            !fanLikeNoise &&
+            !spectralNoiseLike &&
+            !renderLeakLikelyWithoutSpeechDominance;
+          if (softSpeechRescueCandidate) {
+            softSpeechRescueUntil = nowMs + softSpeechRescueMs;
+            speechAttackUntil = Math.max(speechAttackUntil, nowMs + Math.round(speechAttackBoostMs * 0.8));
+          }
+          const softSpeechRescueActive = !gateOpen && nowMs < softSpeechRescueUntil && !renderLeakLikelyWithoutSpeechDominance;
 
           const baseVoiceDetected =
             hasVoiceBandFocus &&
@@ -4403,34 +4923,47 @@ export default function ChatDashboard({
             speechEvidenceSmoothed >= speechEvidenceOpenThreshold &&
             !clickRejectActive &&
             !fanLikeNoise &&
-            !spectralNoiseLike;
+            !spectralNoiseLike &&
+            !renderLeakLikelyWithoutSpeechDominance;
+          const voiceSignalCandidate = baseVoiceDetected || onsetSpeechCandidate || softSpeechRescueActive;
 
-          if (baseVoiceDetected) {
-            speechConfidence = Math.min(1, speechConfidence + 0.06 + speechEvidenceSmoothed * (profileIsUltra ? 0.2 : 0.17));
+          if (voiceSignalCandidate) {
+            speechConfidence = Math.min(
+              1,
+              speechConfidence +
+                0.06 +
+                speechEvidenceSmoothed * (profileIsUltra ? 0.2 : 0.17) +
+                (onsetSpeechCandidate ? (profileIsUltra ? 0.045 : 0.035) : 0),
+            );
           } else {
             speechConfidence = Math.max(
               0,
               speechConfidence -
                 (profileIsUltra ? 0.108 : 0.094) -
                 (clickRejectActive ? 0.03 : 0) -
-                (fanLikeNoise ? 0.026 : 0),
+                (fanLikeNoise ? 0.026 : 0) -
+                (renderLeakLikelyWithoutSpeechDominance ? 0.024 : 0),
             );
           }
 
           const voiceDetected =
-            baseVoiceDetected &&
-            speechConfidence >= speechConfidenceOpenThreshold &&
-            speechEvidenceSmoothed >= speechEvidenceOpenThreshold;
+            voiceSignalCandidate &&
+            speechConfidence >= (softSpeechRescueActive ? speechConfidenceOpenThreshold * 0.82 : speechConfidenceOpenThreshold) &&
+            speechEvidenceSmoothed >=
+              (softSpeechRescueActive ? speechEvidenceOpenThreshold * 0.82 : speechEvidenceOpenThreshold);
           const loudVoiceOverride =
             smoothedRms >= dynamicOpenThreshold * 1.68 &&
             speechEvidenceSmoothed >= speechEvidenceOpenThreshold * 0.96 &&
             smoothedVoiceRatio >= dynamicVoiceRatioCloseThreshold &&
             smoothedSpeechSignature >= dynamicSpeechSignatureCloseThreshold &&
             !clickRejectActive &&
-            !fanLikeNoise;
+            !fanLikeNoise &&
+            !renderLeakLikelyWithoutSpeechDominance;
 
           if ((smoothedRms >= dynamicOpenThreshold && voiceDetected) || loudVoiceOverride) {
             gateOpen = true;
+            gatePreOpenUntil = 0;
+            speechAttackUntil = Math.max(speechAttackUntil, nowMs + speechAttackBoostMs);
             gateHoldUntil = nowMs + holdMs;
           } else if (gateOpen && nowMs > gateHoldUntil) {
             const voiceSignatureDropped =
@@ -4442,23 +4975,48 @@ export default function ChatDashboard({
               speechEvidenceSmoothed <= speechEvidenceCloseThreshold ||
               clickRejectActive ||
               fanLikeNoise ||
-              spectralNoiseLike;
+              spectralNoiseLike ||
+              renderLeakLikelyWithoutSpeechDominance;
             if (smoothedRms <= dynamicCloseThreshold || voiceSignatureDropped) {
               gateOpen = false;
             }
           }
 
           const relaxedClosedGain = Math.min(0.1, closedGain * 2.2);
+          const preOpenActive = !gateOpen && nowMs < gatePreOpenUntil && !renderLeakLikelyWithoutSpeechDominance;
+          const speechAttackActive = !gateOpen && nowMs < speechAttackUntil && !renderLeakLikelyWithoutSpeechDominance;
+          const preOpenGain = Math.max(relaxedClosedGain, preOpenGainTarget);
+          const speechAttackGain = Math.max(preOpenGain, speechAttackGainFloor);
           const targetGain = gateOpen
             ? 1
-            : speechConfidence > speechConfidenceCloseThreshold && speechEvidenceSmoothed > speechEvidenceCloseThreshold
+            : speechAttackActive
+              ? speechAttackGain
+            : softSpeechRescueActive
+              ? Math.max(relaxedClosedGain, softSpeechGainFloor)
+            : preOpenActive
+              ? preOpenGain
+              : speechConfidence > speechConfidenceCloseThreshold && speechEvidenceSmoothed > speechEvidenceCloseThreshold
               ? relaxedClosedGain
               : closedGain;
+          const gainTimeConstant = gateOpen ? 0.008 : speechAttackActive ? 0.006 : preOpenActive ? 0.011 : 0.058;
           try {
-            gateGainNode.gain.setTargetAtTime(targetGain, audioContext.currentTime, gateOpen ? 0.008 : 0.058);
+            gateGainNode.gain.setTargetAtTime(targetGain, audioContext.currentTime, gainTimeConstant);
           } catch {
             gateGainNode.gain.value = targetGain;
           }
+
+          const localSpeakingCandidate =
+            gateOpen ||
+            preOpenActive ||
+            speechAttackActive ||
+            softSpeechRescueActive ||
+            (speechConfidence >= speechConfidenceCloseThreshold + 0.05 &&
+              speechEvidenceSmoothed >= speechEvidenceCloseThreshold + 0.05 &&
+              smoothedRms >= dynamicCloseThreshold * 0.9);
+          if (localSpeakingCandidate) {
+            localSpeakingHoldUntil = nowMs + 320;
+          }
+          syncLocalSpeakingVisual(localSpeakingCandidate || nowMs < localSpeakingHoldUntil);
 
           // Hard guard: voice AI can attenuate, but never increase perceived loudness over dry mic.
           let targetLoudnessGuard = loudnessGuard;
@@ -4505,7 +5063,7 @@ export default function ChatDashboard({
         return null;
       }
     },
-    [disposeVoiceEnhancementPipeline],
+    [currentUserId, disposeVoiceEnhancementPipeline, logVoiceEngineFallbackReason],
   );
 
   const requestVoiceMicrophoneStream = useCallback(async (): Promise<MediaStream> => {
@@ -4616,10 +5174,39 @@ export default function ChatDashboard({
           return null;
         }
 
+        let remoteOutputMasterGain = remoteOutputMasterGainRef.current;
+        let remoteOutputAnalyser = remoteOutputAnalyserRef.current;
+        if (
+          !remoteOutputMasterGain ||
+          remoteOutputMasterGain.context !== outputAudioContext ||
+          !remoteOutputAnalyser ||
+          remoteOutputAnalyser.context !== outputAudioContext
+        ) {
+          try {
+            remoteOutputMasterGain?.disconnect();
+          } catch {
+            // Ignore stale master-gain disconnect failures.
+          }
+          try {
+            remoteOutputAnalyser?.disconnect();
+          } catch {
+            // Ignore stale analyser disconnect failures.
+          }
+          remoteOutputMasterGain = outputAudioContext.createGain();
+          remoteOutputMasterGain.gain.value = 1;
+          remoteOutputAnalyser = outputAudioContext.createAnalyser();
+          remoteOutputAnalyser.fftSize = 1024;
+          remoteOutputAnalyser.smoothingTimeConstant = 0.82;
+          remoteOutputMasterGain.connect(outputAudioContext.destination);
+          remoteOutputMasterGain.connect(remoteOutputAnalyser);
+          remoteOutputMasterGainRef.current = remoteOutputMasterGain;
+          remoteOutputAnalyserRef.current = remoteOutputAnalyser;
+        }
+
         const sourceNode = outputAudioContext.createMediaElementSource(audioEl);
         const gainNode = outputAudioContext.createGain();
         sourceNode.connect(gainNode);
-        gainNode.connect(outputAudioContext.destination);
+        gainNode.connect(remoteOutputMasterGain);
         sourceMap.set(userId, sourceNode);
         gainMap.set(userId, gainNode);
         return gainNode;
@@ -5319,6 +5906,124 @@ export default function ChatDashboard({
   useEffect(() => {
     persistVoiceMicSettingsToStorage(voiceMicSettings);
   }, [voiceMicSettings]);
+
+  useEffect(() => {
+    setVoiceEngineSavedTargetProfileAvailable(Boolean(loadVoiceEngineTargetProfileFromStorage(currentUserId)));
+    voiceEngineTargetProfilePersistAtMsRef.current = 0;
+  }, [currentUserId]);
+
+  useEffect(() => {
+    voiceEngineDebugOpenRef.current = voiceEngineDebugOpen;
+    if (!voiceEngineDebugOpen) return;
+    const currentMetrics = voiceEngineLatestMetricsRef.current;
+    setVoiceEngineDebugMetrics(currentMetrics);
+    setVoiceEngineDebugTrace({
+      nearFieldScore: [currentMetrics.nearFieldScore],
+      suppressionGain: [currentMetrics.suppressionGain],
+      speechLikelihood: [currentMetrics.speechLikelihood],
+      targetMatchScore: [currentMetrics.targetMatchScore],
+    });
+  }, [voiceEngineDebugOpen]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.repeat) return;
+      const key = event.key.toLowerCase();
+      if (!(event.ctrlKey && event.shiftKey && key === "v")) return;
+      event.preventDefault();
+      setVoiceEngineDebugOpen((prev) => !prev);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, []);
+
+  const handleResetVoiceTargetProfile = useCallback(() => {
+    clearVoiceEngineTargetProfileFromStorage(currentUserId);
+    setVoiceEngineSavedTargetProfileAvailable(false);
+    voiceEngineTargetProfilePersistAtMsRef.current = 0;
+    const voiceEngineNode = voiceEngineNodeRef.current;
+    if (voiceEngineNode) {
+      voiceEngineNode.port.postMessage({ type: "resetTargetProfile" });
+    }
+    const nextMetrics: VoiceEngineMetrics = {
+      ...voiceEngineLatestMetricsRef.current,
+      targetMatchScore: 0,
+      targetProfileVoiceRatio: VOICE_TARGET_PROFILE_VOICE_RATIO_DEFAULT,
+      targetProfileZcr: VOICE_TARGET_PROFILE_ZCR_DEFAULT,
+      targetProfileSnrScore: VOICE_TARGET_PROFILE_SNR_SCORE_DEFAULT,
+      targetProfileConfidence: 0,
+      targetProfileFrozen: false,
+      targetCalibrationActive: false,
+      targetCalibrationProgress: 0,
+    };
+    voiceEngineLatestMetricsRef.current = nextMetrics;
+    if (voiceEngineDebugOpenRef.current) {
+      setVoiceEngineDebugMetrics(nextMetrics);
+    }
+  }, [currentUserId]);
+
+  const handleCalibrateVoiceTargetProfile = useCallback((durationMs = VOICE_TARGET_LOCK_CALIBRATION_DURATION_MS) => {
+    const voiceEngineNode = voiceEngineNodeRef.current;
+    if (!voiceEngineNode) return;
+    voiceEngineNode.port.postMessage({ type: "calibrateTargetProfile", durationMs });
+    const nextMetrics: VoiceEngineMetrics = {
+      ...voiceEngineLatestMetricsRef.current,
+      targetProfileFrozen: false,
+      targetCalibrationActive: true,
+      targetCalibrationProgress: 0,
+    };
+    voiceEngineLatestMetricsRef.current = nextMetrics;
+    if (voiceEngineDebugOpenRef.current) {
+      setVoiceEngineDebugMetrics(nextMetrics);
+    }
+  }, []);
+
+  const handleForgetSavedVoiceTargetProfile = useCallback(() => {
+    clearVoiceEngineTargetProfileFromStorage(currentUserId);
+    setVoiceEngineSavedTargetProfileAvailable(false);
+    voiceEngineTargetProfilePersistAtMsRef.current = 0;
+  }, [currentUserId]);
+
+  useEffect(() => {
+    const targetSpeakerLockEnabled = Boolean(voiceMicSettings.targetSpeakerLock);
+    const targetSpeakerLockWasEnabled = voiceEngineTargetLockStateRef.current;
+    voiceEngineTargetLockStateRef.current = targetSpeakerLockEnabled;
+    const voiceEngineNode = voiceEngineNodeRef.current;
+    if (!voiceEngineNode) return;
+    const profile = normalizeVoiceSuppressionProfile(voiceMicSettings.suppressionProfile);
+    const profileIsBalanced = profile === "balanced";
+    const profileIsUltra = profile === "ultra";
+    const voiceEngineRuntimeMode = resolveVoiceEngineRuntimeMode(voiceMicSettings.voiceEngineRuntime);
+    const targetLockSensitivity =
+      normalizeTargetSpeakerLockSensitivityPercent(voiceMicSettings.targetSpeakerLockSensitivityPercent) / 100;
+    voiceEngineNode.port.postMessage({
+      type: "config",
+      config: {
+        strength: profileIsUltra ? 0.94 : profileIsBalanced ? 0.58 : 0.78,
+        minSuppressionGain: profileIsUltra ? 0.08 : profileIsBalanced ? 0.22 : 0.14,
+        nearFieldBias: profileIsUltra ? 0.56 : profileIsBalanced ? 0.45 : 0.51,
+        presenceBoost: profileIsUltra ? 0.28 : profileIsBalanced ? 0.18 : 0.23,
+        rumbleDamp: profileIsUltra ? 0.5 : profileIsBalanced ? 0.35 : 0.42,
+        runtimeMode: voiceEngineRuntimeMode,
+        targetSpeakerLock: targetSpeakerLockEnabled,
+        targetLockSensitivity,
+      },
+    });
+    if (targetSpeakerLockEnabled && !targetSpeakerLockWasEnabled) {
+      handleResetVoiceTargetProfile();
+      handleCalibrateVoiceTargetProfile();
+    }
+  }, [
+    handleCalibrateVoiceTargetProfile,
+    handleResetVoiceTargetProfile,
+    voiceMicSettings.suppressionProfile,
+    voiceMicSettings.targetSpeakerLock,
+    voiceMicSettings.targetSpeakerLockSensitivityPercent,
+    voiceMicSettings.voiceEngineRuntime,
+  ]);
 
   useEffect(() => {
     const gainNode = voiceEnhancementOutputGainNodeRef.current;
@@ -11284,6 +11989,8 @@ export default function ChatDashboard({
   };
 
   const startSpeakingMeter = useCallback((userId: string, stream: MediaStream) => {
+    const nextMeterVersion = (speakingAnalyserVersionRef.current.get(userId) || 0) + 1;
+    speakingAnalyserVersionRef.current.set(userId, nextMeterVersion);
     if (speakingAnalyserCleanupRef.current.has(userId)) {
       const cleanup = speakingAnalyserCleanupRef.current.get(userId);
       cleanup?.();
@@ -11294,31 +12001,130 @@ export default function ChatDashboard({
     const source = audioCtx.createMediaStreamSource(stream);
     const analyser = audioCtx.createAnalyser();
     analyser.fftSize = 1024;
-    analyser.smoothingTimeConstant = 0.88;
+    analyser.smoothingTimeConstant = 0.68;
     source.connect(analyser);
 
-    const data = new Uint8Array(analyser.frequencyBinCount);
+    const frequencyData = new Uint8Array(analyser.frequencyBinCount);
+    const waveData = new Uint8Array(analyser.fftSize);
     let rafId = 0;
     let active = true;
-    let smoothedLevel = 0;
+    let smoothedRms = 0;
+    let previousSmoothedRms = 0;
+    let smoothedVoiceRatio = 0.34;
+    let smoothedRumbleRatio = 0.18;
+    let noiseFloor = 0.0035;
+    let speakingEvidence = 0;
     let speakingState = false;
     let holdUntilMs = 0;
+    let onsetBoostUntilMs = 0;
+    const nyquist = audioCtx.sampleRate / 2;
+    const clamp01 = (value: number) => Math.min(1, Math.max(0, value));
+    const scoreRange = (value: number, low: number, high: number) => {
+      if (high <= low) return value >= high ? 1 : 0;
+      return clamp01((value - low) / (high - low));
+    };
+    const binFromHz = (hz: number) =>
+      Math.max(0, Math.min(frequencyData.length - 1, Math.round((hz / nyquist) * (frequencyData.length - 1))));
+    const analysisBandStart = binFromHz(50);
+    const analysisBandEnd = binFromHz(9000);
+    const voiceBandStart = binFromHz(170);
+    const voiceBandEnd = binFromHz(4200);
+    const rumbleBandStart = binFromHz(40);
+    const rumbleBandEnd = binFromHz(170);
+    const computeBandEnergy = (startBin: number, endBin: number) => {
+      let energy = 0;
+      const start = Math.max(0, Math.min(frequencyData.length - 1, startBin));
+      const end = Math.max(start, Math.min(frequencyData.length - 1, endBin));
+      for (let i = start; i <= end; i += 1) {
+        const normalized = frequencyData[i] / 255;
+        energy += normalized * normalized;
+      }
+      return energy;
+    };
+    const computeRms = () => {
+      let sumSquares = 0;
+      for (let i = 0; i < waveData.length; i += 1) {
+        const sample = (waveData[i] - 128) / 128;
+        sumSquares += sample * sample;
+      }
+      return Math.sqrt(sumSquares / waveData.length);
+    };
+    const hasLiveEnabledTrack = () =>
+      stream
+        .getAudioTracks()
+        .some((track) => track.readyState === "live" && track.enabled && !track.muted);
 
     const tick = () => {
       if (!active) return;
-      analyser.getByteFrequencyData(data);
-      let sum = 0;
-      for (let i = 0; i < data.length; i += 1) sum += data[i];
-      const avg = sum / data.length;
-      smoothedLevel = smoothedLevel * 0.82 + avg * 0.18;
-      const nowMs = Date.now();
-      const activateThreshold = 19;
-      const deactivateThreshold = 11;
+      if (!hasLiveEnabledTrack()) {
+        speakingState = false;
+        setSpeakingUserIds((prev) => prev.filter((id) => id !== userId));
+        rafId = window.requestAnimationFrame(tick);
+        return;
+      }
+      analyser.getByteTimeDomainData(waveData);
+      analyser.getByteFrequencyData(frequencyData);
 
-      if (smoothedLevel >= activateThreshold) {
+      const rms = computeRms();
+      const totalEnergy = computeBandEnergy(analysisBandStart, analysisBandEnd) + 1e-7;
+      const voiceEnergy = computeBandEnergy(voiceBandStart, voiceBandEnd);
+      const rumbleEnergy = computeBandEnergy(rumbleBandStart, rumbleBandEnd);
+      const voiceRatio = voiceEnergy / totalEnergy;
+      const rumbleRatio = rumbleEnergy / totalEnergy;
+
+      smoothedRms = smoothedRms * 0.78 + rms * 0.22;
+      smoothedVoiceRatio = smoothedVoiceRatio * 0.8 + voiceRatio * 0.2;
+      smoothedRumbleRatio = smoothedRumbleRatio * 0.8 + rumbleRatio * 0.2;
+      const rmsRise = smoothedRms - previousSmoothedRms;
+      previousSmoothedRms = smoothedRms;
+
+      if (!speakingState) {
+        if (smoothedRms <= noiseFloor * 1.9) {
+          noiseFloor = noiseFloor * 0.968 + smoothedRms * 0.032;
+        } else {
+          noiseFloor = noiseFloor * 0.992 + smoothedRms * 0.008;
+        }
+      }
+
+      const dynamicOpenThreshold = Math.max(0.0055, noiseFloor * 2.05);
+      const dynamicCloseThreshold = Math.max(0.0038, noiseFloor * 1.55);
+      const voiceFocusScore = scoreRange(smoothedVoiceRatio, 0.24, 0.57);
+      const rumblePenalty = scoreRange(smoothedRumbleRatio, 0.24, 0.58);
+      const loudnessScore = scoreRange(smoothedRms, dynamicOpenThreshold * 0.72, dynamicOpenThreshold * 1.95);
+      const onsetScore = scoreRange(rmsRise, 0.00055, 0.0039);
+      const speakingEvidenceRaw = 0.5 * loudnessScore + 0.34 * voiceFocusScore + 0.16 * onsetScore - 0.24 * rumblePenalty;
+      speakingEvidence = speakingEvidence * 0.74 + clamp01(speakingEvidenceRaw) * 0.26;
+
+      const nowMs = Date.now();
+      const activateThreshold = 0.34;
+      const deactivateThreshold = 0.16;
+      const voiceLikely = smoothedVoiceRatio >= 0.28 && smoothedRumbleRatio <= 0.58;
+      const quickOnset =
+        smoothedRms >= dynamicOpenThreshold * 0.82 &&
+        rmsRise >= 0.00058 &&
+        voiceFocusScore >= 0.35 &&
+        rumblePenalty <= 0.7;
+      if (quickOnset) {
+        onsetBoostUntilMs = nowMs + 260;
+      }
+      const onsetBoostActive = nowMs < onsetBoostUntilMs;
+      const shouldActivate =
+        voiceLikely && (speakingEvidence >= activateThreshold || quickOnset || (onsetBoostActive && speakingEvidence >= 0.19));
+
+      if (shouldActivate) {
         speakingState = true;
-        holdUntilMs = nowMs + 480;
-      } else if (speakingState && smoothedLevel <= deactivateThreshold && nowMs > holdUntilMs) {
+        holdUntilMs = nowMs + 360;
+      } else if (speakingState && nowMs > holdUntilMs) {
+        const shouldDeactivate =
+          speakingEvidence <= deactivateThreshold ||
+          smoothedRms <= dynamicCloseThreshold ||
+          !voiceLikely;
+        if (shouldDeactivate) {
+          speakingState = false;
+        }
+      }
+      const hardSilence = smoothedRms <= dynamicCloseThreshold * 0.68 && speakingEvidence <= 0.08;
+      if (hardSilence) {
         speakingState = false;
       }
 
@@ -11335,11 +12141,22 @@ export default function ChatDashboard({
     rafId = window.requestAnimationFrame(tick);
 
     const cleanup = () => {
+      const latestVersion = speakingAnalyserVersionRef.current.get(userId) || 0;
+      if (latestVersion !== nextMeterVersion) {
+        active = false;
+        window.cancelAnimationFrame(rafId);
+        source.disconnect();
+        analyser.disconnect();
+        void audioCtx.close();
+        return;
+      }
       active = false;
       window.cancelAnimationFrame(rafId);
       source.disconnect();
       analyser.disconnect();
       void audioCtx.close();
+      speakingAnalyserVersionRef.current.delete(userId);
+      speakingAnalyserCleanupRef.current.delete(userId);
       setSpeakingUserIds((prev) => prev.filter((id) => id !== userId));
     };
 
@@ -11619,6 +12436,7 @@ export default function ChatDashboard({
       cleanup();
       speakingAnalyserCleanupRef.current.delete(userId);
     }
+    speakingAnalyserVersionRef.current.delete(userId);
 
     const shareIdsToRemove: string[] = [];
     for (const [shareId, ownerUserId] of remoteScreenShareOwnerByIdRef.current.entries()) {
@@ -11659,6 +12477,7 @@ export default function ChatDashboard({
       selfCleanup();
       speakingAnalyserCleanupRef.current.delete(currentUserId);
     }
+    speakingAnalyserVersionRef.current.delete(currentUserId);
     localStreamRef.current?.getTracks().forEach((track) => track.stop());
     localStreamRef.current = null;
     void disposeLivekitVoicePipeline();
@@ -11709,6 +12528,20 @@ export default function ChatDashboard({
     remoteVoiceGainNodesRef.current.clear();
     remoteScreenAudioSourceNodesRef.current.clear();
     remoteScreenGainNodesRef.current.clear();
+    const remoteOutputMasterGain = remoteOutputMasterGainRef.current;
+    const remoteOutputAnalyser = remoteOutputAnalyserRef.current;
+    remoteOutputMasterGainRef.current = null;
+    remoteOutputAnalyserRef.current = null;
+    try {
+      remoteOutputMasterGain?.disconnect();
+    } catch {
+      // Ignore stale master-gain disconnect failures.
+    }
+    try {
+      remoteOutputAnalyser?.disconnect();
+    } catch {
+      // Ignore stale analyser disconnect failures.
+    }
     const remoteOutputAudioContext = remoteOutputAudioContextRef.current;
     remoteOutputAudioContextRef.current = null;
     if (remoteOutputAudioContext) {
@@ -11720,6 +12553,8 @@ export default function ChatDashboard({
     setScreenShareBusy(false);
     pendingCandidatesRef.current.clear();
     signalSinceIdRef.current = 0;
+    speakingAnalyserCleanupRef.current.clear();
+    speakingAnalyserVersionRef.current.clear();
     setSpeakingUserIds([]);
   }, [closePeerConnection, currentUserId, disposeLivekitVoicePipeline, disposeRnnoiseVoicePipeline, disposeVoiceEnhancementPipeline]);
 
@@ -11883,6 +12718,7 @@ export default function ChatDashboard({
             const cleanup = speakingAnalyserCleanupRef.current.get(targetUserId);
             cleanup?.();
             speakingAnalyserCleanupRef.current.delete(targetUserId);
+            speakingAnalyserVersionRef.current.delete(targetUserId);
             setSpeakingUserIds((prev) => prev.filter((id) => id !== targetUserId));
           }
         };
@@ -16089,6 +16925,22 @@ export default function ChatDashboard({
                     <option value="ultra">Max</option>
                   </select>
                 </label>
+                <label>
+                  Voice Engine Runtime
+                  <select
+                    value={voiceMicSettings.voiceEngineRuntime}
+                    onChange={(e) =>
+                      setVoiceMicSettings((prev) => ({
+                        ...prev,
+                        voiceEngineRuntime: normalizeVoiceEngineRuntimeSetting(e.target.value),
+                      }))
+                    }
+                  >
+                    <option value="auto">Auto (env default: {VOICE_ENGINE_RUNTIME_MODE})</option>
+                    <option value="heuristic">Heuristic</option>
+                    <option value="neural_stub">Neural Stub</option>
+                  </select>
+                </label>
                 <label className="permissionToggle settingsToggle">
                   <input
                     type="checkbox"
@@ -16137,6 +16989,74 @@ export default function ChatDashboard({
                   />
                   <span>Prefer voice isolation when available</span>
                 </label>
+                <label className="permissionToggle settingsToggle">
+                  <input
+                    type="checkbox"
+                    checked={voiceMicSettings.targetSpeakerLock}
+                    onChange={(e) =>
+                      setVoiceMicSettings((prev) => ({
+                        ...prev,
+                        targetSpeakerLock: e.target.checked,
+                      }))
+                    }
+                  />
+                  <span>Target speaker lock (beta, probabilistic single-mic)</span>
+                </label>
+                <label>
+                  Target Lock Sensitivity ({voiceMicSettings.targetSpeakerLockSensitivityPercent}%)
+                  <input
+                    type="range"
+                    min={VOICE_TARGET_LOCK_SENSITIVITY_MIN}
+                    max={VOICE_TARGET_LOCK_SENSITIVITY_MAX}
+                    step={1}
+                    value={voiceMicSettings.targetSpeakerLockSensitivityPercent}
+                    disabled={!voiceMicSettings.targetSpeakerLock}
+                    onChange={(e) =>
+                      setVoiceMicSettings((prev) => ({
+                        ...prev,
+                        targetSpeakerLockSensitivityPercent: normalizeTargetSpeakerLockSensitivityPercent(e.target.value),
+                      }))
+                    }
+                  />
+                </label>
+                {VOICE_ENGINE_ENABLED && (
+                  <>
+                    <div className="moderationActionRow">
+                      <button
+                        type="button"
+                        onClick={handleResetVoiceTargetProfile}
+                        disabled={!voiceMicSettings.targetSpeakerLock}
+                      >
+                        Recalibrate Target Lock
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleCalibrateVoiceTargetProfile()}
+                        disabled={!voiceMicSettings.targetSpeakerLock}
+                      >
+                        Calibrate Target (8s)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleForgetSavedVoiceTargetProfile}
+                        disabled={!voiceEngineSavedTargetProfileAvailable}
+                      >
+                        Forget Saved Target Profile
+                      </button>
+                    </div>
+                    <p className="smallMuted">
+                      Recalibrate after changing microphone position so target-speaker matching relearns your voice profile.
+                    </p>
+                    <p className="smallMuted">
+                      {voiceEngineSavedTargetProfileAvailable
+                        ? "Saved target profile detected and preloaded when voice starts."
+                        : "No saved target profile yet. Calibrate while speaking normally to create one."}
+                    </p>
+                    <p className="smallMuted">
+                      Higher sensitivity holds lock on your voice more aggressively; lower sensitivity is more permissive.
+                    </p>
+                  </>
+                )}
                 <label>
                   Input Gain ({voiceMicSettings.inputGainPercent}%)
                   <input
@@ -16159,6 +17079,7 @@ export default function ChatDashboard({
                 <p className="smallMuted">
                   Voice AI keeps output at or below your original loudness and focuses on clarity/noise cleanup instead of amplification.
                 </p>
+                <p className="smallMuted">Press Ctrl+Shift+V for hidden Voice Engine debug metrics while testing voice.</p>
                 <p className="smallMuted">For best echo reduction, use headphones instead of open speakers.</p>
                 <div className="moderationActionRow">
                   <button
@@ -18643,6 +19564,69 @@ export default function ChatDashboard({
             <span>{dmInAppBanner.preview}</span>
           </span>
         </button>
+      )}
+
+      {voiceEngineDebugOpen && (
+        <aside className="voiceEngineDebugPanel" aria-label="Voice Engine debug panel">
+          <div className="voiceEngineDebugHeader">
+            <p className="sectionLabel">Voice Engine Debug</p>
+            <button type="button" className="ghostButton" onClick={() => setVoiceEngineDebugOpen(false)}>
+              Hide
+            </button>
+          </div>
+          <p className="smallMuted">
+            Runtime: <strong>{voiceEngineDebugMetrics.runtimeMode}</strong> · Runtime setting:{" "}
+            <strong>{voiceMicSettings.voiceEngineRuntime}</strong> · Target lock:{" "}
+            <strong>{voiceMicSettings.targetSpeakerLock ? "on" : "off"}</strong> · Target profile:{" "}
+            <strong>{voiceEngineDebugMetrics.targetProfileFrozen ? "locked" : "learning"}</strong> · Calibration:{" "}
+            <strong>{voiceEngineDebugMetrics.targetCalibrationActive ? "active" : "idle"}</strong> · Toggle:{" "}
+            <strong>Ctrl+Shift+V</strong>
+          </p>
+          <div className="voiceEngineDebugGrid">
+            <article className="voiceEngineDebugMetricCard">
+              <header>
+                <span>Near-field score</span>
+                <strong>{Math.round(voiceEngineDebugMetrics.nearFieldScore * 100)}%</strong>
+              </header>
+              <svg viewBox="0 0 168 34" aria-hidden="true">
+                <path d={buildVoiceEngineSparklinePath(voiceEngineDebugTrace.nearFieldScore)} />
+              </svg>
+            </article>
+            <article className="voiceEngineDebugMetricCard">
+              <header>
+                <span>Suppression gain</span>
+                <strong>{Math.round(voiceEngineDebugMetrics.suppressionGain * 100)}%</strong>
+              </header>
+              <svg viewBox="0 0 168 34" aria-hidden="true">
+                <path d={buildVoiceEngineSparklinePath(voiceEngineDebugTrace.suppressionGain)} />
+              </svg>
+            </article>
+            <article className="voiceEngineDebugMetricCard">
+              <header>
+                <span>Speech likelihood</span>
+                <strong>{Math.round(voiceEngineDebugMetrics.speechLikelihood * 100)}%</strong>
+              </header>
+              <svg viewBox="0 0 168 34" aria-hidden="true">
+                <path d={buildVoiceEngineSparklinePath(voiceEngineDebugTrace.speechLikelihood)} />
+              </svg>
+            </article>
+            <article className="voiceEngineDebugMetricCard">
+              <header>
+                <span>Target match</span>
+                <strong>{Math.round(voiceEngineDebugMetrics.targetMatchScore * 100)}%</strong>
+              </header>
+              <svg viewBox="0 0 168 34" aria-hidden="true">
+                <path d={buildVoiceEngineSparklinePath(voiceEngineDebugTrace.targetMatchScore)} />
+              </svg>
+            </article>
+          </div>
+          <p className="smallMuted">
+            Target profile confidence: {Math.round(voiceEngineDebugMetrics.targetProfileConfidence * 100)}% · Lock sensitivity:{" "}
+            {Math.round(voiceEngineDebugMetrics.targetLockSensitivity * 100)}% · Calibration progress:{" "}
+            {Math.round(voiceEngineDebugMetrics.targetCalibrationProgress * 100)}% · Noise floor:{" "}
+            {Math.round(voiceEngineDebugMetrics.noiseFloor * 1000) / 1000}
+          </p>
+        </aside>
       )}
 
       {viewedProfile && (
