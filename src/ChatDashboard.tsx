@@ -4313,9 +4313,11 @@ export default function ChatDashboard({
         presenceNode.Q.value = 1.05;
         presenceNode.gain.value = profileIsBalanced ? 0.75 : profileIsUltra ? 1.35 : 1.1;
 
+        const deEssBaseGain = profileIsBalanced ? -0.8 : profileIsUltra ? -1.6 : -1.7;
+        const clickDeEssGain = profileIsBalanced ? -4.4 : profileIsUltra ? -6.2 : -5.2;
         deEssNode.type = "highshelf";
         deEssNode.frequency.value = 6400;
-        deEssNode.gain.value = profileIsBalanced ? -0.8 : profileIsUltra ? -1.6 : -1.7;
+        deEssNode.gain.value = deEssBaseGain;
 
         compressorNode.threshold.value = profileIsBalanced ? -14 : profileIsUltra ? -16 : -16;
         compressorNode.knee.value = 18;
@@ -4564,9 +4566,9 @@ export default function ChatDashboard({
         const baseSpeechSignatureThreshold = profileIsUltra ? 0.118 : profileIsBalanced ? 0.1 : 0.145;
         const zeroCrossingMin = profileIsUltra ? 0.014 : 0.012;
         const zeroCrossingMax = profileIsUltra ? 0.22 : 0.24;
-        const crestClickThreshold = profileIsUltra ? 4.55 : 4.75;
-        const fluxClickThreshold = profileIsUltra ? 0.118 : 0.125;
-        const clickRejectMs = profileIsUltra ? 180 : 170;
+        const crestClickThreshold = profileIsUltra ? 4.15 : 4.75;
+        const fluxClickThreshold = profileIsUltra ? 0.094 : 0.125;
+        const clickRejectMs = profileIsUltra ? 240 : 170;
         const speechConfidenceOpenThreshold = profileIsUltra ? 0.41 : 0.46;
         const speechConfidenceCloseThreshold = profileIsUltra ? 0.16 : 0.14;
         const speechEvidenceOpenThreshold = profileIsUltra ? 0.34 : 0.39;
@@ -4578,8 +4580,8 @@ export default function ChatDashboard({
         const renderLeakCorrelationHigh = profileIsUltra ? 0.79 : profileIsBalanced ? 0.85 : 0.82;
         const renderLeakRmsLow = profileIsUltra ? 0.0024 : profileIsBalanced ? 0.0032 : 0.0028;
         const renderLeakRmsHigh = profileIsUltra ? 0.027 : profileIsBalanced ? 0.034 : 0.03;
-        const renderLeakLikelihoodCloseThreshold = profileIsUltra ? 0.6 : profileIsBalanced ? 0.64 : 0.6;
-        const renderLeakPenaltyWeight = profileIsUltra ? 0.22 : profileIsBalanced ? 0.2 : 0.24;
+        const renderLeakLikelihoodCloseThreshold = profileIsUltra ? 0.53 : profileIsBalanced ? 0.64 : 0.6;
+        const renderLeakPenaltyWeight = profileIsUltra ? 0.3 : profileIsBalanced ? 0.2 : 0.24;
         const onsetPreOpenMs = profileIsUltra ? 360 : profileIsBalanced ? 240 : 270;
         const onsetRmsRiseThreshold = profileIsUltra ? 0.00082 : profileIsBalanced ? 0.0022 : 0.0019;
         const onsetOpenThresholdScale = profileIsUltra ? 0.67 : profileIsBalanced ? 0.8 : 0.77;
@@ -4830,10 +4832,27 @@ export default function ChatDashboard({
             smoothedCrestFactor >= crestClickThreshold &&
             smoothedSpectralFlux >= fluxClickThreshold &&
             smoothedSpeechSignature < dynamicSpeechSignatureThreshold * 0.94;
-          if (clickLikeTransient) {
-            clickRejectUntil = nowMs + clickRejectMs;
+          const keyboardLikeTransient =
+            smoothedSpectralFlux >= (profileIsUltra ? 0.083 : 0.098) &&
+            smoothedCrestFactor >= (profileIsUltra ? 3.85 : 4.2) &&
+            highNoiseRatio >= (profileIsUltra ? 0.19 : 0.22) &&
+            smoothedSpectralCentroidHz >= (profileIsUltra ? 2500 : 2800) &&
+            smoothedPeriodicity <= (profileIsUltra ? 0.28 : 0.24) &&
+            smoothedSpeechSignature < dynamicSpeechSignatureThreshold * 1.02;
+          if (clickLikeTransient || keyboardLikeTransient) {
+            clickRejectUntil = nowMs + (keyboardLikeTransient ? clickRejectMs + 85 : clickRejectMs);
           }
           const clickRejectActive = nowMs < clickRejectUntil;
+          const clickDeEssActive =
+            clickRejectActive &&
+            smoothedSpeechSignature < dynamicSpeechSignatureThreshold * 1.15 &&
+            smoothedVoiceRatio < dynamicVoiceRatioThreshold * 1.08;
+          const targetDeEssGain = clickDeEssActive ? clickDeEssGain : deEssBaseGain;
+          try {
+            deEssNode.gain.setTargetAtTime(targetDeEssGain, audioContext.currentTime, clickDeEssActive ? 0.01 : 0.04);
+          } catch {
+            deEssNode.gain.value = targetDeEssGain;
+          }
 
           const voiceSnr = computeBandSnr(voiceBandStart, voiceBandEnd);
           const rumbleSnr = computeBandSnr(rumbleBandStart, rumbleBandEnd);
@@ -4902,6 +4921,11 @@ export default function ChatDashboard({
             VOICE_RENDER_LEAK_GUARD_ENABLED
               ? renderLeakPenaltyWeight * smoothedRenderLeakLikelihood * (1 - voiceDominanceScore * 0.55)
               : 0;
+          const clickRejectPenalty = clickRejectActive
+            ? profileIsUltra
+              ? smoothedSpeechSignature < dynamicSpeechSignatureThreshold ? 0.32 : 0.2
+              : 0.22
+            : 0;
           const speechEvidenceRaw =
             0.31 * voiceSnrScore +
             0.21 * signatureScore +
@@ -4913,7 +4937,7 @@ export default function ChatDashboard({
             0.11 * centroidPenalty -
             0.1 * scoreRange(rumbleSnr, 1.55, 3.2) * scoreRange(rumbleRatio, 0.22, 0.5) -
             0.08 * scoreRange(highNoiseSnr, 1.5, 3.1) * scoreRange(highNoiseRatio, 0.22, 0.5) -
-            (clickRejectActive ? 0.22 : 0) -
+            clickRejectPenalty -
             (fanLikeNoise ? 0.24 : 0) -
             (spectralNoiseLike ? 0.16 : 0) -
             renderLeakPenalty;
@@ -5024,9 +5048,18 @@ export default function ChatDashboard({
           const relaxedClosedGain = Math.min(0.1, closedGain * 2.2);
           const preOpenActive = !gateOpen && nowMs < gatePreOpenUntil && !renderLeakLikelyWithoutSpeechDominance;
           const speechAttackActive = !gateOpen && nowMs < speechAttackUntil && !renderLeakLikelyWithoutSpeechDominance;
+          const leakSuppressionActive = renderLeakLikelyWithoutSpeechDominance && !voiceDetected && !loudVoiceOverride;
+          if (leakSuppressionActive) {
+            gateOpen = false;
+            gatePreOpenUntil = 0;
+            softSpeechRescueUntil = 0;
+            speechAttackUntil = 0;
+          }
           const preOpenGain = Math.max(relaxedClosedGain, preOpenGainTarget);
           const speechAttackGain = Math.max(preOpenGain, speechAttackGainFloor);
-          const targetGain = gateOpen
+          let targetGain = leakSuppressionActive
+            ? closedGain
+            : gateOpen
             ? 1
             : speechAttackActive
               ? speechAttackGain
@@ -5037,6 +5070,15 @@ export default function ChatDashboard({
               : speechConfidence > speechConfidenceCloseThreshold && speechEvidenceSmoothed > speechEvidenceCloseThreshold
               ? relaxedClosedGain
               : closedGain;
+          const clickSuppressionClampActive =
+            clickRejectActive &&
+            !gateOpen &&
+            voiceDominanceScore < (profileIsUltra ? 0.7 : 0.64) &&
+            smoothedSpeechSignature < dynamicSpeechSignatureThreshold * 1.18;
+          if (clickSuppressionClampActive) {
+            const clickClampGain = profileIsUltra ? 0.22 : 0.28;
+            targetGain = Math.min(targetGain, clickClampGain);
+          }
           const gainTimeConstant = gateOpen ? 0.008 : speechAttackActive ? 0.006 : preOpenActive ? 0.011 : 0.058;
           try {
             gateGainNode.gain.setTargetAtTime(targetGain, audioContext.currentTime, gainTimeConstant);

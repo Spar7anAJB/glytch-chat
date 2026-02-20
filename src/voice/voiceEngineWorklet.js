@@ -205,6 +205,7 @@ class VoiceEngineProcessor extends AudioWorkletProcessor {
     this.isSpeaking = false
     this.speakingHoldBlocks = 0
     this.speechAttackBlocks = 0
+    this.transientSuppressBlocks = 0
 
     this.targetProfileVoiceRatio = 0.36
     this.targetProfileZcr = 0.1
@@ -656,6 +657,20 @@ class VoiceEngineProcessor extends AudioWorkletProcessor {
     } else if (this.speechAttackBlocks > 0) {
       this.speechAttackBlocks -= 1
     }
+    const clickTransientCandidate =
+      !this.isSpeaking &&
+      features.onsetScore >= (highStrengthProfile ? 0.44 : 0.5) &&
+      speechLikelihood <= (highStrengthProfile ? 0.36 : 0.33) &&
+      features.voiceRatioScore <= (highStrengthProfile ? 0.24 : 0.2) &&
+      (zcr >= (highStrengthProfile ? 0.18 : 0.2) || features.zcrPenalty >= 0.58) &&
+      snr <= (highStrengthProfile ? 2.05 : 1.9)
+    if (clickTransientCandidate) {
+      this.transientSuppressBlocks = Math.max(this.transientSuppressBlocks, highStrengthProfile ? 7 : 5)
+    } else if (speechLikelihood >= 0.52 && features.voiceRatioScore >= 0.3) {
+      this.transientSuppressBlocks = Math.max(0, this.transientSuppressBlocks - 2)
+    } else if (this.transientSuppressBlocks > 0) {
+      this.transientSuppressBlocks -= 1
+    }
 
     const gainCurveExp = 0.62 - this.config.strength * 0.2
     let targetGain =
@@ -697,6 +712,10 @@ class VoiceEngineProcessor extends AudioWorkletProcessor {
       const onsetFloorBase = this.config.strength >= 0.9 ? 0.88 : 0.82
       const onsetFloor = onsetFloorBase + 0.12 * speechLikelihood
       targetGain = Math.max(targetGain, onsetFloor)
+    }
+    if (this.transientSuppressBlocks > 0 && !this.isSpeaking) {
+      const transientCap = this.config.strength >= 0.9 ? 0.42 : 0.52
+      targetGain = Math.min(targetGain, transientCap)
     }
 
     const gainAttack = this.isSpeaking ? 0.44 : this.speechAttackBlocks > 0 ? 0.34 : 0.16
