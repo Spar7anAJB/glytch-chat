@@ -25,6 +25,8 @@ export type Profile = {
   profile_theme?: Record<string, unknown> | null;
   presence_status?: UserPresenceStatus | null;
   presence_updated_at?: string | null;
+  current_game?: string | null;
+  current_game_updated_at?: string | null;
 };
 
 export type UserPresenceStatus = "active" | "away" | "busy" | "offline";
@@ -88,6 +90,7 @@ export type DmMessage = {
   attachment_url?: string | null;
   attachment_type?: MessageAttachmentType | null;
   created_at: string;
+  edited_at?: string | null;
   read_by_receiver_at?: string | null;
 };
 
@@ -106,6 +109,7 @@ export type GroupChatMessage = {
   attachment_url?: string | null;
   attachment_type?: MessageAttachmentType | null;
   created_at: string;
+  edited_at?: string | null;
 };
 
 export type GroupChatMessageReaction = {
@@ -281,6 +285,7 @@ export type GlytchMessage = {
   attachment_type?: MessageAttachmentType | null;
   bot_should_delete?: boolean;
   created_at: string;
+  edited_at?: string | null;
 };
 
 export type GlytchMessageReaction = {
@@ -318,8 +323,100 @@ const glytchBucket = (import.meta.env.VITE_SUPABASE_GLYTCH_BUCKET as string | un
 const messageBucket = (import.meta.env.VITE_SUPABASE_MESSAGE_BUCKET as string | undefined) || "message-media";
 const MESSAGE_SIGN_URL_TTL_SECONDS = 3600;
 const MESSAGE_SIGN_URL_REFRESH_BUFFER_MS = 30_000;
-const MESSAGE_SIGN_URL_FAILURE_TTL_MS = 2 * 60 * 1000;
+const MESSAGE_SIGN_URL_FAILURE_TTL_MS = 8 * 1000;
 const messageSignedUrlCache = new Map<string, { signedUrl: string | null; expiresAt: number }>();
+const FALLBACK_GIF_LIBRARY: GifResult[] = [
+  {
+    id: "fallback-happy",
+    url: "https://media.giphy.com/media/3oEjI6SIIHBdRxXI40/giphy.gif",
+    previewUrl: "https://media.giphy.com/media/3oEjI6SIIHBdRxXI40/giphy.gif",
+    width: 480,
+    height: 270,
+    description: "Happy",
+  },
+  {
+    id: "fallback-celebrate",
+    url: "https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif",
+    previewUrl: "https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif",
+    width: 480,
+    height: 270,
+    description: "Celebrate",
+  },
+  {
+    id: "fallback-thumbs-up",
+    url: "https://media.giphy.com/media/111ebonMs90YLu/giphy.gif",
+    previewUrl: "https://media.giphy.com/media/111ebonMs90YLu/giphy.gif",
+    width: 400,
+    height: 225,
+    description: "Thumbs up",
+  },
+  {
+    id: "fallback-wow",
+    url: "https://media.giphy.com/media/5VKbvrjxpVJCM/giphy.gif",
+    previewUrl: "https://media.giphy.com/media/5VKbvrjxpVJCM/giphy.gif",
+    width: 400,
+    height: 225,
+    description: "Wow",
+  },
+  {
+    id: "fallback-lol",
+    url: "https://media.giphy.com/media/10JhviFuU2gWD6/giphy.gif",
+    previewUrl: "https://media.giphy.com/media/10JhviFuU2gWD6/giphy.gif",
+    width: 500,
+    height: 281,
+    description: "Laugh",
+  },
+  {
+    id: "fallback-clap",
+    url: "https://media.giphy.com/media/26u4lOMA8JKSnL9Uk/giphy.gif",
+    previewUrl: "https://media.giphy.com/media/26u4lOMA8JKSnL9Uk/giphy.gif",
+    width: 480,
+    height: 270,
+    description: "Clap",
+  },
+  {
+    id: "fallback-hello",
+    url: "https://media.giphy.com/media/xT9IgG50Fb7Mi0prBC/giphy.gif",
+    previewUrl: "https://media.giphy.com/media/xT9IgG50Fb7Mi0prBC/giphy.gif",
+    width: 480,
+    height: 270,
+    description: "Hello",
+  },
+  {
+    id: "fallback-facepalm",
+    url: "https://media.giphy.com/media/3og0INyCmHlNylks9O/giphy.gif",
+    previewUrl: "https://media.giphy.com/media/3og0INyCmHlNylks9O/giphy.gif",
+    width: 480,
+    height: 270,
+    description: "Facepalm",
+  },
+  {
+    id: "fallback-shrug",
+    url: "https://media.giphy.com/media/3o7btNRptqBgLSKR2w/giphy.gif",
+    previewUrl: "https://media.giphy.com/media/3o7btNRptqBgLSKR2w/giphy.gif",
+    width: 480,
+    height: 270,
+    description: "Shrug",
+  },
+  {
+    id: "fallback-hype",
+    url: "https://media.giphy.com/media/9D8EF3Qjw7ieVX0ccG/giphy.gif",
+    previewUrl: "https://media.giphy.com/media/9D8EF3Qjw7ieVX0ccG/giphy.gif",
+    width: 480,
+    height: 270,
+    description: "Hype",
+  },
+];
+
+function fallbackGifSearch(query: string, limit: number): { results: GifResult[]; next: string | null } {
+  const trimmedQuery = query.trim().toLowerCase();
+  const source =
+    trimmedQuery.length === 0
+      ? FALLBACK_GIF_LIBRARY
+      : FALLBACK_GIF_LIBRARY.filter((gif) => gif.description.toLowerCase().includes(trimmedQuery));
+  const results = (source.length > 0 ? source : FALLBACK_GIF_LIBRARY).slice(0, Math.max(1, limit));
+  return { results, next: null };
+}
 
 function isLocalApiHost(value: string) {
   try {
@@ -349,6 +446,36 @@ function getSupabasePublicBaseUrl() {
 
 function buildPublicMessageAssetUrl(objectPath: string) {
   return `${getSupabasePublicBaseUrl()}/storage/v1/object/public/${messageBucket}/${encodePath(objectPath)}`;
+}
+
+function absolutizeAttachmentCandidate(pathOrUrl: string) {
+  const normalized = pathOrUrl.trim();
+  if (!normalized) return normalized;
+  if (/^https?:\/\//i.test(normalized)) return normalized;
+  if (normalized.startsWith("/api/")) {
+    return apiBase ? `${apiBase}${normalized}` : normalized;
+  }
+  if (normalized.startsWith("/storage/v1/") || normalized.startsWith("/object/")) {
+    try {
+      return toAbsoluteStorageUrl(normalized);
+    } catch {
+      return normalized;
+    }
+  }
+  return normalized;
+}
+
+function toAbsoluteStorageUrl(pathOrUrl: string) {
+  if (pathOrUrl.startsWith("http://") || pathOrUrl.startsWith("https://")) {
+    return pathOrUrl;
+  }
+  if (pathOrUrl.startsWith("/storage/v1/")) {
+    return `${getSupabasePublicBaseUrl()}${pathOrUrl}`;
+  }
+  if (pathOrUrl.startsWith("/object/")) {
+    return `${getSupabasePublicBaseUrl()}/storage/v1${pathOrUrl}`;
+  }
+  return `${getSupabasePublicBaseUrl()}${pathOrUrl.startsWith("/") ? pathOrUrl : `/${pathOrUrl}`}`;
 }
 
 function buildBackendSupabasePath(path: string): string {
@@ -630,30 +757,191 @@ function encodePath(path: string) {
     .join("/");
 }
 
+function stripPathSearchAndHash(raw: string) {
+  const queryIndex = raw.indexOf("?");
+  const hashIndex = raw.indexOf("#");
+  let endIndex = raw.length;
+  if (queryIndex >= 0) {
+    endIndex = Math.min(endIndex, queryIndex);
+  }
+  if (hashIndex >= 0) {
+    endIndex = Math.min(endIndex, hashIndex);
+  }
+  return raw.slice(0, endIndex);
+}
+
+function decodePathSafely(raw: string) {
+  let decoded = raw;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const next = decodeURIComponent(decoded);
+      if (next === decoded) break;
+      decoded = next;
+    } catch {
+      break;
+    }
+  }
+  return decoded;
+}
+
+function normalizeMessageAssetObjectPath(raw: string): string | null {
+  let normalized = stripPathSearchAndHash(raw.trim());
+  if (!normalized) return null;
+  normalized = decodePathSafely(normalized).replace(/^\/+/, "");
+
+  const pathPrefixes = [
+    `${messageBucket}/`,
+    `storage/v1/object/public/${messageBucket}/`,
+    `storage/v1/object/sign/${messageBucket}/`,
+    `storage/v1/object/authenticated/${messageBucket}/`,
+    `storage/v1/object/${messageBucket}/`,
+    `api/storage/object/public/${messageBucket}/`,
+    `api/storage/sign/${messageBucket}/`,
+    `api/storage/object/authenticated/${messageBucket}/`,
+    `api/storage/object/${messageBucket}/`,
+    `api/media/message/${messageBucket}/`,
+    `api/supabase/storage/v1/object/public/${messageBucket}/`,
+    `api/supabase/storage/v1/object/sign/${messageBucket}/`,
+    `api/supabase/storage/v1/object/authenticated/${messageBucket}/`,
+    `api/supabase/storage/v1/object/${messageBucket}/`,
+  ];
+
+  for (const prefix of pathPrefixes) {
+    if (normalized.startsWith(prefix)) {
+      normalized = normalized.slice(prefix.length);
+      break;
+    }
+  }
+
+  if (normalized.startsWith("dm/") || normalized.startsWith("group/") || normalized.startsWith("glytch/")) {
+    return normalized;
+  }
+
+  const embeddedMatch = normalized.match(/(?:^|\/)((?:dm|group|glytch)\/.+)$/);
+  if (embeddedMatch && embeddedMatch[1]) {
+    return embeddedMatch[1];
+  }
+
+  return null;
+}
+
 function extractMessageAssetPath(value: string): string | null {
   const trimmed = value.trim();
   if (!trimmed) return null;
-  if (trimmed.startsWith("dm/") || trimmed.startsWith("group/") || trimmed.startsWith("glytch/")) {
-    return trimmed;
+
+  const tryNormalizePathCandidate = (candidate: string | null | undefined): string | null => {
+    if (typeof candidate !== "string") return null;
+    const normalized = normalizeMessageAssetObjectPath(candidate);
+    return normalized || null;
+  };
+
+  const directPath = normalizeMessageAssetObjectPath(trimmed);
+  if (directPath) {
+    return directPath;
+  }
+
+  const relativePathPrefixes = [
+    `/storage/v1/object/public/${messageBucket}/`,
+    `/storage/v1/object/sign/${messageBucket}/`,
+    `/storage/v1/object/authenticated/${messageBucket}/`,
+    `/storage/v1/object/${messageBucket}/`,
+    `/api/storage/object/public/${messageBucket}/`,
+    `/api/storage/sign/${messageBucket}/`,
+    `/api/storage/object/authenticated/${messageBucket}/`,
+    `/api/storage/object/${messageBucket}/`,
+    `/api/media/message/${messageBucket}/`,
+    `/api/media/message-upload/`,
+    `/api/supabase/storage/v1/object/public/${messageBucket}/`,
+    `/api/supabase/storage/v1/object/sign/${messageBucket}/`,
+    `/api/supabase/storage/v1/object/authenticated/${messageBucket}/`,
+    `/api/supabase/storage/v1/object/${messageBucket}/`,
+  ];
+  for (const prefix of relativePathPrefixes) {
+    if (trimmed.startsWith(prefix)) {
+      const normalized = normalizeMessageAssetObjectPath(trimmed.slice(prefix.length));
+      if (normalized) return normalized;
+    }
+  }
+
+  if (trimmed.startsWith("/api/media/message-upload") || trimmed.startsWith("/api/media/message")) {
+    try {
+      const parsedRelative = new URL(trimmed, "http://localhost");
+      const queryPathKeys = ["objectPath", "path", "file", "attachment", "attachmentUrl", "url", "src"];
+      for (const key of queryPathKeys) {
+        const normalized = tryNormalizePathCandidate(parsedRelative.searchParams.get(key));
+        if (normalized) return normalized;
+      }
+    } catch {
+      // Ignore malformed relative URL candidates.
+    }
   }
 
   try {
     const parsed = new URL(trimmed);
-    const publicPrefix = `/storage/v1/object/public/${messageBucket}/`;
-    const signPrefix = `/storage/v1/object/sign/${messageBucket}/`;
-    if (parsed.pathname.startsWith(publicPrefix)) {
-      return decodeURIComponent(parsed.pathname.slice(publicPrefix.length));
+    const pathname = parsed.pathname || "";
+    const decodedPathname = decodePathSafely(pathname);
+    const queryPathKeys = ["objectPath", "path", "file", "attachment", "attachmentUrl", "url", "src"];
+    for (const key of queryPathKeys) {
+      const normalized = tryNormalizePathCandidate(parsed.searchParams.get(key));
+      if (normalized) return normalized;
     }
-    if (parsed.pathname.startsWith(signPrefix)) {
-      return decodeURIComponent(parsed.pathname.slice(signPrefix.length));
+    const candidatePathnames = Array.from(new Set([pathname, decodedPathname]));
+    const pathPrefixes = [
+      `/storage/v1/object/public/${messageBucket}/`,
+      `/storage/v1/object/sign/${messageBucket}/`,
+      `/storage/v1/object/authenticated/${messageBucket}/`,
+      `/storage/v1/object/${messageBucket}/`,
+      `/api/storage/object/public/${messageBucket}/`,
+      `/api/storage/sign/${messageBucket}/`,
+      `/api/storage/object/authenticated/${messageBucket}/`,
+      `/api/storage/object/${messageBucket}/`,
+      `/api/media/message/${messageBucket}/`,
+      `/api/media/message/`,
+      `/api/media/message-upload/${messageBucket}/`,
+      `/api/media/message-upload/`,
+      `/api/supabase/storage/v1/object/public/${messageBucket}/`,
+      `/api/supabase/storage/v1/object/sign/${messageBucket}/`,
+      `/api/supabase/storage/v1/object/authenticated/${messageBucket}/`,
+      `/api/supabase/storage/v1/object/${messageBucket}/`,
+    ];
+    for (const pathCandidate of candidatePathnames) {
+      for (const prefix of pathPrefixes) {
+        if (pathCandidate.startsWith(prefix)) {
+          const normalized = normalizeMessageAssetObjectPath(pathCandidate.slice(prefix.length));
+          if (normalized) return normalized;
+        }
+      }
+    }
+
+    for (const pathCandidate of candidatePathnames) {
+      const bucketPathMatch = pathCandidate.match(new RegExp(`/${messageBucket}/(.+)$`));
+      if (bucketPathMatch && bucketPathMatch[1]) {
+        const normalized = normalizeMessageAssetObjectPath(bucketPathMatch[1]);
+        if (normalized) return normalized;
+      }
+
+      const backendMediaPathMatch = pathCandidate.match(/\/api\/media\/message\/(.+)$/);
+      if (backendMediaPathMatch && backendMediaPathMatch[1]) {
+        const normalized = normalizeMessageAssetObjectPath(backendMediaPathMatch[1]);
+        if (normalized) return normalized;
+      }
+
+      const backendUploadPathMatch = pathCandidate.match(/\/api\/media\/message-upload\/(.+)$/);
+      if (backendUploadPathMatch && backendUploadPathMatch[1]) {
+        const normalized = normalizeMessageAssetObjectPath(backendUploadPathMatch[1]);
+        if (normalized) return normalized;
+      }
+
+      const backendMediaPathMatchNoSlash = pathCandidate.match(/\/api\/media\/message(?:-upload)?$/);
+      if (backendMediaPathMatchNoSlash) {
+        for (const key of queryPathKeys) {
+          const normalized = tryNormalizePathCandidate(parsed.searchParams.get(key));
+          if (normalized) return normalized;
+        }
+      }
     }
   } catch {
     // Not a valid URL.
-  }
-
-  const bucketPrefix = `${messageBucket}/`;
-  if (trimmed.startsWith(bucketPrefix)) {
-    return trimmed.slice(bucketPrefix.length);
   }
 
   return null;
@@ -673,12 +961,51 @@ function messageFromUnknownJson(data: unknown): string {
 
 function normalizeGiphyResponse(data: unknown): { results: GifResult[]; next: string | null } {
   const row = (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
-  const rawResults = Array.isArray(row.data) ? row.data : [];
+  const rawResults = Array.isArray(row.data)
+    ? row.data
+    : Array.isArray(row.results)
+      ? row.results
+      : [];
 
   const results: GifResult[] = rawResults
     .map((item): GifResult | null => {
       if (!item || typeof item !== "object") return null;
       const entry = item as Record<string, unknown>;
+      const directUrlCandidate = typeof entry.url === "string"
+        ? entry.url
+        : typeof entry.gifUrl === "string"
+          ? entry.gifUrl
+          : "";
+      const directPreviewCandidate = typeof entry.previewUrl === "string" ? entry.previewUrl : "";
+      const directDescriptionCandidate = typeof entry.description === "string"
+        ? entry.description
+        : typeof entry.title === "string"
+          ? entry.title
+          : "GIF";
+      const directWidthRaw = entry.width;
+      const directHeightRaw = entry.height;
+      if (directUrlCandidate.trim().length > 0) {
+        const parsedWidth = typeof directWidthRaw === "string"
+          ? Number.parseInt(directWidthRaw, 10)
+          : typeof directWidthRaw === "number"
+            ? directWidthRaw
+            : 0;
+        const parsedHeight = typeof directHeightRaw === "string"
+          ? Number.parseInt(directHeightRaw, 10)
+          : typeof directHeightRaw === "number"
+            ? directHeightRaw
+            : 0;
+        const normalizedDirectUrl = directUrlCandidate.trim();
+        return {
+          id: typeof entry.id === "string" ? entry.id : normalizedDirectUrl,
+          url: normalizedDirectUrl,
+          previewUrl: directPreviewCandidate.trim() || normalizedDirectUrl,
+          width: Number.isFinite(parsedWidth) ? parsedWidth : 0,
+          height: Number.isFinite(parsedHeight) ? parsedHeight : 0,
+          description: directDescriptionCandidate.trim() || "GIF",
+        };
+      }
+
       const images = entry.images && typeof entry.images === "object" ? (entry.images as Record<string, unknown>) : {};
       const original = images.original && typeof images.original === "object" ? (images.original as Record<string, unknown>) : null;
       const fixedSmall =
@@ -934,7 +1261,8 @@ export async function getCurrentUser(accessToken: string) {
 export async function getMyProfile(accessToken: string, userId: string): Promise<Profile | null> {
   assertConfig();
   const query = new URLSearchParams({
-    select: "user_id,email,display_name,username,avatar_url,banner_url,bio,profile_theme,presence_status,presence_updated_at",
+    select:
+      "user_id,email,display_name,username,avatar_url,banner_url,bio,profile_theme,presence_status,presence_updated_at,current_game,current_game_updated_at",
     user_id: `eq.${userId}`,
     limit: "1",
   });
@@ -978,10 +1306,17 @@ export async function upsertMyProfile(
 
 export async function findProfileByUsername(accessToken: string, username: string) {
   assertConfig();
+  const normalizedInput = username.trim().toLowerCase().replace(/^@+/, "");
+  const hashIndex = normalizedInput.lastIndexOf("#");
+  const normalizedUsername =
+    hashIndex > 0
+      ? `${normalizedInput.slice(0, hashIndex)}${normalizedInput.slice(hashIndex + 1)}`
+      : normalizedInput;
+  const lookupUsername = normalizedUsername.replace(/[^a-z0-9]/g, "");
   const res = await supabaseFetch(`/rest/v1/rpc/find_public_profile_by_username`, {
     method: "POST",
     headers: supabaseHeaders(accessToken),
-    body: JSON.stringify({ p_username: username.toLowerCase() }),
+    body: JSON.stringify({ p_username: lookupUsername }),
   });
   const rows = (await readJsonOrThrow(res)) as Profile[];
   return rows[0] || null;
@@ -1190,12 +1525,15 @@ export async function updateMyProfileCustomization(
   accessToken: string,
   userId: string,
   updates: {
+    display_name?: string;
     avatar_url?: string | null;
     banner_url?: string | null;
     bio?: string | null;
     profile_theme?: Record<string, unknown>;
     presence_status?: UserPresenceStatus;
     presence_updated_at?: string;
+    current_game?: string | null;
+    current_game_updated_at?: string;
   },
 ) {
   assertConfig();
@@ -1465,9 +1803,11 @@ export async function uploadMessageAsset(
     const approvedPath = typeof data.objectPath === "string" && data.objectPath.trim().length > 0 ? data.objectPath : objectPath;
     const approvedUrl = typeof data.url === "string" && data.url.trim().length > 0 ? data.url.trim() : "";
     const approvedType = data.attachmentType === "gif" ? "gif" : data.attachmentType === "image" ? "image" : fallbackAttachmentType;
+    const normalizedPathFromObject = extractMessageAssetPath(approvedPath);
+    const normalizedPathFromUrl = extractMessageAssetPath(approvedUrl);
 
     return {
-      url: approvedUrl || approvedPath,
+      url: normalizedPathFromObject || normalizedPathFromUrl || objectPath,
       attachmentType: approvedType,
     };
   }
@@ -1535,9 +1875,15 @@ export async function ingestRemoteMessageAsset(
     throw new Error("Remote media upload did not return a storage path.");
   }
   const approvedUrl = typeof data.url === "string" && data.url.trim().length > 0 ? data.url.trim() : "";
+  const normalizedPathFromObject = extractMessageAssetPath(approvedPath);
+  const normalizedPathFromUrl = extractMessageAssetPath(approvedUrl);
+  const resolvedPath = normalizedPathFromObject || normalizedPathFromUrl;
+  if (!resolvedPath) {
+    throw new Error("Remote media upload returned an unusable storage path.");
+  }
 
   return {
-    url: approvedUrl || approvedPath,
+    url: resolvedPath,
     attachmentType: data.attachmentType === "gif" ? "gif" : "image",
   };
 }
@@ -1549,17 +1895,28 @@ export async function resolveMessageAttachmentUrl(
   if (!attachmentUrl) return null;
   assertConfig();
   const objectPath = extractMessageAssetPath(attachmentUrl);
-  if (!objectPath) return attachmentUrl;
-  let publicFallbackUrl = attachmentUrl;
+  if (!objectPath) return absolutizeAttachmentCandidate(attachmentUrl);
+  const normalizedInput = attachmentUrl.trim();
+  const isAbsoluteHttpInput = /^https?:\/\//i.test(normalizedInput);
+  const inputLooksPublic =
+    normalizedInput.includes(`/storage/v1/object/public/${messageBucket}/`) ||
+    normalizedInput.includes(`/api/storage/object/public/${messageBucket}/`) ||
+    normalizedInput.includes(`/api/supabase/storage/v1/object/public/${messageBucket}/`);
+  let canonicalPublicUrl: string | null = null;
   try {
-    publicFallbackUrl = buildPublicMessageAssetUrl(objectPath);
+    canonicalPublicUrl = buildPublicMessageAssetUrl(objectPath);
   } catch {
     // Keep raw attachment URL/path as fallback.
   }
+  const fallbackUrl = absolutizeAttachmentCandidate(
+    inputLooksPublic && isAbsoluteHttpInput
+      ? normalizedInput
+      : canonicalPublicUrl || normalizedInput,
+  );
 
   const cached = messageSignedUrlCache.get(objectPath);
   if (cached && cached.expiresAt - Date.now() > MESSAGE_SIGN_URL_REFRESH_BUFFER_MS) {
-    return cached.signedUrl || publicFallbackUrl;
+    return cached.signedUrl || fallbackUrl;
   }
 
   try {
@@ -1572,15 +1929,12 @@ export async function resolveMessageAttachmentUrl(
     const data = (await readJsonOrThrow(res)) as { signedURL?: string };
     if (!data.signedURL) {
       messageSignedUrlCache.set(objectPath, {
-        signedUrl: publicFallbackUrl,
+        signedUrl: fallbackUrl,
         expiresAt: Date.now() + MESSAGE_SIGN_URL_FAILURE_TTL_MS,
       });
-      return publicFallbackUrl;
+      return fallbackUrl;
     }
-    const signedUrl =
-      data.signedURL.startsWith("http://") || data.signedURL.startsWith("https://")
-        ? data.signedURL
-        : `${getSupabasePublicBaseUrl()}${data.signedURL}`;
+    const signedUrl = toAbsoluteStorageUrl(data.signedURL);
     messageSignedUrlCache.set(objectPath, {
       signedUrl,
       expiresAt: Date.now() + MESSAGE_SIGN_URL_TTL_SECONDS * 1000,
@@ -1589,10 +1943,10 @@ export async function resolveMessageAttachmentUrl(
   } catch {
     // Some older rows may reference deleted/private objects. Keep messages readable.
     messageSignedUrlCache.set(objectPath, {
-      signedUrl: publicFallbackUrl,
+      signedUrl: fallbackUrl,
       expiresAt: Date.now() + MESSAGE_SIGN_URL_FAILURE_TTL_MS,
     });
-    return publicFallbackUrl;
+    return fallbackUrl;
   }
 }
 
@@ -1608,13 +1962,14 @@ export async function searchGifLibrary(
   const boundedLimit = Math.min(50, Math.max(1, limit));
 
   try {
-    return await fetchGiphyGifs(query, boundedLimit);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "Could not load GIF library.";
-    if (message.toLowerCase().includes("failed to fetch")) {
-      throw new Error("Could not reach GIPHY service.");
+    const response = await fetchGiphyGifs(query, boundedLimit);
+    if (response.results.length === 0) {
+      return fallbackGifSearch(query, boundedLimit);
     }
-    throw new Error(message || "Could not load GIF library.");
+    return response;
+  } catch {
+    // Keep GIF search available even when provider keys or upstream networking fail.
+    return fallbackGifSearch(query, boundedLimit);
   }
 }
 
@@ -1622,7 +1977,7 @@ export async function fetchDmMessages(accessToken: string, conversationId: numbe
   assertConfig();
   const recentLimit = 250;
   const query = new URLSearchParams({
-    select: "id,conversation_id,sender_id,content,attachment_url,attachment_type,created_at,read_by_receiver_at",
+    select: "id,conversation_id,sender_id,content,attachment_url,attachment_type,created_at,edited_at,read_by_receiver_at",
     conversation_id: `eq.${conversationId}`,
     order: "id.desc",
     limit: String(recentLimit),
@@ -1641,7 +1996,7 @@ export async function fetchGroupChatMessages(accessToken: string, groupChatId: n
   assertConfig();
   const recentLimit = 250;
   const query = new URLSearchParams({
-    select: "id,group_chat_id,sender_id,content,attachment_url,attachment_type,created_at",
+    select: "id,group_chat_id,sender_id,content,attachment_url,attachment_type,created_at,edited_at",
     group_chat_id: `eq.${groupChatId}`,
     order: "id.desc",
     limit: String(recentLimit),
@@ -1770,6 +2125,23 @@ export async function deleteDmMessage(accessToken: string, messageId: number) {
     headers: supabaseHeaders(accessToken),
   });
   await readJsonOrThrow(res);
+}
+
+export async function updateDmMessage(accessToken: string, messageId: number, content: string): Promise<DmMessage[]> {
+  assertConfig();
+  const res = await supabaseFetch(`/rest/v1/dm_messages?id=eq.${messageId}`, {
+    method: "PATCH",
+    headers: {
+      ...supabaseHeaders(accessToken),
+      Prefer: "return=representation",
+    },
+    body: JSON.stringify({
+      content,
+      edited_at: new Date().toISOString(),
+    }),
+  });
+
+  return (await readJsonOrThrow(res)) as DmMessage[];
 }
 
 export async function listUnreadDmMessages(
@@ -1937,7 +2309,7 @@ export async function fetchLatestDmMessages(accessToken: string, conversationIds
 
   const limit = Math.min(200, Math.max(50, uniqueIds.length * 5));
   const query = new URLSearchParams({
-    select: "id,conversation_id,sender_id,content,attachment_url,attachment_type,created_at",
+    select: "id,conversation_id,sender_id,content,attachment_url,attachment_type,created_at,edited_at",
     conversation_id: `in.(${uniqueIds.join(",")})`,
     order: "id.desc",
     limit: String(limit),
@@ -1961,7 +2333,7 @@ export async function fetchLatestGroupChatMessages(
 
   const limit = Math.min(260, Math.max(60, uniqueIds.length * 6));
   const query = new URLSearchParams({
-    select: "id,group_chat_id,sender_id,content,attachment_url,attachment_type,created_at",
+    select: "id,group_chat_id,sender_id,content,attachment_url,attachment_type,created_at,edited_at",
     group_chat_id: `in.(${uniqueIds.join(",")})`,
     order: "id.desc",
     limit: String(limit),
@@ -1982,7 +2354,7 @@ export async function fetchLatestGlytchMessages(accessToken: string, channelIds:
 
   const limit = Math.min(320, Math.max(60, uniqueIds.length * 6));
   const query = new URLSearchParams({
-    select: "id,glytch_channel_id,sender_id,content,attachment_url,attachment_type,created_at",
+    select: "id,glytch_channel_id,sender_id,content,attachment_url,attachment_type,created_at,edited_at",
     glytch_channel_id: `in.(${uniqueIds.join(",")})`,
     order: "id.desc",
     limit: String(limit),
@@ -2049,6 +2421,27 @@ export async function createGroupChatMessage(
         attachment_type: attachmentType,
       },
     ]),
+  });
+
+  return (await readJsonOrThrow(res)) as GroupChatMessage[];
+}
+
+export async function updateGroupChatMessage(
+  accessToken: string,
+  messageId: number,
+  content: string,
+): Promise<GroupChatMessage[]> {
+  assertConfig();
+  const res = await supabaseFetch(`/rest/v1/group_chat_messages?id=eq.${messageId}`, {
+    method: "PATCH",
+    headers: {
+      ...supabaseHeaders(accessToken),
+      Prefer: "return=representation",
+    },
+    body: JSON.stringify({
+      content,
+      edited_at: new Date().toISOString(),
+    }),
   });
 
   return (await readJsonOrThrow(res)) as GroupChatMessage[];
@@ -2951,7 +3344,7 @@ export async function fetchGlytchMessages(accessToken: string, glytchChannelId: 
   assertConfig();
   const recentLimit = 250;
   const query = new URLSearchParams({
-    select: "id,glytch_channel_id,sender_id,content,attachment_url,attachment_type,created_at",
+    select: "id,glytch_channel_id,sender_id,content,attachment_url,attachment_type,created_at,edited_at",
     glytch_channel_id: `eq.${glytchChannelId}`,
     order: "id.desc",
     limit: String(recentLimit),
@@ -3045,6 +3438,27 @@ export async function createGlytchMessage(
         attachment_type: attachmentType,
       },
     ]),
+  });
+
+  return (await readJsonOrThrow(res)) as GlytchMessage[];
+}
+
+export async function updateGlytchMessage(
+  accessToken: string,
+  messageId: number,
+  content: string,
+): Promise<GlytchMessage[]> {
+  assertConfig();
+  const res = await supabaseFetch(`/rest/v1/glytch_messages?id=eq.${messageId}`, {
+    method: "PATCH",
+    headers: {
+      ...supabaseHeaders(accessToken),
+      Prefer: "return=representation",
+    },
+    body: JSON.stringify({
+      content,
+      edited_at: new Date().toISOString(),
+    }),
   });
 
   return (await readJsonOrThrow(res)) as GlytchMessage[];

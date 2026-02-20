@@ -21,8 +21,6 @@ type AuthPageProps = {
   onFieldChange: (field: keyof AuthFormState, value: string) => void;
   onRememberMeChange: (remember: boolean) => void;
   onSubmit: (event: FormEvent) => void;
-  onBack: () => void;
-  showBackButton?: boolean;
 };
 
 function AuthPage({
@@ -35,8 +33,6 @@ function AuthPage({
   onFieldChange,
   onRememberMeChange,
   onSubmit,
-  onBack,
-  showBackButton = true,
 }: AuthPageProps) {
   const typingPhrases = useMemo(() => ["Welcome to", "Glytch Chat"], []);
   const [typingPhraseIndex, setTypingPhraseIndex] = useState(0);
@@ -75,12 +71,6 @@ function AuthPage({
   return (
     <main className="authPage">
       <section className="authCard" aria-label="Authentication">
-        {showBackButton && (
-          <button className="authBackButton" type="button" onClick={onBack}>
-            Back
-          </button>
-        )}
-
         <img className="authProjectLogo" src={logoAssetUrl} alt="Glytch Chat logo" />
         <h1 className="site-title authSiteTitle">
           <span className="typing-text">{typingText}</span>
@@ -121,6 +111,9 @@ function AuthPage({
                 autoComplete="username"
               />
             </label>
+          )}
+          {mode === "signup" && (
+            <p className="smallMuted">Your final username will be this name plus a unique 6-character ID (shown as `name#id`).</p>
           )}
 
           <label>

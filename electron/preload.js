@@ -10,4 +10,5 @@ contextBridge.exposeInMainWorld("electronAPI", {
   openUninstall: () => ipcRenderer.invoke("electron:open-uninstall"),
   getMediaPermissionStatus: (kind) => ipcRenderer.invoke("electron:get-media-permission-status", kind),
   openWindowsPrivacySettings: (kind) => ipcRenderer.invoke("electron:open-windows-privacy-settings", kind),
+  detectActiveGame: () => ipcRenderer.invoke("electron:detect-active-game"),
 });

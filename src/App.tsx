@@ -17,7 +17,7 @@ import AuthPage, { type AuthFormState, type AuthMode } from "./pages/AuthPage";
 import LandingPage from "./pages/LandingPage";
 import RouteGuardPage from "./pages/RouteGuardPage";
 import { useHashRoute } from "./routing/useHashRoute";
-import { fallbackUsername, isValidUsername, normalizeUsername } from "./lib/auth";
+import { composeUsername, fallbackUsername, isValidUsername, normalizeUsername, randomUsernameId } from "./lib/auth";
 import { desktopInstallerUrls } from "./lib/assets";
 import {
   clearSessionStorage,
@@ -38,6 +38,18 @@ const ACCESS_TOKEN_FALLBACK_REFRESH_DELAY_MS = 25 * 60 * 1000;
 const RESUME_REFRESH_THROTTLE_MS = 15_000;
 const REMEMBER_ME_PREF_KEY = "glytch_remember_me";
 const SINGLE_SESSION_CONFLICT_MESSAGE = "This account is already active in another session.";
+
+function usernameBaseFromFull(username: string) {
+  const normalized = normalizeUsername(username);
+  const hashIndex = normalized.lastIndexOf("#");
+  if (hashIndex > 0) {
+    const hashedBase = normalized.slice(0, hashIndex).replace(/[^a-z0-9]/g, "");
+    return hashedBase || "user";
+  }
+  const compact = normalized.replace(/[^a-z0-9]/g, "");
+  if (compact.length <= 6) return compact || "user";
+  return compact.slice(0, -6);
+}
 
 function isSingleSessionConflictMessage(rawMessage: string) {
   const message = rawMessage.toLowerCase();
@@ -99,12 +111,13 @@ function App() {
       normalizeUsername(
         refreshed.user.user_metadata?.username || existing.username || fallbackUsername(refreshed.user.email, refreshed.user.id),
       );
+    const resolvedDisplayName = (existingProfile?.display_name || usernameBaseFromFull(resolvedUsername)).trim() || "User";
 
     await upsertMyProfile(
       refreshed.access_token,
       refreshed.user.id,
       refreshed.user.email,
-      resolvedUsername,
+      resolvedDisplayName,
       resolvedUsername,
     );
 
@@ -194,8 +207,9 @@ function App() {
         const resolvedUsername =
           existingProfile?.username ||
           normalizeUsername(user.user_metadata?.username || existing.username || fallbackUsername(user.email, user.id));
+        const resolvedDisplayName = (existingProfile?.display_name || usernameBaseFromFull(resolvedUsername)).trim() || "User";
 
-        await upsertMyProfile(maybeRefreshed.accessToken, user.id, user.email, resolvedUsername, resolvedUsername);
+        await upsertMyProfile(maybeRefreshed.accessToken, user.id, user.email, resolvedDisplayName, resolvedUsername);
 
         const next = withSessionExpiry({
           ...maybeRefreshed,
@@ -309,6 +323,12 @@ function App() {
     navigate("/auth", true);
   }, [route, navigate]);
 
+  useEffect(() => {
+    if (!window.electronAPI?.isElectron) return;
+    if (route !== "/download") return;
+    navigate("/auth", true);
+  }, [route, navigate]);
+
   const updateAuthField = useCallback((field: keyof AuthFormState, value: string) => {
     setForm((existing) => ({
       ...existing,
@@ -334,7 +354,7 @@ function App() {
       }
 
       if (!isValidUsername(normalizedUsername)) {
-        setError("Username must be 3-24 chars and use only letters, numbers, ., _, or - with no spaces.");
+        setError("Username must be 3-24 lowercase letters/numbers with no symbols.");
         return;
       }
 
@@ -352,13 +372,24 @@ function App() {
       setError("");
 
       try {
-        const available = await isUsernameAvailable(normalizedUsername);
-        if (!available) {
-          setError("That username is already taken.");
+        let resolvedUsername = "";
+        let attempts = 0;
+        while (attempts < 24) {
+          const suffix = randomUsernameId(6);
+          const candidate = composeUsername(normalizedUsername, suffix);
+          const available = await isUsernameAvailable(candidate);
+          if (available) {
+            resolvedUsername = candidate;
+            break;
+          }
+          attempts += 1;
+        }
+        if (!resolvedUsername) {
+          setError("Could not allocate a unique username id. Please try again.");
           return;
         }
 
-        const result = await signUp(normalizedEmail, form.password, normalizedUsername);
+        const result = await signUp(normalizedEmail, form.password, resolvedUsername);
         if (!result.session) {
           setError("Check your email to confirm signup, then log in.");
           setMode("login");
@@ -370,7 +401,7 @@ function App() {
           result.session.user.id,
           result.session.user.email,
           normalizedUsername,
-          normalizedUsername,
+          resolvedUsername,
         );
 
         const singleSessionId = generateSingleSessionId();
@@ -381,7 +412,7 @@ function App() {
         const sessionUser = withSessionExpiry({
           id: result.session.user.id,
           email: result.session.user.email,
-          username: normalizedUsername,
+          username: resolvedUsername,
           accessToken: result.session.access_token,
           refreshToken: result.session.refresh_token,
           singleSessionId,
@@ -408,12 +439,13 @@ function App() {
       const resolvedUsername =
         existingProfile?.username ||
         normalizeUsername(session.user.user_metadata?.username || fallbackUsername(session.user.email, session.user.id));
+      const resolvedDisplayName = (existingProfile?.display_name || usernameBaseFromFull(resolvedUsername)).trim() || "User";
 
       await upsertMyProfile(
         session.access_token,
         session.user.id,
         session.user.email,
-        resolvedUsername,
+        resolvedDisplayName,
         resolvedUsername,
       );
 
@@ -473,6 +505,11 @@ function App() {
   }
 
   if (route === "/download") {
+    if (window.electronAPI?.isElectron) {
+      return (
+        <RouteGuardPage onGoToAuth={() => navigate("/auth", true)} />
+      );
+    }
     return (
       <DownloadPage
         macInstallerUrl={desktopInstallerUrls.mac}
@@ -499,11 +536,6 @@ function App() {
         onFieldChange={updateAuthField}
         onRememberMeChange={setRememberMe}
         onSubmit={handleAuthSubmit}
-        onBack={() => {
-          setError("");
-          navigate(window.electronAPI?.isElectron ? "/auth" : "/");
-        }}
-        showBackButton={!window.electronAPI?.isElectron}
       />
     );
   }

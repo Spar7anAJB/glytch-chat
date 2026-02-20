@@ -42,6 +42,9 @@ Frontend:
 - `VITE_ELECTRON_INSTALLER_URL_LINUX` (optional; overrides Linux installer URL)
 - `VITE_RNNOISE_ENABLED` (`true`/`false`; optional; defaults to `true`; enables bundled RNNoise suppression in desktop runtime)
 - `VITE_LIVEKIT_KRISP_ENABLED` (`true`/`false`; optional; defaults to `false`; enables LiveKit enhanced suppression before RNNoise fallback)
+- `VITE_VOICE_ENGINE_ENABLED` (`true`/`false`; optional; defaults to `true`; enables the in-app Voice Engine worklet stage for near-field voice focus and noise cleanup)
+- `VITE_VOICE_ENGINE_RUNTIME` (`heuristic`/`neural_stub`; optional; defaults to `heuristic`; selects voice engine runtime mode scaffold for model-host integration)
+- `VITE_VOICE_RENDER_LEAK_GUARD_ENABLED` (`true`/`false`; optional; defaults to `true`; enables render-leak correlation guard to reduce far-end speaker bleed)
 
 Backend:
 
@@ -200,10 +203,20 @@ For update detection to work, bump `package.json` version before building instal
 ### Voice noise suppression (desktop)
 
 This app tries LiveKit enhanced suppression first (optional), then falls back to bundled RNNoise, then native WebRTC suppression.
+The desktop enhancer then runs an in-app Voice Engine stage (AudioWorklet) for near-field voice focus and adaptive cleanup, plus a render-leak guard that monitors remote playback mix and reduces false mic opening when speaker bleed is detected.
 
 1. Optional: set `VITE_LIVEKIT_KRISP_ENABLED=true` on frontend and configure backend with `LIVEKIT_URL`, `LIVEKIT_API_KEY`, and `LIVEKIT_API_SECRET`.
 2. RNNoise is enabled by default (`VITE_RNNOISE_ENABLED=true`).
-3. Rebuild desktop packages.
+3. Voice Engine stage is enabled by default (`VITE_VOICE_ENGINE_ENABLED=true`).
+4. Runtime scaffold can be selected with `VITE_VOICE_ENGINE_RUNTIME=heuristic|neural_stub`.
+5. Render-leak guard is enabled by default (`VITE_VOICE_RENDER_LEAK_GUARD_ENABLED=true`).
+6. Rebuild desktop packages.
+
+In Mic settings, **Target speaker lock (beta)** enables probabilistic single-mic target matching with auto-lock/freeze behavior once a stable speaker profile is learned.  
+Use **Recalibrate Target Lock** after changing microphone position so the profile relearns quickly.  
+You can also override Voice Engine runtime (`auto`/`heuristic`/`neural_stub`) and tune Target Lock sensitivity directly in Mic settings.  
+Use **Calibrate Target (8s)** to force a short, high-learning calibration pass while speaking near the mic.  
+For live tuning, press **Ctrl+Shift+V** to open the hidden Voice Engine debug panel (near-field score, suppression, speech likelihood, target match).
 
 ### macOS launch note
 
