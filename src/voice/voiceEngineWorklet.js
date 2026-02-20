@@ -1,5 +1,5 @@
 const DEFAULT_CONFIG = Object.freeze({
-  runtimeMode: "heuristic",
+  runtimeMode: "rust_wasm",
   strength: 0.78,
   minSuppressionGain: 0.14,
   nearFieldBias: 0.51,
@@ -23,7 +23,115 @@ function scoreRange(value, low, high) {
 }
 
 function normalizeRuntimeMode(rawMode) {
-  return String(rawMode || "").toLowerCase() === "neural_stub" ? "neural_stub" : "heuristic"
+  const normalized = String(rawMode || "").toLowerCase()
+  if (normalized === "neural_stub") return "neural_stub"
+  if (normalized === "rust_wasm") return "rust_wasm"
+  return "heuristic"
+}
+
+class RustVoiceCoreBridge {
+  constructor(url, sampleRate, logError) {
+    this.url = typeof url === "string" ? url : ""
+    this.sampleRate = sampleRate
+    this.logError = typeof logError === "function" ? logError : () => {}
+    this.instance = null
+    this.exports = null
+    this.memory = null
+    this.ready = false
+    this.capacity = 0
+    this.inputPtr = 0
+    this.outputPtr = 0
+    this.metricsPtr = 0
+    this.initPromise = this.init()
+  }
+
+  async init() {
+    if (!this.url || typeof fetch !== "function" || typeof WebAssembly === "undefined") return
+    const response = await fetch(this.url)
+    if (!response.ok) {
+      throw new Error(`wasm fetch failed (${response.status})`)
+    }
+    const bytes = await response.arrayBuffer()
+    const wasm = await WebAssembly.instantiate(bytes, {})
+    const exports = wasm?.instance?.exports
+    if (!exports || !exports.memory) {
+      throw new Error("wasm exports are missing memory")
+    }
+    const requiredFns = [
+      "ve_init",
+      "ve_reset",
+      "ve_get_metrics_ptr",
+      "ve_alloc_f32",
+      "ve_free_f32",
+      "ve_analyze_frame",
+      "ve_render_frame",
+    ]
+    for (const fnName of requiredFns) {
+      if (typeof exports[fnName] !== "function") {
+        throw new Error(`wasm export missing: ${fnName}`)
+      }
+    }
+    this.instance = wasm.instance
+    this.exports = exports
+    this.memory = exports.memory
+    this.exports.ve_init(this.sampleRate)
+    this.metricsPtr = this.exports.ve_get_metrics_ptr() >>> 0
+    this.ensureCapacity(512)
+    this.ready = true
+  }
+
+  ensureCapacity(frameSize) {
+    if (!this.ready && !this.exports) return
+    if (frameSize <= this.capacity) return
+    const nextCapacity = Math.max(256, 2 ** Math.ceil(Math.log2(frameSize)))
+    if (this.inputPtr && this.capacity > 0) {
+      this.exports.ve_free_f32(this.inputPtr, this.capacity)
+      this.inputPtr = 0
+    }
+    if (this.outputPtr && this.capacity > 0) {
+      this.exports.ve_free_f32(this.outputPtr, this.capacity)
+      this.outputPtr = 0
+    }
+    this.inputPtr = this.exports.ve_alloc_f32(nextCapacity) >>> 0
+    this.outputPtr = this.exports.ve_alloc_f32(nextCapacity) >>> 0
+    this.capacity = nextCapacity
+  }
+
+  reset() {
+    if (!this.ready) return
+    this.exports.ve_reset()
+  }
+
+  analyze(input, frameSize) {
+    if (!this.ready || !this.memory) return null
+    this.ensureCapacity(frameSize)
+    const memoryF32 = new Float32Array(this.memory.buffer)
+    memoryF32.set(input, this.inputPtr >>> 2)
+    this.exports.ve_analyze_frame(this.inputPtr, frameSize)
+    const metricsBase = this.metricsPtr >>> 2
+    return {
+      rms: memoryF32[metricsBase] || 0,
+      voiceRatio: memoryF32[metricsBase + 1] || 0,
+      rumbleRatio: memoryF32[metricsBase + 2] || 0,
+      zcr: memoryF32[metricsBase + 3] || 0,
+    }
+  }
+
+  render(output, frameSize, suppressionGain, presenceLift, rumbleReduction, saturationDrive) {
+    if (!this.ready || !this.memory) return false
+    this.ensureCapacity(frameSize)
+    this.exports.ve_render_frame(
+      this.outputPtr,
+      frameSize,
+      suppressionGain,
+      presenceLift,
+      rumbleReduction,
+      saturationDrive,
+    )
+    const memoryF32 = new Float32Array(this.memory.buffer)
+    output.set(memoryF32.subarray(this.outputPtr >>> 2, (this.outputPtr >>> 2) + frameSize))
+    return true
+  }
 }
 
 class HeuristicNearFieldRuntime {
@@ -75,6 +183,7 @@ class NeuralStubNearFieldRuntime {
 class VoiceEngineProcessor extends AudioWorkletProcessor {
   constructor(options) {
     super()
+    const processorOptions = options?.processorOptions || {}
 
     this.config = { ...DEFAULT_CONFIG }
     this.runtimeMode = normalizeRuntimeMode(DEFAULT_CONFIG.runtimeMode)
@@ -111,11 +220,22 @@ class VoiceEngineProcessor extends AudioWorkletProcessor {
     this.hpScratch = new Float32Array(128)
     this.speechScratch = new Float32Array(128)
     this.rumbleScratch = new Float32Array(128)
+    this.rustCore = null
+    this.rustFallbackNotified = false
 
     this.blockCount = 0
     this.metricsInterval = Math.max(1, Math.round(sampleRate / 128 / 15))
 
-    this.applyConfig(options?.processorOptions || {})
+    const rustWasmUrl = typeof processorOptions.rustWasmUrl === "string" ? processorOptions.rustWasmUrl : ""
+    if (rustWasmUrl) {
+      const rustCore = new RustVoiceCoreBridge(rustWasmUrl, sampleRate, () => undefined)
+      rustCore.initPromise.catch(() => {
+        this.rustCore = null
+      })
+      this.rustCore = rustCore
+    }
+
+    this.applyConfig(processorOptions)
     this.updateFilterCoefficients()
 
     this.port.onmessage = (event) => {
@@ -380,53 +500,80 @@ class VoiceEngineProcessor extends AudioWorkletProcessor {
     }
 
     const frameSize = input.length
-    this.ensureScratchSize(frameSize)
+    const useRustCore = this.runtimeMode === "rust_wasm" && this.rustCore && this.rustCore.ready
+    let rms = 0
+    let voiceRatio = 0
+    let rumbleRatio = 0
+    let zcr = 0
+    let hasRustMetrics = false
 
-    let sumSquares = 0
-    let totalEnergy = 1e-7
-    let voiceEnergy = 0
-    let rumbleEnergy = 0
-    let zeroCrossings = 0
-    let lastSign = this.lastSign
-
-    for (let i = 0; i < frameSize; i += 1) {
-      const sample = input[i]
-
-      const highpassed = this.hpAlpha * (this.hpPrevOutput + sample - this.hpPrevInput)
-      this.hpPrevInput = sample
-      this.hpPrevOutput = highpassed
-
-      this.lpSpeech += this.speechLpAlpha * (highpassed - this.lpSpeech)
-      this.lpRumble += this.rumbleLpAlpha * (sample - this.lpRumble)
-
-      const speechBand = this.lpSpeech
-      const rumbleBand = this.lpRumble
-
-      this.hpScratch[i] = highpassed
-      this.speechScratch[i] = speechBand
-      this.rumbleScratch[i] = rumbleBand
-
-      const hpEnergy = highpassed * highpassed
-      sumSquares += hpEnergy
-      totalEnergy += hpEnergy
-      voiceEnergy += speechBand * speechBand
-      rumbleEnergy += rumbleBand * rumbleBand
-
-      const sign = highpassed > 0.0025 ? 1 : highpassed < -0.0025 ? -1 : 0
-      if (i > 0 && sign !== 0 && lastSign !== 0 && sign !== lastSign) {
-        zeroCrossings += 1
-      }
-      if (sign !== 0) {
-        lastSign = sign
+    if (useRustCore) {
+      try {
+        const rustMetrics = this.rustCore.analyze(input, frameSize)
+        if (rustMetrics) {
+          rms = rustMetrics.rms
+          voiceRatio = rustMetrics.voiceRatio
+          rumbleRatio = rustMetrics.rumbleRatio
+          zcr = rustMetrics.zcr
+          hasRustMetrics = true
+        } else {
+          this.rustFallbackNotified = true
+        }
+      } catch {
+        this.rustCore = null
+        hasRustMetrics = false
       }
     }
 
-    this.lastSign = lastSign
+    if (!useRustCore || !hasRustMetrics) {
+      this.ensureScratchSize(frameSize)
 
-    const rms = Math.sqrt(sumSquares / frameSize)
-    const voiceRatio = voiceEnergy / totalEnergy
-    const rumbleRatio = rumbleEnergy / totalEnergy
-    const zcr = zeroCrossings / frameSize
+      let sumSquares = 0
+      let totalEnergy = 1e-7
+      let voiceEnergy = 0
+      let rumbleEnergy = 0
+      let zeroCrossings = 0
+      let lastSign = this.lastSign
+
+      for (let i = 0; i < frameSize; i += 1) {
+        const sample = input[i]
+
+        const highpassed = this.hpAlpha * (this.hpPrevOutput + sample - this.hpPrevInput)
+        this.hpPrevInput = sample
+        this.hpPrevOutput = highpassed
+
+        this.lpSpeech += this.speechLpAlpha * (highpassed - this.lpSpeech)
+        this.lpRumble += this.rumbleLpAlpha * (sample - this.lpRumble)
+
+        const speechBand = this.lpSpeech
+        const rumbleBand = this.lpRumble
+
+        this.hpScratch[i] = highpassed
+        this.speechScratch[i] = speechBand
+        this.rumbleScratch[i] = rumbleBand
+
+        const hpEnergy = highpassed * highpassed
+        sumSquares += hpEnergy
+        totalEnergy += hpEnergy
+        voiceEnergy += speechBand * speechBand
+        rumbleEnergy += rumbleBand * rumbleBand
+
+        const sign = highpassed > 0.0025 ? 1 : highpassed < -0.0025 ? -1 : 0
+        if (i > 0 && sign !== 0 && lastSign !== 0 && sign !== lastSign) {
+          zeroCrossings += 1
+        }
+        if (sign !== 0) {
+          lastSign = sign
+        }
+      }
+
+      this.lastSign = lastSign
+
+      rms = Math.sqrt(sumSquares / frameSize)
+      voiceRatio = voiceEnergy / totalEnergy
+      rumbleRatio = rumbleEnergy / totalEnergy
+      zcr = zeroCrossings / frameSize
+    }
 
     const previousRms = this.smoothedRms
     this.smoothedRms = this.smoothedRms * 0.78 + rms * 0.22
@@ -542,16 +689,34 @@ class VoiceEngineProcessor extends AudioWorkletProcessor {
     const rumbleReduction = this.config.rumbleDamp * (1 - this.smoothedNearFieldScore)
     const presenceLift = this.config.presenceBoost * this.smoothedNearFieldScore
     const saturationDrive = 1 + this.config.strength * 0.45
-    const saturationNormalizer = Math.tanh(saturationDrive)
 
     const firstOutput = outputChannels[0]
-    for (let i = 0; i < frameSize; i += 1) {
-      let y = this.hpScratch[i]
-      y += this.speechScratch[i] * presenceLift
-      y -= this.rumbleScratch[i] * rumbleReduction
-      y *= this.suppressionGain
-      y = Math.tanh(y * saturationDrive) / saturationNormalizer
-      firstOutput[i] = y
+    let renderedByRust = false
+    if (useRustCore && this.rustCore?.ready) {
+      try {
+        renderedByRust = this.rustCore.render(
+          firstOutput,
+          frameSize,
+          this.suppressionGain,
+          presenceLift,
+          rumbleReduction,
+          saturationDrive,
+        )
+      } catch {
+        this.rustCore = null
+        renderedByRust = false
+      }
+    }
+    if (!renderedByRust) {
+      const saturationNormalizer = Math.tanh(saturationDrive)
+      for (let i = 0; i < frameSize; i += 1) {
+        let y = this.hpScratch[i]
+        y += this.speechScratch[i] * presenceLift
+        y -= this.rumbleScratch[i] * rumbleReduction
+        y *= this.suppressionGain
+        y = Math.tanh(y * saturationDrive) / saturationNormalizer
+        firstOutput[i] = y
+      }
     }
 
     for (let ch = 1; ch < outputChannels.length; ch += 1) {

@@ -37,3 +37,4 @@ public/downloads/*
 !public/downloads/glytch-chat-setup.exe
 
 release-test/
+native/voice_engine_core/target/

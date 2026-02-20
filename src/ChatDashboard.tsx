@@ -588,9 +588,15 @@ const RNNOISE_ENABLED = String(import.meta.env.VITE_RNNOISE_ENABLED || "true").t
 const LIVEKIT_KRISP_ENABLED = String(import.meta.env.VITE_LIVEKIT_KRISP_ENABLED || "false").toLowerCase() === "true";
 const VOICE_ENGINE_ENABLED = String(import.meta.env.VITE_VOICE_ENGINE_ENABLED || "true").toLowerCase() !== "false";
 const VOICE_ENGINE_RUNTIME_MODE: VoiceEngineRuntimeMode =
-  String(import.meta.env.VITE_VOICE_ENGINE_RUNTIME || "heuristic").toLowerCase() === "neural_stub"
+  String(import.meta.env.VITE_VOICE_ENGINE_RUNTIME || "rust_wasm").toLowerCase() === "neural_stub"
     ? "neural_stub"
-    : "heuristic";
+    : String(import.meta.env.VITE_VOICE_ENGINE_RUNTIME || "rust_wasm").toLowerCase() === "rust_wasm"
+      ? "rust_wasm"
+      : "heuristic";
+const VOICE_ENGINE_RUST_WASM_URL =
+  (typeof import.meta.env.VITE_VOICE_ENGINE_RUST_WASM_URL === "string"
+    ? import.meta.env.VITE_VOICE_ENGINE_RUST_WASM_URL
+    : "") || "/wasm/voice_engine_core.wasm";
 const VOICE_RENDER_LEAK_GUARD_ENABLED =
   String(import.meta.env.VITE_VOICE_RENDER_LEAK_GUARD_ENABLED || "true").toLowerCase() !== "false";
 const VOICE_TARGET_LOCK_SENSITIVITY_MIN = 30;
@@ -1023,7 +1029,7 @@ type LivekitKrispSessionCredentials = {
 };
 
 type VoiceSuppressionProfile = "balanced" | "strong" | "ultra";
-type VoiceEngineRuntimeMode = "heuristic" | "neural_stub";
+type VoiceEngineRuntimeMode = "heuristic" | "neural_stub" | "rust_wasm";
 type VoiceEngineRuntimeSetting = "auto" | VoiceEngineRuntimeMode;
 
 type VoiceMicSettings = {
@@ -1981,17 +1987,19 @@ function normalizeVoiceSuppressionProfile(raw: unknown): VoiceSuppressionProfile
 }
 
 function normalizeVoiceEngineRuntimeSetting(raw: unknown): VoiceEngineRuntimeSetting {
-  if (raw === "heuristic" || raw === "neural_stub") return raw;
+  if (raw === "heuristic" || raw === "neural_stub" || raw === "rust_wasm") return raw;
   return "auto";
 }
 
 function resolveVoiceEngineRuntimeMode(setting: VoiceEngineRuntimeSetting): VoiceEngineRuntimeMode {
-  if (setting === "heuristic" || setting === "neural_stub") return setting;
+  if (setting === "heuristic" || setting === "neural_stub" || setting === "rust_wasm") return setting;
   return VOICE_ENGINE_RUNTIME_MODE;
 }
 
 function normalizeVoiceEngineRuntimeMode(raw: unknown): VoiceEngineRuntimeMode {
-  return raw === "neural_stub" ? "neural_stub" : "heuristic";
+  if (raw === "neural_stub") return "neural_stub";
+  if (raw === "rust_wasm") return "rust_wasm";
+  return "heuristic";
 }
 
 function normalizeTargetSpeakerLockSensitivityPercent(raw: unknown): number {
@@ -4329,6 +4337,19 @@ export default function ChatDashboard({
         const voiceEngineTargetSpeakerLock = settings.targetSpeakerLock;
         const voiceEngineTargetLockSensitivity =
           normalizeTargetSpeakerLockSensitivityPercent(settings.targetSpeakerLockSensitivityPercent) / 100;
+        const voiceEngineRustWasmUrl = (() => {
+          try {
+            if (/^[a-z]+:\/\//i.test(VOICE_ENGINE_RUST_WASM_URL) || VOICE_ENGINE_RUST_WASM_URL.startsWith("file:")) {
+              return VOICE_ENGINE_RUST_WASM_URL;
+            }
+            if (typeof window !== "undefined" && window.location?.href) {
+              return new URL(VOICE_ENGINE_RUST_WASM_URL, window.location.href).toString();
+            }
+          } catch {
+            // Fall through to raw URL.
+          }
+          return VOICE_ENGINE_RUST_WASM_URL;
+        })();
 
         sourceNode.connect(highpassNode);
         sourceNode.connect(inputLevelAnalyserNode);
@@ -4361,6 +4382,7 @@ export default function ChatDashboard({
                 runtimeMode: voiceEngineRuntimeMode,
                 targetSpeakerLock: voiceEngineTargetSpeakerLock,
                 targetLockSensitivity: voiceEngineTargetLockSensitivity,
+                rustWasmUrl: voiceEngineRustWasmUrl,
               },
             });
             voiceEngineNodeRef.current = voiceEngineNode;
@@ -4404,7 +4426,7 @@ export default function ChatDashboard({
                   }
                 | undefined;
               if (!payload || payload.type !== "metrics") return;
-              const runtimeMode = payload.runtimeMode === "neural_stub" ? "neural_stub" : "heuristic";
+              const runtimeMode = normalizeVoiceEngineRuntimeMode(payload.runtimeMode);
               const nextMetrics: VoiceEngineMetrics = {
                 nearFieldScore: normalizeVoiceEngineMetric(payload.nearFieldScore),
                 suppressionGain: normalizeVoiceEngineMetric(payload.suppressionGain),
@@ -16939,6 +16961,7 @@ export default function ChatDashboard({
                     <option value="auto">Auto (env default: {VOICE_ENGINE_RUNTIME_MODE})</option>
                     <option value="heuristic">Heuristic</option>
                     <option value="neural_stub">Neural Stub</option>
+                    <option value="rust_wasm">Rust WASM (beta)</option>
                   </select>
                 </label>
                 <label className="permissionToggle settingsToggle">
