@@ -4284,15 +4284,15 @@ export default function ChatDashboard({
         const profileIsUltra = profile === "ultra";
 
         highpassNode.type = "highpass";
-        highpassNode.frequency.value = profileIsBalanced ? 80 : profileIsUltra ? 115 : 96;
+        highpassNode.frequency.value = profileIsBalanced ? 80 : profileIsUltra ? 102 : 96;
         highpassNode.Q.value = 0.75;
 
         lowShelfNode.type = "lowshelf";
-        lowShelfNode.frequency.value = profileIsBalanced ? 145 : profileIsUltra ? 185 : 165;
-        lowShelfNode.gain.value = profileIsBalanced ? -1.8 : profileIsUltra ? -5.2 : -3.5;
+        lowShelfNode.frequency.value = profileIsBalanced ? 145 : profileIsUltra ? 175 : 165;
+        lowShelfNode.gain.value = profileIsBalanced ? -1.8 : profileIsUltra ? -4.2 : -3.5;
 
         lowpassNode.type = "lowpass";
-        lowpassNode.frequency.value = profileIsBalanced ? 11200 : profileIsUltra ? 7600 : 9000;
+        lowpassNode.frequency.value = profileIsBalanced ? 11200 : profileIsUltra ? 8600 : 9000;
         lowpassNode.Q.value = 0.72;
 
         presenceNode.type = "peaking";
@@ -4302,11 +4302,11 @@ export default function ChatDashboard({
 
         deEssNode.type = "highshelf";
         deEssNode.frequency.value = 6400;
-        deEssNode.gain.value = profileIsBalanced ? -0.8 : profileIsUltra ? -2.5 : -1.7;
+        deEssNode.gain.value = profileIsBalanced ? -0.8 : profileIsUltra ? -2.1 : -1.7;
 
         compressorNode.threshold.value = profileIsBalanced ? -14 : profileIsUltra ? -18 : -16;
         compressorNode.knee.value = 18;
-        compressorNode.ratio.value = profileIsBalanced ? 1.45 : profileIsUltra ? 1.8 : 1.6;
+        compressorNode.ratio.value = profileIsBalanced ? 1.45 : profileIsUltra ? 1.72 : 1.6;
         compressorNode.attack.value = 0.003;
         compressorNode.release.value = profileIsUltra ? 0.16 : 0.14;
 
@@ -4329,7 +4329,7 @@ export default function ChatDashboard({
         outputGainNode.gain.value = Math.min(1, normalizeMicInputGainPercent(settings.inputGainPercent) / 100);
         loudnessGuardGainNode.gain.value = 1;
         const voiceEngineStrength = profileIsUltra ? 0.94 : profileIsBalanced ? 0.58 : 0.78;
-        const voiceEngineMinSuppressionGain = profileIsUltra ? 0.08 : profileIsBalanced ? 0.22 : 0.14;
+        const voiceEngineMinSuppressionGain = profileIsUltra ? 0.11 : profileIsBalanced ? 0.22 : 0.14;
         const voiceEngineNearFieldBias = profileIsUltra ? 0.56 : profileIsBalanced ? 0.45 : 0.51;
         const voiceEnginePresenceBoost = profileIsUltra ? 0.28 : profileIsBalanced ? 0.18 : 0.23;
         const voiceEngineRumbleDamp = profileIsUltra ? 0.5 : profileIsBalanced ? 0.35 : 0.42;
@@ -4535,24 +4535,24 @@ export default function ChatDashboard({
         let clickRejectUntil = 0;
         let previousSmoothedRms = 0;
         const calibrationEndsAt = Date.now() + (profileIsUltra ? 2800 : 2000);
-        const minimumOpenThreshold = profileIsUltra ? 0.016 : profileIsBalanced ? 0.022 : 0.019;
+        const minimumOpenThreshold = profileIsUltra ? 0.0145 : profileIsBalanced ? 0.022 : 0.019;
         const minimumCloseThreshold = minimumOpenThreshold * 0.56;
-        const floorOpenMultiplier = profileIsUltra ? 2.55 : profileIsBalanced ? 1.95 : 2.2;
-        const floorCloseMultiplier = profileIsUltra ? 1.75 : profileIsBalanced ? 1.34 : 1.58;
-        const closedGain = profileIsUltra ? 0.006 : profileIsBalanced ? 0.085 : 0.03;
+        const floorOpenMultiplier = profileIsUltra ? 2.28 : profileIsBalanced ? 1.95 : 2.2;
+        const floorCloseMultiplier = profileIsUltra ? 1.62 : profileIsBalanced ? 1.34 : 1.58;
+        const closedGain = profileIsUltra ? 0.018 : profileIsBalanced ? 0.085 : 0.03;
         const holdMs = profileIsUltra ? 460 : profileIsBalanced ? 300 : 360;
         const voiceRatioMargin = profileIsUltra ? 0.14 : profileIsBalanced ? 0.085 : 0.12;
         const speechSignatureMargin = profileIsUltra ? 0.095 : profileIsBalanced ? 0.06 : 0.08;
-        const baseVoiceRatioThreshold = profileIsUltra ? 0.46 : profileIsBalanced ? 0.4 : 0.44;
-        const baseSpeechSignatureThreshold = profileIsUltra ? 0.17 : profileIsBalanced ? 0.1 : 0.145;
+        const baseVoiceRatioThreshold = profileIsUltra ? 0.43 : profileIsBalanced ? 0.4 : 0.44;
+        const baseSpeechSignatureThreshold = profileIsUltra ? 0.145 : profileIsBalanced ? 0.1 : 0.145;
         const zeroCrossingMin = profileIsUltra ? 0.018 : 0.012;
         const zeroCrossingMax = profileIsUltra ? 0.19 : 0.24;
         const crestClickThreshold = profileIsUltra ? 4.3 : 4.75;
         const fluxClickThreshold = profileIsUltra ? 0.1 : 0.125;
         const clickRejectMs = profileIsUltra ? 240 : 170;
-        const speechConfidenceOpenThreshold = profileIsUltra ? 0.54 : 0.46;
+        const speechConfidenceOpenThreshold = profileIsUltra ? 0.49 : 0.46;
         const speechConfidenceCloseThreshold = profileIsUltra ? 0.2 : 0.14;
-        const speechEvidenceOpenThreshold = profileIsUltra ? 0.46 : 0.39;
+        const speechEvidenceOpenThreshold = profileIsUltra ? 0.41 : 0.39;
         const speechEvidenceCloseThreshold = profileIsUltra ? 0.2 : 0.16;
         const noiseProfileCalibrationAlpha = 0.9;
         const noiseProfileLearnAlpha = profileIsUltra ? 0.968 : 0.954;
@@ -4564,15 +4564,15 @@ export default function ChatDashboard({
         const renderLeakLikelihoodCloseThreshold = profileIsUltra ? 0.54 : profileIsBalanced ? 0.64 : 0.6;
         const renderLeakPenaltyWeight = profileIsUltra ? 0.28 : profileIsBalanced ? 0.2 : 0.24;
         const onsetPreOpenMs = profileIsUltra ? 300 : profileIsBalanced ? 240 : 270;
-        const onsetRmsRiseThreshold = profileIsUltra ? 0.0016 : profileIsBalanced ? 0.0022 : 0.0019;
+        const onsetRmsRiseThreshold = profileIsUltra ? 0.0012 : profileIsBalanced ? 0.0022 : 0.0019;
         const onsetOpenThresholdScale = profileIsUltra ? 0.74 : profileIsBalanced ? 0.8 : 0.77;
         const onsetSpeechEvidenceScale = profileIsUltra ? 0.62 : profileIsBalanced ? 0.68 : 0.65;
-        const onsetVoiceDominanceThreshold = profileIsUltra ? 0.46 : 0.42;
-        const softSpeechRescueMs = profileIsUltra ? 240 : profileIsBalanced ? 200 : 220;
+        const onsetVoiceDominanceThreshold = profileIsUltra ? 0.4 : 0.42;
+        const softSpeechRescueMs = profileIsUltra ? 300 : profileIsBalanced ? 200 : 220;
         const preOpenGainTarget = profileIsUltra ? 0.68 : profileIsBalanced ? 0.62 : 0.66;
         const speechAttackBoostMs = profileIsUltra ? 190 : profileIsBalanced ? 150 : 170;
         const speechAttackGainFloor = profileIsUltra ? 0.9 : profileIsBalanced ? 0.84 : 0.88;
-        const softSpeechGainFloor = profileIsUltra ? 0.76 : profileIsBalanced ? 0.7 : 0.74;
+        const softSpeechGainFloor = profileIsUltra ? 0.8 : profileIsBalanced ? 0.7 : 0.74;
         const nyquist = audioContext.sampleRate / 2;
         const binFromHz = (hz: number) =>
           Math.max(0, Math.min(gateFreqData.length - 1, Math.round((hz / nyquist) * (gateFreqData.length - 1))));

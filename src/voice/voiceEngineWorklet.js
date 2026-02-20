@@ -626,13 +626,13 @@ class VoiceEngineProcessor extends AudioWorkletProcessor {
       features.onsetScore >= 0.4 &&
       speechLikelihood >= 0.4 &&
       nearFieldScore >= openThreshold * 0.68 &&
-      snr >= 1.1
+      snr >= 1.04
     const softSpeechRescueCandidate =
       !this.isSpeaking &&
       speechLikelihood >= 0.42 &&
       features.onsetScore >= 0.22 &&
       features.voiceRatioScore >= 0.28 &&
-      snr >= 1.18
+      snr >= 1.1
     if (this.isSpeaking) {
       this.speechAttackBlocks = Math.max(this.speechAttackBlocks, 4)
     } else if (onsetSpeechCandidate) {
@@ -659,9 +659,9 @@ class VoiceEngineProcessor extends AudioWorkletProcessor {
         : 0.68 + (1 - sensitivity) * 0.08
       targetGain *= lockGainFloor + (1 - lockGainFloor) * this.targetMatchScore
       const lockSoftSpeechRescue =
-        speechLikelihood >= 0.48 &&
+        speechLikelihood >= 0.46 &&
         (features.onsetScore >= 0.24 || this.isSpeaking || this.speechAttackBlocks > 0) &&
-        snr >= 1.16
+        snr >= 1.08
       if (lockSoftSpeechRescue) {
         const rescueFloor = clamp(0.62 + 0.24 * speechLikelihood + 0.08 * features.onsetScore, 0.62, 0.9)
         targetGain = Math.max(targetGain, rescueFloor)
@@ -673,8 +673,10 @@ class VoiceEngineProcessor extends AudioWorkletProcessor {
     } else if (features.onsetScore > 0.5 && speechLikelihood > 0.44) {
       targetGain = Math.max(targetGain, 0.76)
     }
-    if (!this.isSpeaking && speechLikelihood >= 0.5 && features.voiceRatioScore >= 0.3 && snr >= 1.18) {
-      targetGain = Math.max(targetGain, clamp(0.66 + 0.2 * speechLikelihood, 0.66, 0.86))
+    if (!this.isSpeaking && speechLikelihood >= 0.45 && features.voiceRatioScore >= 0.26 && snr >= 1.08) {
+      const farFieldAssistFloor =
+        this.config.strength >= 0.9 ? 0.72 + 0.14 * speechLikelihood : 0.66 + 0.2 * speechLikelihood
+      targetGain = Math.max(targetGain, clamp(farFieldAssistFloor, 0.66, 0.88))
     }
     if (this.speechAttackBlocks > 0) {
       const onsetFloor = 0.82 + 0.14 * speechLikelihood
