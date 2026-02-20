@@ -1858,6 +1858,25 @@ const server = createServer(async (req, res) => {
   const { pathname, search } = parsedUrl;
   const decodedPathname = normalizePathnameForRouteMatch(pathname);
 
+  if (pathname === "/" || decodedPathname === "/") {
+    const payload = {
+      ok: true,
+      service: "glytch-backend",
+      version: readPackageVersion(),
+      health: "/api/health",
+    };
+    res.setHeader("Cache-Control", "no-store");
+    if ((req.method || "GET") === "HEAD") {
+      res.writeHead(200, {
+        "Content-Type": "application/json; charset=utf-8",
+      });
+      res.end();
+      return;
+    }
+    sendJson(res, 200, payload);
+    return;
+  }
+
   if (pathname === "/api/health") {
     const gifServiceAvailable = Boolean(GIPHY_API_KEY || TENOR_API_KEY);
     sendJson(res, 200, {
