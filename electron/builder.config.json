@@ -16,7 +16,6 @@
   },
   "afterPack": "electron/after-pack.cjs",
   "artifactName": "glytch-chat-${version}-${os}-${arch}.${ext}",
-  "icon": "public/logo-v2.png",
   "asar": true,
   "compression": "maximum",
   "mac": {
@@ -38,7 +37,7 @@
     "sign": false
   },
   "win": {
-    "icon": "public/logo-v2.png",
+    "icon": "public/logo.png",
     "target": [
       {
         "target": "nsis",

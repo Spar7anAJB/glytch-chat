@@ -1,5 +1,5 @@
 import { app, BrowserWindow, desktopCapturer, ipcMain, nativeImage, session, shell, systemPreferences } from "electron";
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -20,146 +20,9 @@ const WINDOWS_UPDATER_MIN_BYTES = 5 * 1024 * 1024;
 const MAC_UPDATER_MIN_BYTES = 20 * 1024 * 1024;
 let installUpdateInFlight = false;
 const logoPathCandidates = isDev
-  ? [
-      path.join(__dirname, "..", "public", "logo-v2.png"),
-      path.join(__dirname, "..", "dist", "logo-v2.png"),
-      path.join(__dirname, "..", "public", "logo.png"),
-      path.join(__dirname, "..", "dist", "logo.png"),
-    ]
-  : [
-      path.join(__dirname, "..", "dist", "logo-v2.png"),
-      path.join(__dirname, "..", "public", "logo-v2.png"),
-      path.join(__dirname, "..", "dist", "logo.png"),
-      path.join(__dirname, "..", "public", "logo.png"),
-    ];
+  ? [path.join(__dirname, "..", "public", "logo.png"), path.join(__dirname, "..", "dist", "logo.png")]
+  : [path.join(__dirname, "..", "dist", "logo.png"), path.join(__dirname, "..", "public", "logo.png")];
 const logoPath = logoPathCandidates.find((candidate) => fs.existsSync(candidate));
-const KNOWN_GAME_PROCESS_NAMES = new Map([
-  ["minecraft", "Minecraft"],
-  ["minecraftlauncher", "Minecraft"],
-  ["cs2", "Counter-Strike 2"],
-  ["csgo", "Counter-Strike"],
-  ["dota2", "Dota 2"],
-  ["valorant-win64-shipping", "VALORANT"],
-  ["fortniteclient-win64-shipping", "Fortnite"],
-  ["r5apex", "Apex Legends"],
-  ["rocketleague", "Rocket League"],
-  ["leagueclient", "League of Legends"],
-  ["leagueclientux", "League of Legends"],
-  ["overwatch", "Overwatch 2"],
-  ["overwatchlauncher", "Overwatch 2"],
-  ["gta5", "Grand Theft Auto V"],
-  ["eldenring", "Elden Ring"],
-  ["palworld-win64-shipping", "Palworld"],
-  ["helldivers2", "Helldivers 2"],
-  ["stardewvalley", "Stardew Valley"],
-  ["terraria", "Terraria"],
-  ["robloxplayerbeta", "Roblox"],
-  ["osu", "osu!"],
-]);
-const PROCESS_NAME_BLOCKLIST = new Set([
-  "system",
-  "idle",
-  "windowserver",
-  "explorer",
-  "finder",
-  "taskhostw",
-  "svchost",
-  "runtimebroker",
-  "searchhost",
-  "code",
-  "electron",
-  "glytch chat",
-  "glytch-chat",
-  "chrome",
-  "chromium",
-  "firefox",
-  "safari",
-  "discord",
-  "steam",
-  "steamwebhelper",
-  "obs64",
-  "obs",
-  "terminal",
-  "zsh",
-  "bash",
-  "fish",
-  "node",
-  "nodejs",
-]);
-
-function normalizeProcessName(rawName) {
-  const trimmed = typeof rawName === "string" ? rawName.trim() : "";
-  if (!trimmed) return "";
-  const baseName = path.basename(trimmed).replace(/\.[^.]+$/, "");
-  return baseName.trim().toLowerCase();
-}
-
-function runCommandCapture(command, args) {
-  return new Promise((resolve, reject) => {
-    execFile(command, args, { windowsHide: true, maxBuffer: 6 * 1024 * 1024 }, (error, stdout) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-      resolve(String(stdout || ""));
-    });
-  });
-}
-
-function parseTasklistProcessName(line) {
-  const trimmed = line.trim();
-  if (!trimmed) return "";
-  if (trimmed.startsWith('"')) {
-    const secondQuoteIndex = trimmed.indexOf('"', 1);
-    if (secondQuoteIndex > 1) {
-      return trimmed.slice(1, secondQuoteIndex);
-    }
-  }
-  return trimmed.split(",")[0] || "";
-}
-
-async function listRunningProcessNames() {
-  if (isWindows) {
-    const stdout = await runCommandCapture("tasklist", ["/fo", "csv", "/nh"]);
-    return stdout
-      .split(/\r?\n/)
-      .map((line) => normalizeProcessName(parseTasklistProcessName(line)))
-      .filter(Boolean);
-  }
-
-  const stdout = await runCommandCapture("ps", ["-A", "-o", "comm="]);
-  return stdout
-    .split(/\r?\n/)
-    .map((line) => normalizeProcessName(line))
-    .filter(Boolean);
-}
-
-function inferActiveGameName(processNames) {
-  for (const processName of processNames) {
-    if (!processName || PROCESS_NAME_BLOCKLIST.has(processName)) continue;
-    const directMatch = KNOWN_GAME_PROCESS_NAMES.get(processName);
-    if (directMatch) return directMatch;
-
-    if (processName.includes("minecraft")) return "Minecraft";
-    if (processName.includes("valorant")) return "VALORANT";
-    if (processName.includes("fortnite")) return "Fortnite";
-    if (processName.includes("leagueclient")) return "League of Legends";
-    if (processName.includes("rocketleague")) return "Rocket League";
-    if (processName.includes("apex")) return "Apex Legends";
-    if (processName.includes("overwatch")) return "Overwatch 2";
-    if (processName.includes("eldenring")) return "Elden Ring";
-    if (processName.includes("palworld")) return "Palworld";
-    if (processName.includes("helldivers")) return "Helldivers 2";
-    if (processName.includes("gta5")) return "Grand Theft Auto V";
-    if (processName.includes("dota2")) return "Dota 2";
-    if (processName === "cs2" || processName === "csgo") return "Counter-Strike";
-    if (processName.includes("stardew")) return "Stardew Valley";
-    if (processName.includes("terraria")) return "Terraria";
-    if (processName.includes("roblox")) return "Roblox";
-    if (processName === "osu" || processName.includes("osu")) return "osu!";
-  }
-  return null;
-}
 
 app.setName(appName);
 if (isWindows) {
@@ -529,20 +392,6 @@ ipcMain.handle("electron:open-windows-privacy-settings", async (_event, kind) =>
           : "ms-settings:privacy";
   await shell.openExternal(route);
   return { ok: true };
-});
-
-ipcMain.handle("electron:detect-active-game", async () => {
-  try {
-    const processNames = await listRunningProcessNames();
-    const gameName = inferActiveGameName(processNames);
-    return { ok: true, gameName };
-  } catch (error) {
-    return {
-      ok: false,
-      gameName: null,
-      error: error instanceof Error ? error.message : "Could not detect active game.",
-    };
-  }
 });
 
 app.whenReady().then(() => {
