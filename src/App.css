@@ -2,22 +2,22 @@
 
 :root {
   color-scheme: dark;
-  --bg: #2f404d;
-  --panel: #39515f;
-  --panel-border: #3d898d;
-  --text: #e2dddf;
-  --muted: #b0acb0;
-  --accent: #85ebd9;
-  --accent-strong: #3d898d;
-  --card: #344a57;
-  --card-border: #3d898d;
-  --bubble-bot: #39515f;
-  --bubble-me: #3d898d;
-  --hot: #85ebd9;
-  --orange: #85ebd9;
-  --warn: #2a3944;
-  --violet: #36515b;
-  --text-on-accent: #1d2f36;
+  --bg: #050914;
+  --panel: #0c1629;
+  --panel-border: #1f3352;
+  --text: #e7f1ff;
+  --muted: #8da4c7;
+  --accent: #2f9bff;
+  --accent-strong: #63b7ff;
+  --card: #101d33;
+  --card-border: #284365;
+  --bubble-bot: #13223d;
+  --bubble-me: #193a58;
+  --hot: #ff6f91;
+  --orange: #ff8a5e;
+  --warn: #173158;
+  --violet: #151d3a;
+  --text-on-accent: #0d1e2a;
   --status-active: #34c759;
   --status-away: #f6cf64;
   --status-busy: #ff6a88;
@@ -298,14 +298,27 @@ textarea:focus-visible {
 
 .authSiteTitle {
   margin-top: 6px;
+  min-height: 1.25em;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .typing-text {
-  border-right: 2px solid var(--accent);
-  padding-right: 4px;
+  width: 12ch;
   white-space: nowrap;
   overflow: hidden;
-  display: inline-block;
+  display: inline-flex;
+  justify-content: flex-start;
+  align-items: center;
+  text-align: left;
+}
+
+.typing-text::after {
+  content: "";
+  border-right: 2px solid var(--accent);
+  margin-left: 2px;
+  height: 0.95em;
   animation: auth-caret-blink 0.75s step-end infinite;
 }
 
@@ -513,7 +526,9 @@ textarea:focus-visible {
     linear-gradient(180deg, color-mix(in srgb, var(--panel), var(--bg) 20%), color-mix(in srgb, var(--card), var(--bg) 38%) 80%);
   box-sizing: border-box;
   display: flex;
-  overflow: hidden;
+  overflow: visible;
+  position: relative;
+  z-index: 3;
   backdrop-filter: blur(10px);
   animation: shell-rise 0.26s ease-out both;
 }
@@ -1022,6 +1037,11 @@ textarea:focus-visible {
   transform: translateY(-1px);
   border-color: color-mix(in srgb, var(--accent), #ffffff 20%);
   background: color-mix(in srgb, var(--card), var(--panel) 40%);
+}
+
+.railSystemButton.active {
+  border-color: color-mix(in srgb, var(--accent), #ffffff 18%);
+  background: color-mix(in srgb, var(--accent), var(--panel) 78%);
 }
 
 .railSystemButton svg {
@@ -1584,7 +1604,12 @@ textarea:focus-visible {
 .glytchItemIcon {
   width: 24px;
   height: 24px;
-  border-radius: 8px;
+  min-width: 24px;
+  min-height: 24px;
+  max-width: 24px;
+  max-height: 24px;
+  aspect-ratio: 1 / 1;
+  border-radius: 6px;
   overflow: hidden;
   display: grid;
   place-items: center;
@@ -1614,8 +1639,18 @@ textarea:focus-visible {
   border-radius: 8px;
   background: var(--panel);
   color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   cursor: pointer;
   transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.glytchSettingsButton img {
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
+  display: block;
 }
 
 .glytchSettingsButton:hover {
@@ -3268,6 +3303,28 @@ textarea:focus-visible {
   gap: 6px;
 }
 
+.msgEdited {
+  color: color-mix(in srgb, var(--muted), var(--text) 12%);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.messageEditForm {
+  display: grid;
+  gap: 8px;
+  width: min(480px, 100%);
+}
+
+.messageEditForm input {
+  width: 100%;
+}
+
+.messageEditActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .msgSeen {
   color: var(--status-active);
   font-size: 0.73rem;
@@ -3970,9 +4027,8 @@ textarea:focus-visible {
 }
 
 .patchNotesLayout {
-  display: grid;
-  grid-template-columns: minmax(150px, 220px) minmax(0, 1fr);
-  gap: 14px;
+  display: flex;
+  flex-direction: column;
   flex: 1;
   min-height: 0;
 }
@@ -4031,10 +4087,6 @@ textarea:focus-visible {
 }
 
 @media (max-width: 900px) {
-  .patchNotesLayout {
-    grid-template-columns: 1fr;
-  }
-
   .patchNotesVersionsList {
     flex-direction: row;
     flex-wrap: wrap;
@@ -4497,6 +4549,57 @@ textarea:focus-visible {
   padding: 10px;
 }
 
+.settingsToggle.permissionToggle {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.settingsToggle.permissionToggle > span {
+  order: 1;
+}
+
+.settingsToggle.permissionToggle input[type="checkbox"] {
+  order: 2;
+  appearance: none;
+  width: 44px;
+  height: 24px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--card-border), transparent 18%);
+  background: color-mix(in srgb, var(--panel), var(--bg) 20%);
+  position: relative;
+  cursor: pointer;
+  transition: background-color 0.16s ease, border-color 0.16s ease;
+}
+
+.settingsToggle.permissionToggle input[type="checkbox"]::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: color-mix(in srgb, #ffffff, var(--panel) 10%);
+  box-shadow: 0 1px 4px color-mix(in srgb, #000000, transparent 78%);
+  transition: transform 0.16s ease;
+}
+
+.settingsToggle.permissionToggle input[type="checkbox"]:checked {
+  border-color: color-mix(in srgb, var(--accent), var(--card-border) 24%);
+  background: color-mix(in srgb, var(--accent), var(--panel) 22%);
+}
+
+.settingsToggle.permissionToggle input[type="checkbox"]:checked::before {
+  transform: translateX(20px);
+}
+
+.settingsToggle.permissionToggle input[type="checkbox"]:disabled {
+  opacity: 0.56;
+  cursor: not-allowed;
+}
+
 .glytchIconEditor {
   display: flex;
   align-items: center;
@@ -4713,7 +4816,15 @@ textarea:focus-visible {
   color: var(--profile-name-color);
 }
 
-.profilePreviewCard p:not(.profilePresenceText):not(.sectionLabel):not(.profileCommentText):not(.smallMuted) {
+.profileUsernameTag {
+  margin: 0 0 8px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: color-mix(in srgb, var(--muted), var(--text) 16%);
+}
+
+.profilePreviewCard p:not(.profilePresenceText):not(.profileUsernameTag):not(.sectionLabel):not(.profileCommentText):not(.smallMuted) {
   margin: 0;
   color: var(--profile-body-color);
 }
@@ -5210,5 +5321,1082 @@ textarea:focus-visible {
 
   .authCard {
     padding: 18px;
+  }
+}
+
+/* v0.2.0 chat overhaul */
+.page {
+  position: relative;
+  gap: 0;
+  padding: 16px;
+  box-sizing: border-box;
+  overflow: hidden;
+  background:
+    radial-gradient(1200px 620px at 50% -30%, color-mix(in srgb, var(--accent), transparent 74%), transparent 66%),
+    radial-gradient(980px 540px at 100% 120%, color-mix(in srgb, #ff846c, transparent 88%), transparent 74%),
+    linear-gradient(160deg, #130f25 0%, #1a1731 46%, #120f23 100%);
+}
+
+.page::before {
+  content: "";
+  position: absolute;
+  inset: -8%;
+  pointer-events: none;
+  background:
+    radial-gradient(420px 210px at 12% 12%, color-mix(in srgb, #ffffff, transparent 94%), transparent 70%),
+    radial-gradient(360px 170px at 82% 15%, color-mix(in srgb, #ffffff, transparent 95%), transparent 75%);
+  opacity: 0.9;
+}
+
+.sidemenu,
+.glytchapp {
+  position: relative;
+  z-index: 1;
+  border: 1px solid color-mix(in srgb, var(--accent), var(--card-border) 84%);
+  border-radius: 16px;
+  box-shadow:
+    0 10px 28px color-mix(in srgb, #03040d, transparent 62%),
+    inset 0 1px 0 color-mix(in srgb, #ffffff, transparent 92%);
+}
+
+.sidemenu {
+  width: 356px;
+  display: flex;
+  flex-direction: column;
+  overflow: visible;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  border-right: 0;
+  background:
+    radial-gradient(460px 260px at -10% -5%, color-mix(in srgb, var(--accent), transparent 88%), transparent 76%),
+    linear-gradient(185deg, color-mix(in srgb, #16112e, var(--panel) 66%), color-mix(in srgb, #100f22, var(--bg) 78%));
+}
+
+.primaryNav {
+  width: 68px;
+  flex: 0 0 68px;
+  padding: 14px 8px;
+  gap: 10px;
+  background: color-mix(in srgb, #0f0c22, var(--panel) 72%);
+  border-right: 1px solid color-mix(in srgb, var(--panel-border), transparent 16%);
+}
+
+.primaryNav .navOption > span:last-child {
+  display: none;
+}
+
+.navOption {
+  min-height: 44px;
+  border-radius: 12px;
+  padding: 10px 0;
+}
+
+.navOptionIcon {
+  width: 20px;
+  height: 20px;
+}
+
+.navGlytchIconButton {
+  border-radius: 12px;
+}
+
+.navGlytchIcon {
+  width: 30px;
+  height: 30px;
+}
+
+.railSystemButton {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+}
+
+.railAvatarButton {
+  width: 42px;
+  height: 42px;
+}
+
+.sideContent {
+  padding: 14px 12px;
+}
+
+.sideContentBody {
+  gap: 10px;
+  padding-right: 2px;
+}
+
+.sideContentBody .requestSection,
+.sideContentBody .channelList,
+.sideContentBody .stackedForm,
+.sideContentBody .addFriendForm {
+  border-radius: 12px;
+  border-color: color-mix(in srgb, var(--card-border), transparent 26%);
+  background:
+    radial-gradient(220px 110px at 100% -20%, color-mix(in srgb, var(--accent), transparent 92%), transparent 74%),
+    color-mix(in srgb, var(--card), transparent 8%);
+}
+
+.unifiedSidebarFlow {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  overflow: visible;
+}
+
+.unifiedSidebarTopBar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+}
+
+.unifiedSidebarBrandButton {
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.86rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  padding: 0;
+}
+
+.unifiedSidebarBrandLogo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+}
+
+.unifiedSidebarBrandLogo img {
+  width: 40px;
+  height: 40px;
+  display: block;
+  object-fit: contain;
+}
+
+.unifiedSidebarBrandName {
+  white-space: nowrap;
+}
+
+.unifiedSidebarFriendsToggle {
+  flex: 0 0 auto;
+}
+
+.appGlyphIcon {
+  --glyph-size: 20px;
+  width: var(--glyph-size);
+  height: var(--glyph-size);
+  min-width: var(--glyph-size);
+  min-height: var(--glyph-size);
+  border-radius: calc(var(--glyph-size) * 0.27);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #eff7ff;
+  border: 1px solid color-mix(in srgb, #53c9ff, #a83dff 40%);
+  background:
+    radial-gradient(80% 80% at 24% 14%, color-mix(in srgb, #7ee8ff, transparent 78%), transparent 74%),
+    linear-gradient(145deg, #141126, #0c0f1d);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, #ffffff, transparent 90%),
+    0 0 14px color-mix(in srgb, #54ccff, transparent 76%);
+}
+
+.appGlyphIcon svg {
+  width: 74%;
+  height: 74%;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 0 5px color-mix(in srgb, #6fe4ff, transparent 54%));
+}
+
+.appGlyphIcon img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+  padding: 2px;
+  border-radius: inherit;
+}
+
+.appGlyphIcon .glyphTrail {
+  stroke: color-mix(in srgb, #56deff, #f05eff 36%);
+  stroke-width: 1.5;
+}
+
+.appGlyphIcon .glyphFill {
+  fill: currentColor;
+  stroke: none;
+}
+
+.appGlyphIcon .glyphBadge {
+  fill: color-mix(in srgb, #4ce3ff, #8e38ff 35%);
+  stroke: none;
+}
+
+.appGlyphIcon .glyphBadgeCheck {
+  stroke: #eafcff;
+  stroke-width: 1.7;
+}
+
+.appGlyph-small {
+  --glyph-size: 20px;
+}
+
+.appGlyph-medium {
+  --glyph-size: 27px;
+}
+
+.appGlyph-large {
+  --glyph-size: 40px;
+}
+
+.appGlyphIcon[data-kind="glytch"] {
+  color: #f7f6ff;
+  border-color: color-mix(in srgb, #6de8ff, #ef45ff 42%);
+  background: #0b0f1a;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, #ffffff, transparent 90%),
+    0 0 14px color-mix(in srgb, #54ccff, transparent 78%);
+  overflow: hidden;
+  padding: 0;
+}
+
+.appGlyphIcon[data-kind="glytch"] img {
+  object-fit: cover;
+  padding: 0;
+}
+
+.appGlyphIcon[data-kind="settings"] {
+  color: #eaf9ff;
+  border-color: color-mix(in srgb, #5be1ff, #8e48ff 26%);
+  background:
+    radial-gradient(90% 90% at 20% 10%, color-mix(in srgb, #64f0ff, transparent 74%), transparent 74%),
+    linear-gradient(145deg, #121524, #081421);
+}
+
+.appGlyphIcon[data-kind="settings"] img {
+  object-fit: contain;
+  padding: 1px;
+  width: 108%;
+  height: 108%;
+}
+
+.appGlyphIcon[data-kind="friends"] {
+  color: #f6f7ff;
+  border-color: color-mix(in srgb, #5be6ff, #ff54ef 32%);
+  background:
+    radial-gradient(95% 95% at 78% 14%, color-mix(in srgb, #f857ff, transparent 84%), transparent 72%),
+    linear-gradient(145deg, #141227, #0b0f20);
+}
+
+.appGlyphIcon[data-kind="group"] {
+  color: #f7f8ff;
+  border-color: color-mix(in srgb, #66e9ff, #9a54ff 30%);
+  background:
+    radial-gradient(100% 90% at 18% 82%, color-mix(in srgb, #46ebff, transparent 82%), transparent 72%),
+    linear-gradient(145deg, #11152a, #0a0f20);
+}
+
+.appGlyphIcon[data-kind="discover"] {
+  color: #f8f7ff;
+  border-color: color-mix(in srgb, #5ce8ff, #f64cff 38%);
+  background:
+    radial-gradient(90% 90% at 78% 18%, color-mix(in srgb, #fb59ff, transparent 82%), transparent 74%),
+    linear-gradient(145deg, #161026, #0c1122);
+}
+
+.appGlyphIcon[data-kind="patch"] {
+  color: #f3faff;
+  border-color: color-mix(in srgb, #5be1ff, #f65ff5 34%);
+  background:
+    radial-gradient(90% 90% at 12% 50%, color-mix(in srgb, #58deff, transparent 82%), transparent 75%),
+    linear-gradient(145deg, #111426, #0a1020);
+}
+
+.unifiedSidebarGlobalSearch {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--card-border), transparent 16%);
+  border-radius: 12px;
+  min-height: 36px;
+  padding: 8px 11px;
+  background: color-mix(in srgb, var(--panel), var(--bg) 12%);
+  color: var(--text);
+  outline: none;
+}
+
+.unifiedSidebarGlobalSearch:focus {
+  border-color: color-mix(in srgb, var(--accent), var(--card-border) 25%);
+}
+
+.unifiedSidebarNavList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.unifiedSidebarNavItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  justify-content: flex-start;
+  min-height: 38px;
+  padding: 7px 10px;
+  font-size: 0.85rem;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+.unifiedSidebarNavItem:hover {
+  transform: none;
+  border-color: transparent;
+  background: color-mix(in srgb, var(--panel), #ffffff 4%);
+}
+
+.unifiedSidebarNavItem.active {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--accent), var(--panel) 88%);
+  box-shadow: none;
+  color: var(--text);
+}
+
+.unifiedSidebarBody {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 3px;
+  padding-top: 4px;
+}
+
+.unifiedSidebarBody::-webkit-scrollbar {
+  width: 10px;
+}
+
+.unifiedSidebarBody::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--panel-border), transparent 8%);
+  border-radius: 999px;
+}
+
+.unifiedSidebarSection {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+}
+
+.unifiedSidebarDmTabs {
+  margin-bottom: 8px;
+}
+
+.unifiedSidebarSection .sectionLabel {
+  margin-bottom: 4px;
+  font-size: 0.82rem;
+  letter-spacing: 0.1em;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.unifiedSidebarSectionIcon {
+  flex: 0 0 auto;
+}
+
+.unifiedSidebarFlow .requestSection,
+.unifiedSidebarFlow .channelList,
+.unifiedSidebarFlow .stackedForm,
+.unifiedSidebarFlow .addFriendForm {
+  border: 0;
+  box-shadow: none;
+  background: transparent;
+  padding: 0;
+}
+
+.unifiedSidebarSection.unifiedSidebarFriends {
+  flex: 1;
+  min-height: 0;
+  margin-top: 10px;
+}
+
+.unifiedSidebarSection.unifiedSidebarGroups {
+  margin-top: 10px;
+}
+
+.unifiedSidebarHeadingRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.unifiedSidebarMiniButton {
+  border: 1px solid color-mix(in srgb, var(--card-border), transparent 22%);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--panel), var(--bg) 18%);
+  color: var(--text);
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 5px 9px;
+  cursor: pointer;
+}
+
+.unifiedSidebarMiniButton:disabled {
+  opacity: 0.56;
+  cursor: not-allowed;
+}
+
+.unifiedSidebarMiniButton:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent), var(--card-border) 32%);
+  background: color-mix(in srgb, var(--accent), var(--panel) 82%);
+}
+
+.unifiedSidebarAddFriendForm {
+  margin: 0;
+}
+
+.unifiedListItem {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--panel), transparent 40%);
+  box-shadow: none;
+}
+
+.unifiedListItem:hover {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--panel), #ffffff 5%);
+  transform: none;
+}
+
+.unifiedListItem.active {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--accent), var(--panel) 88%);
+  box-shadow: none;
+  color: var(--text);
+}
+
+.unifiedSidebarList {
+  min-height: 0;
+  overflow: visible;
+  padding-right: 0;
+}
+
+.unifiedSidebarChannelList {
+  border-top: 0;
+  padding-top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.unifiedSidebarChannelList .sectionLabel {
+  margin: 0;
+}
+
+.unifiedSidebarChannels {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.unifiedSidebarChannels .channelItem {
+  justify-content: flex-start;
+}
+
+.unifiedSidebarFooter {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: visible;
+}
+
+.unifiedSidebarDiscover {
+  width: 100%;
+  min-height: 40px;
+  justify-content: center;
+  gap: 8px;
+}
+
+.unifiedActionIcon {
+  flex: 0 0 auto;
+}
+
+.unifiedSidebarIdentity {
+  margin: 0;
+  gap: 8px;
+  justify-content: space-between;
+  overflow: visible;
+}
+
+.unifiedSidebarIdentity .identityMeta {
+  min-width: 0;
+  gap: 2px;
+}
+
+.unifiedSidebarIdentity .userName {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.unifiedSidebarIdentityMeta {
+  flex: 1;
+}
+
+.unifiedSidebarFooterActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.unifiedSidebarPrimarySection {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.unifiedSidebarBackButton {
+  min-height: 34px;
+  padding: 6px 10px;
+  font-size: 0.75rem;
+}
+
+.mainGlytchRow {
+  min-height: 54px;
+  justify-content: flex-start;
+  padding: 8px 10px;
+}
+
+.mainGlytchRow .glytchItemIcon {
+  width: 40px;
+  height: 40px;
+  min-width: 40px;
+  min-height: 40px;
+  max-width: 40px;
+  max-height: 40px;
+  aspect-ratio: 1 / 1;
+  border-radius: 8px;
+  font-size: 0.9rem;
+}
+
+.mainGlytchRow .glytchItemName {
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.mainGlytchRow .glytchItemLabel,
+.mainDmRow .dmNameRow {
+  min-width: 0;
+}
+
+.mainDmRow .friendAvatar {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+}
+
+.mainDmRow .channelItem.friendItem {
+  min-height: 56px;
+  padding: 8px 10px;
+}
+
+.mainDmRow .dmNameText {
+  font-size: 0.88rem;
+}
+
+.unifiedSidebarProfileWrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  z-index: 65;
+}
+
+.unifiedSidebarProfileButton {
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.unifiedSidebarProfilePopover {
+  position: absolute;
+  left: 0;
+  right: auto;
+  bottom: calc(100% + 2px);
+  min-width: 200px;
+  max-width: min(240px, calc(100vw - 26px));
+  opacity: 0;
+  transform: translateY(6px);
+  visibility: hidden;
+  pointer-events: none;
+  z-index: 60;
+  transform-origin: left bottom;
+  transition: opacity 0.16s ease, transform 0.16s ease, visibility 0.16s ease;
+}
+
+.unifiedSidebarProfileWrap:hover .unifiedSidebarProfilePopover,
+.unifiedSidebarProfileWrap:focus-within .unifiedSidebarProfilePopover,
+.unifiedSidebarProfilePopover:hover,
+.unifiedSidebarProfilePopover:focus-within {
+  opacity: 1;
+  transform: translateY(0);
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.unifiedSidebarProfilePopover .identityMeta {
+  gap: 4px;
+}
+
+.unifiedSidebarProfilePopover .userName {
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.unifiedSidebarProfilePopover .settingsLink {
+  margin-top: 2px;
+}
+
+.glytchapp {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  margin-left: -1px;
+  background:
+    radial-gradient(760px 380px at 58% -30%, color-mix(in srgb, var(--accent), transparent 84%), transparent 72%),
+    linear-gradient(180deg, color-mix(in srgb, #120f27, var(--panel) 64%), color-mix(in srgb, #0e0d1f, var(--bg) 72%));
+}
+
+.chat-header {
+  height: 64px;
+  padding: 0 18px;
+  border-bottom: 1px solid color-mix(in srgb, var(--panel-border), transparent 22%);
+  background:
+    radial-gradient(320px 140px at 2% -40%, color-mix(in srgb, var(--accent), transparent 90%), transparent 68%),
+    color-mix(in srgb, #13102a, var(--panel) 68%);
+}
+
+.chatHeaderTitle {
+  font-size: 0.98rem;
+}
+
+.chatHeaderTitleWithSwitch {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.headerSwitchSelect {
+  border: 1px solid color-mix(in srgb, var(--panel-border), transparent 26%);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel), var(--bg) 16%);
+  color: var(--text);
+  min-height: 32px;
+  padding: 4px 10px;
+}
+
+.glytchDirectoryGrid,
+.groupDirectoryGrid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.directoryGlytchCard,
+.directoryGroupCard {
+  min-height: 0;
+  aspect-ratio: 1 / 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  align-items: stretch;
+  gap: 8px;
+  padding: 10px;
+}
+
+.directoryGroupCard .dmNameRow {
+  width: 100%;
+}
+
+.directoryGlytchVisual {
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--panel-border), transparent 26%);
+  background:
+    radial-gradient(170px 90px at 8% 8%, color-mix(in srgb, var(--accent), transparent 90%), transparent 70%),
+    color-mix(in srgb, var(--panel), var(--bg) 14%);
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  font-size: 1.65rem;
+  font-weight: 800;
+}
+
+.directoryGlytchVisual img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.directoryGlytchName {
+  width: 100%;
+  text-align: center;
+  font-size: 0.84rem;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.directoryGlytchCard .smallMuted,
+.directoryGroupCard .smallMuted {
+  margin-top: auto;
+}
+
+.glytchDirectoryTopActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.glytchDirectoryTopActions .channelItem {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 8px 12px;
+}
+
+@media (max-width: 1500px) {
+  .glytchDirectoryGrid,
+  .groupDirectoryGrid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 1220px) {
+  .glytchDirectoryGrid,
+  .groupDirectoryGrid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 920px) {
+  .glytchDirectoryGrid,
+  .groupDirectoryGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .glytchDirectoryGrid,
+  .groupDirectoryGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.onlineFriendsPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--panel-border), transparent 20%);
+  border-radius: 14px;
+  background:
+    radial-gradient(340px 170px at 100% -25%, color-mix(in srgb, var(--accent), transparent 90%), transparent 72%),
+    color-mix(in srgb, var(--panel), var(--bg) 12%);
+}
+
+.onlineFriendsGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+@media (max-width: 1180px) {
+  .onlineFriendsGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .onlineFriendsGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.onlineFriendCard {
+  border: 1px solid color-mix(in srgb, var(--panel-border), transparent 26%);
+  border-radius: 12px;
+  background:
+    radial-gradient(180px 90px at -20% -20%, color-mix(in srgb, var(--accent), transparent 92%), transparent 70%),
+    color-mix(in srgb, var(--card), var(--panel) 22%);
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.onlineFriendCard:hover {
+  border-color: color-mix(in srgb, var(--accent), var(--panel-border) 34%);
+  background: color-mix(in srgb, var(--accent), var(--panel) 84%);
+}
+
+.onlineFriendMeta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.onlineFriendMeta strong,
+.onlineFriendMeta span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chatLayout {
+  min-height: 0;
+  background: color-mix(in srgb, #110f23, var(--bg) 74%);
+}
+
+.chatLayout.withMembersPanel {
+  --members-panel-width: 320px;
+}
+
+.chatLayout.withMembersPanel .chatStreamColumn {
+  min-width: 0;
+}
+
+.chatStreamColumn {
+  background:
+    radial-gradient(800px 420px at 50% 100%, color-mix(in srgb, var(--accent), transparent 90%), transparent 76%),
+    transparent;
+}
+
+.messagedisplay {
+  gap: 12px;
+  padding: 16px 18px;
+}
+
+.dmMessageSearchBar {
+  margin: 10px 12px 0;
+}
+
+.dmMessageSearchBar input {
+  width: 100%;
+  border: 1px solid color-mix(in srgb, var(--panel-border), transparent 20%);
+  border-radius: 12px;
+  min-height: 38px;
+  padding: 8px 11px;
+  background: color-mix(in srgb, var(--panel), var(--bg) 14%);
+  color: var(--text);
+  outline: none;
+}
+
+.dmMessageSearchBar input:focus {
+  border-color: color-mix(in srgb, var(--accent), var(--panel-border) 30%);
+}
+
+.messageRow {
+  max-width: 74%;
+}
+
+.voicePanel.dmVoicePanelTop,
+.voicePanel.screenSharePanel {
+  margin: 10px 12px 0;
+  border-radius: 12px;
+}
+
+.messageSubmitArea {
+  margin: 10px 12px 12px;
+  border: 1px solid color-mix(in srgb, var(--panel-border), transparent 24%);
+  border-radius: 14px;
+  border-top: 1px solid color-mix(in srgb, var(--panel-border), transparent 24%);
+  background: color-mix(in srgb, #15112b, var(--panel) 66%);
+  padding: 10px 12px;
+}
+
+.composerReplyPreview,
+.composerAttachmentPreview,
+.emojiPicker,
+.gifPicker {
+  margin: 0 12px;
+  border-radius: 12px;
+}
+
+.membersPanel {
+  border-left: 1px solid color-mix(in srgb, var(--panel-border), transparent 22%);
+  background:
+    radial-gradient(260px 130px at 100% -20%, color-mix(in srgb, var(--accent), transparent 88%), transparent 74%),
+    color-mix(in srgb, #141029, var(--panel) 70%);
+  padding: 12px;
+  gap: 8px;
+}
+
+.membersPanelResizeHandle::after {
+  width: 1px;
+  background: color-mix(in srgb, var(--panel-border), transparent 24%);
+}
+
+.dmInAppBanner {
+  position: fixed;
+  right: 24px;
+  top: 24px;
+  z-index: 38;
+  width: min(340px, calc(100vw - 36px));
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  border: 1px solid color-mix(in srgb, var(--accent), var(--panel-border) 58%);
+  border-radius: 14px;
+  padding: 10px 11px;
+  background:
+    radial-gradient(240px 110px at 100% -30%, color-mix(in srgb, var(--accent), transparent 86%), transparent 72%),
+    color-mix(in srgb, #16112f, var(--panel) 68%);
+  color: var(--text);
+  box-shadow:
+    0 10px 24px color-mix(in srgb, #02040e, transparent 58%),
+    inset 0 1px 0 color-mix(in srgb, #ffffff, transparent 92%);
+  cursor: pointer;
+}
+
+.dmInAppBannerAvatar {
+  width: 42px;
+  height: 42px;
+  min-width: 42px;
+}
+
+.dmInAppBannerMeta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dmInAppBannerMeta strong,
+.dmInAppBannerMeta span {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mainGroupRow {
+  min-height: 52px;
+}
+
+@media (max-width: 1260px) {
+  .chatLayout.withMembersPanel {
+    --members-panel-width: 280px;
+  }
+}
+
+@media (max-width: 980px) {
+  .page {
+    padding: 10px;
+    gap: 0;
+  }
+
+  .sidemenu {
+    width: 308px;
+  }
+}
+
+@media (max-width: 900px) {
+  .page {
+    flex-direction: column;
+  }
+
+  .sidemenu {
+    width: 100%;
+    min-height: 228px;
+    max-height: 42%;
+  }
+
+  .unifiedSidebarFlow {
+    padding: 10px;
+    gap: 8px;
+  }
+
+  .unifiedSidebarBody {
+    padding-right: 1px;
+  }
+
+  .mainGlytchRow .glytchItemIcon {
+    width: 34px;
+    height: 34px;
+    min-width: 34px;
+    min-height: 34px;
+  }
+
+  .mainDmRow .friendAvatar {
+    width: 34px;
+    height: 34px;
+    flex-basis: 34px;
+  }
+
+  .dmInAppBanner {
+    right: 14px;
+    width: auto;
+    top: 14px;
+  }
+
+  .chatLayout.withMembersPanel {
+    flex-direction: column;
+  }
+
+  .membersPanelResizeHandle {
+    display: none;
+  }
+
+  .membersPanel {
+    width: auto;
+    flex: 0 0 auto;
+    max-height: 220px;
+    border-left: 0;
+    border-top: 1px solid color-mix(in srgb, var(--panel-border), transparent 24%);
+  }
+
+  .messageRow {
+    max-width: 92%;
+  }
+
+  .page {
+    gap: 10px;
+  }
+
+  .sidemenu {
+    border-top-right-radius: 16px;
+    border-bottom-right-radius: 16px;
+    border-right: 1px solid color-mix(in srgb, var(--accent), var(--card-border) 84%);
+  }
+
+  .glytchapp {
+    border-top-left-radius: 16px;
+    border-bottom-left-radius: 16px;
+    margin-left: 0;
   }
 }

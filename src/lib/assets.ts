@@ -27,7 +27,9 @@ function resolvePlatformKey() {
   return "linux";
 }
 
-export const logoAssetUrl = toPublicAssetUrl("logo.png");
+export const logoAssetUrl = toPublicAssetUrl("logo-v2.png");
+export const glytchesIconAssetUrl = toPublicAssetUrl("glytches-icon.png");
+export const settingsIconAssetUrl = toPublicAssetUrl("settings-icon.png");
 
 const genericInstallerUrl = (import.meta.env.VITE_ELECTRON_INSTALLER_URL as string | undefined)?.trim();
 const macInstallerUrl = (import.meta.env.VITE_ELECTRON_INSTALLER_URL_MAC as string | undefined)?.trim();

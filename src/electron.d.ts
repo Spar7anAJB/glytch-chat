@@ -12,6 +12,7 @@ type ElectronBridgeApi = {
     kind: "camera" | "microphone",
   ) => Promise<{ ok: boolean; status: string; error?: string }>;
   openWindowsPrivacySettings?: (kind: "camera" | "microphone" | "screen" | "privacy") => Promise<{ ok: boolean }>;
+  detectActiveGame?: () => Promise<{ ok: boolean; gameName: string | null; error?: string }>;
 };
 
 declare global {

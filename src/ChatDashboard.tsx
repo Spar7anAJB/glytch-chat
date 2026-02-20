@@ -100,6 +100,9 @@ import {
   updateMyProfileCustomization,
   unbanGlytchUser,
   unfriendUser,
+  updateDmMessage,
+  updateGroupChatMessage,
+  updateGlytchMessage,
   uploadGlytchIcon,
   uploadMessageAsset,
   uploadProfileAsset,
@@ -130,6 +133,7 @@ import {
   type VoiceSignal,
 } from "./supabaseApi";
 import { normalizeBackendApiBaseUrl } from "./lib/apiBase";
+import { glytchesIconAssetUrl, logoAssetUrl, settingsIconAssetUrl } from "./lib/assets";
 import { RnnoiseWorkletNode, loadRnnoise } from "@sapphi-red/web-noise-suppressor";
 import rnnoiseWorkletPath from "@sapphi-red/web-noise-suppressor/rnnoiseWorklet.js?url";
 import rnnoiseWasmPath from "@sapphi-red/web-noise-suppressor/rnnoise.wasm?url";
@@ -145,8 +149,18 @@ type ChatDashboardProps = {
 type ViewMode = "dm" | "group" | "glytch" | "glytch-settings" | "settings" | "patch-notes";
 type GlytchActionMode = "none" | "create" | "join";
 type DmPanelMode = "dms" | "friends";
+type UnifiedSidebarView = "dms" | "glytches" | "groups" | "patch-notes";
 type SettingsSection = "profile" | "system";
-type SettingsTab = "edit" | "theme" | "showcases" | "preview" | "notifications" | "accessibility" | "mic" | "updates";
+type SettingsTab =
+  | "edit"
+  | "theme"
+  | "showcases"
+  | "preview"
+  | "notifications"
+  | "privacy"
+  | "accessibility"
+  | "mic"
+  | "updates";
 type AppFontPreset = "cyber" | "clean" | "display" | "compact" | "modern" | "mono" | "serif";
 type AvatarDecoration = "none" | "sparkle" | "crown" | "heart" | "bolt" | "moon" | "leaf" | "star";
 type ProfileShowcaseLayout = "grid" | "stack";
@@ -172,6 +186,16 @@ type DmWithFriend = {
   sharedBackground: BackgroundGradient | null;
   isPinned: boolean;
 };
+
+type DmInAppBanner = {
+  conversationId: number;
+  friendName: string;
+  friendAvatarUrl: string;
+  preview: string;
+};
+
+type AppGlyphKind = "glytch" | "settings" | "friends" | "group" | "discover" | "patch";
+type AppGlyphSize = "small" | "medium" | "large";
 
 type GroupChatWithMembers = {
   groupChatId: number;
@@ -209,6 +233,7 @@ type UiMessage = {
   senderName: string;
   senderAvatarUrl: string;
   readAt: Date | null;
+  editedAt: Date | null;
   reactions: UiMessageReaction[];
 };
 
@@ -223,6 +248,8 @@ type MessageContextMenuState = {
   x: number;
   y: number;
   canDelete: boolean;
+  canEdit: boolean;
+  canReply: boolean;
 };
 
 type DmSidebarContextMenuState = {
@@ -266,6 +293,8 @@ type ComposerGif = {
 };
 
 type ProfileForm = {
+  displayName: string;
+  username: string;
   avatarUrl: string;
   bannerUrl: string;
   bio: string;
@@ -302,6 +331,8 @@ type ProfileForm = {
   notifyGlytchMessages: boolean;
   notifyFriendRequests: boolean;
   notifyFriendRequestAccepted: boolean;
+  notifyInAppDmBanners: boolean;
+  gameActivitySharingEnabled: boolean;
   thirdPartyIntegrationsEnabled: boolean;
   mutedDmConversationIds: number[];
   accessibilityReduceMotion: boolean;
@@ -368,7 +399,7 @@ type GlytchInviteMessagePayload = {
 
 type TextPostMode = GlytchChannel["text_post_mode"];
 type AppThemeMode = "dark" | "light";
-type AppThemePreset = "default" | "neon" | "simplistic" | "ocean" | "sunset" | "mint";
+type AppThemePreset = "default" | "legacy" | "neon" | "simplistic" | "ocean" | "sunset" | "mint";
 type AppThemePalette = {
   bg: string;
   panel: string;
@@ -410,8 +441,8 @@ const LEGACY_DEFAULT_DM_CHAT_BACKGROUND: BackgroundGradient = {
   mode: "gradient",
 };
 const DEFAULT_DM_CHAT_BACKGROUND: BackgroundGradient = {
-  from: "#39515f",
-  to: "#2a3944",
+  from: "#152a4f",
+  to: "#0c1a33",
   mode: "gradient",
 };
 const DEFAULT_GLYTCH_CHAT_BACKGROUND: BackgroundGradient = {
@@ -554,7 +585,7 @@ const MISSING_SELF_PARTICIPANT_MAX_MISSES = 8;
 const RNNOISE_ENABLED = String(import.meta.env.VITE_RNNOISE_ENABLED || "true").toLowerCase() !== "false";
 const LIVEKIT_KRISP_ENABLED = String(import.meta.env.VITE_LIVEKIT_KRISP_ENABLED || "false").toLowerCase() === "true";
 const VOICE_MIC_INPUT_GAIN_MIN = 70;
-const VOICE_MIC_INPUT_GAIN_MAX = 170;
+const VOICE_MIC_INPUT_GAIN_MAX = 100;
 const VOICE_MIC_INPUT_GAIN_DEFAULT = 100;
 const SHOWCASE_KIND_LABELS: Record<ShowcaseKind, string> = {
   text: "Text",
@@ -577,6 +608,23 @@ const SHOWCASE_KIND_EMPTY_COPY: Record<ShowcaseKind, string> = {
 const APP_THEME_PALETTES: Record<AppThemeMode, Record<AppThemePreset, AppThemePalette>> = {
   dark: {
     default: {
+      bg: "#0b0f1a",
+      panel: "#1a1f2e",
+      panelBorder: "#3b82f6",
+      text: "#f3f4f6",
+      muted: "#9ca3af",
+      accent: "#8b5cf6",
+      accentStrong: "#ec4899",
+      card: "#1a1f2e",
+      cardBorder: "#3b82f6",
+      bubbleBot: "#1a1f2e",
+      bubbleMe: "#8b5cf6",
+      hot: "#ec4899",
+      orange: "#22d3ee",
+      warn: "#21283a",
+      violet: "#8b5cf6",
+    },
+    legacy: {
       bg: "#2f404d",
       panel: "#39515f",
       panelBorder: "#3d898d",
@@ -681,6 +729,23 @@ const APP_THEME_PALETTES: Record<AppThemeMode, Record<AppThemePreset, AppThemePa
   },
   light: {
     default: {
+      bg: "#f3f4f6",
+      panel: "#e9ecf6",
+      panelBorder: "#9ca3af",
+      text: "#1a1f2e",
+      muted: "#6c7280",
+      accent: "#8b5cf6",
+      accentStrong: "#ec4899",
+      card: "#e1e6f4",
+      cardBorder: "#9ca3af",
+      bubbleBot: "#e6ebf9",
+      bubbleMe: "#d9e5ff",
+      hot: "#ec4899",
+      orange: "#22d3ee",
+      warn: "#d7deef",
+      violet: "#e0d7ff",
+    },
+    legacy: {
       bg: "#eef4ff",
       panel: "#deebff",
       panelBorder: "#9dc8b8",
@@ -857,7 +922,7 @@ const AVATAR_DECORATION_HINTS: Record<AvatarDecoration, string> = {
   star: "Breathing halo",
 };
 const PROFILE_SETTINGS_TABS: SettingsTab[] = ["edit", "showcases", "preview"];
-const SYSTEM_SETTINGS_TABS: SettingsTab[] = ["theme", "notifications", "accessibility", "mic", "updates"];
+const SYSTEM_SETTINGS_TABS: SettingsTab[] = ["theme", "notifications", "privacy", "accessibility", "mic", "updates"];
 
 const ROLE_PERMISSION_OPTIONS: Array<{ key: GlytchRolePermissionKey; label: string; fallbackKeys: string[] }> = [
   { key: "ban_members", label: "Can Ban Members", fallbackKeys: ["manage_members"] },
@@ -955,7 +1020,7 @@ const DEFAULT_VOICE_MIC_SETTINGS: VoiceMicSettings = {
   suppressionProfile: "strong",
   echoCancellation: true,
   noiseSuppression: true,
-  autoGainControl: true,
+  autoGainControl: false,
   voiceIsolation: true,
   inputGainPercent: VOICE_MIC_INPUT_GAIN_DEFAULT,
 };
@@ -1018,6 +1083,39 @@ function initialsFromName(name: string) {
   return name.slice(0, 2).toUpperCase();
 }
 
+function normalizeUsernameLookupInput(rawUsername: string) {
+  const normalized = rawUsername.trim().toLowerCase().replace(/^@+/, "");
+  if (!normalized) return "";
+  const hashIndex = normalized.lastIndexOf("#");
+  if (hashIndex > 0) {
+    const base = normalized.slice(0, hashIndex).replace(/[^a-z0-9]/g, "");
+    const suffix = normalized.slice(hashIndex + 1).replace(/[^a-z0-9]/g, "");
+    if (base && suffix.length === 6) {
+      return `${base}${suffix}`;
+    }
+  }
+  return normalized.replace(/[^a-z0-9]/g, "");
+}
+
+function ensureUsernameWithIdSuffixRaw(username: string, userId: string) {
+  const normalizedUsername = normalizeUsernameLookupInput(username);
+  if (!normalizedUsername) return "";
+  if (normalizedUsername.length >= 9) return normalizedUsername;
+
+  const normalizedUserId = userId.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  const suffixSource = normalizedUserId.length > 0 ? normalizedUserId : "000000";
+  const suffix = suffixSource.slice(-6).padStart(6, "0").slice(0, 6);
+  return `${normalizedUsername}${suffix}`;
+}
+
+function formatUsernameWithId(username: string, userId: string) {
+  const rawUsername = ensureUsernameWithIdSuffixRaw(username, userId);
+  if (!rawUsername || rawUsername.length <= 6) return rawUsername;
+  const base = rawUsername.slice(0, -6);
+  const suffix = rawUsername.slice(-6);
+  return `${base}#${suffix}`;
+}
+
 function formatGlytchNameWithId(name: string, id: number) {
   return `${name}#${id}`;
 }
@@ -1049,14 +1147,14 @@ function inferVideoShareKindFromTrack(track: MediaStreamTrack): LocalVideoShareK
 }
 
 function normalizeAppTheme(raw: unknown): AppThemePreset {
-  // Map legacy "classic" values back to default so old profiles remain valid.
+  // Map legacy "classic" values to the 0.1 palette so old profiles remain valid.
   if (raw === "classic") {
-    return "default";
+    return "legacy";
   }
-  if (raw === "neon" || raw === "simplistic" || raw === "ocean" || raw === "sunset" || raw === "mint") {
+  if (raw === "default" || raw === "legacy" || raw === "neon" || raw === "simplistic" || raw === "ocean" || raw === "sunset" || raw === "mint") {
     return raw;
   }
-  return "default";
+  return "simplistic";
 }
 
 function normalizeAppThemeMode(raw: unknown): AppThemeMode {
@@ -1501,6 +1599,76 @@ function renderAvatarDecoration(
   );
 }
 
+function AppGlyphIcon({ kind, size = "small", className = "" }: { kind: AppGlyphKind; size?: AppGlyphSize; className?: string }) {
+  const imageAssetUrl = kind === "glytch" ? glytchesIconAssetUrl : kind === "settings" ? settingsIconAssetUrl : null;
+  let symbol: ReactNode = null;
+  if (kind === "glytch") {
+    symbol = (
+      <>
+        <path d="M6.7 6.7h10.7l-2.3 2.3H10v6h5.8v-2.1h-3l2-2h4v6H6.7z" />
+        <path className="glyphTrail" d="M3.7 8.4h2.9M3.3 11h2.5M16.7 14.4h3.2M16 16.9h2.7" />
+      </>
+    );
+  } else if (kind === "friends") {
+    symbol = (
+      <>
+        <circle cx="9" cy="9" r="2.2" />
+        <circle cx="14.4" cy="10" r="2" />
+        <path d="M5.2 16.6c.8-2.2 2.3-3.4 3.9-3.4h2.2c1.6 0 3.1 1.2 3.9 3.4" />
+        <path className="glyphTrail" d="M16.9 6.2v3.1M15.3 7.8h3.2" />
+      </>
+    );
+  } else if (kind === "group") {
+    symbol = (
+      <>
+        <path d="M6.1 7.2h8.6a2.2 2.2 0 0 1 2.2 2.2v3.8a2.2 2.2 0 0 1-2.2 2.2h-4.4l-2.8 2v-2H6.1A2.2 2.2 0 0 1 4 13.2V9.4a2.2 2.2 0 0 1 2.1-2.2Z" />
+        <path className="glyphTrail" d="M13.1 5.1h5a1.8 1.8 0 0 1 1.8 1.8v3.2" />
+      </>
+    );
+  } else if (kind === "discover") {
+    symbol = (
+      <>
+        <circle cx="12" cy="12" r="7.2" />
+        <path className="glyphFill" d="M14.9 9.1 10 10.8 8.3 15.7l4.9-1.8z" />
+        <circle cx="12" cy="12" r="1.2" />
+      </>
+    );
+  } else if (kind === "patch") {
+    symbol = (
+      <>
+        <path d="M7 4.8h7l3 3v11a1.4 1.4 0 0 1-1.4 1.4H8.4A1.4 1.4 0 0 1 7 18.8V4.8Z" />
+        <path d="M10 10h4.8M10 13h4.8M10 16h3.2" />
+        <circle className="glyphBadge" cx="17.4" cy="17.2" r="3.2" />
+        <path className="glyphBadgeCheck" d="m15.9 17.2 1.1 1.1 2.1-2.2" />
+      </>
+    );
+  }
+
+  if (imageAssetUrl) {
+    return (
+      <span
+        className={["appGlyphIcon", `appGlyph-${size}`, className].filter(Boolean).join(" ")}
+        data-kind={kind}
+        aria-hidden="true"
+      >
+        <img src={imageAssetUrl} alt="" />
+      </span>
+    );
+  }
+
+  return (
+    <span
+      className={["appGlyphIcon", `appGlyph-${size}`, className].filter(Boolean).join(" ")}
+      data-kind={kind}
+      aria-hidden="true"
+    >
+      <svg viewBox="0 0 24 24" role="presentation">
+        {symbol}
+      </svg>
+    </span>
+  );
+}
+
 function normalizeBlockedWordsDraft(raw: string): string[] {
   return Array.from(new Set(
     raw
@@ -1665,14 +1833,15 @@ function buildMessageSnapshotKey(messages: UiMessage[]): string {
         .map((reaction) => `${reaction.emoji}:${reaction.count}:${reaction.reactedByMe ? 1 : 0}`)
         .join(",");
       const readAt = message.readAt ? message.readAt.getTime() : 0;
-      return `${message.id}|${message.attachmentType || ""}|${readAt}|${reactions}`;
+      const editedAt = message.editedAt ? message.editedAt.getTime() : 0;
+      return `${message.id}|${message.attachmentType || ""}|${readAt}|${editedAt}|${message.text}|${reactions}`;
     })
     .join("~");
 }
 
 function clampVoiceVolume(volume: number): number {
   if (!Number.isFinite(volume)) return 1;
-  return Math.max(0, Math.min(1, volume));
+  return Math.max(0, Math.min(2, volume));
 }
 
 function normalizeVoiceSuppressionProfile(raw: unknown): VoiceSuppressionProfile {
@@ -1868,8 +2037,8 @@ function buildVoiceAudioConstraints(settings: VoiceMicSettings): VoiceAudioConst
   const selectedDeviceId = normalizeMicInputDeviceId(settings.inputDeviceId);
   const isStrong = settings.suppressionProfile === "strong" || settings.suppressionProfile === "ultra";
   const isUltra = settings.suppressionProfile === "ultra";
-  // AGC often amplifies room playback/echo on speaker setups; disable it in Max profile.
-  const effectiveAutoGainControl = isUltra ? false : settings.autoGainControl;
+  // Keep AGC off to avoid lifting output loudness while suppressing noise.
+  const effectiveAutoGainControl = false;
   return {
     // Request stronger AEC/NS paths on Chromium while preserving standards fallbacks.
     deviceId: selectedDeviceId === "default" ? undefined : { ideal: selectedDeviceId },
@@ -1897,7 +2066,7 @@ function buildVoiceAudioConstraints(settings: VoiceMicSettings): VoiceAudioConst
 
 function buildStrictVoiceAudioConstraints(settings: VoiceMicSettings): VoiceAudioConstraints {
   const selectedDeviceId = normalizeMicInputDeviceId(settings.inputDeviceId);
-  const effectiveAutoGainControl = settings.suppressionProfile === "ultra" ? false : settings.autoGainControl;
+  const effectiveAutoGainControl = false;
   return {
     deviceId: selectedDeviceId === "default" ? undefined : { exact: selectedDeviceId },
     echoCancellation: { exact: settings.echoCancellation },
@@ -1923,6 +2092,10 @@ function buildProfileForm(profile: Profile | null): ProfileForm {
   const notifyFriendRequests = typeof theme.notifyFriendRequests === "boolean" ? theme.notifyFriendRequests : true;
   const notifyFriendRequestAccepted =
     typeof theme.notifyFriendRequestAccepted === "boolean" ? theme.notifyFriendRequestAccepted : true;
+  const notifyInAppDmBanners =
+    typeof theme.notifyInAppDmBanners === "boolean" ? theme.notifyInAppDmBanners : true;
+  const gameActivitySharingEnabled =
+    typeof theme.gameActivitySharingEnabled === "boolean" ? theme.gameActivitySharingEnabled : true;
   const thirdPartyIntegrationsEnabled =
     typeof theme.thirdPartyIntegrationsEnabled === "boolean" ? theme.thirdPartyIntegrationsEnabled : true;
   const mutedDmConversationIds = parseMutedDmConversationIds(theme.mutedDmConversationIds);
@@ -1939,7 +2112,7 @@ function buildProfileForm(profile: Profile | null): ProfileForm {
   const isLegacyLightPreset = legacyThemeValue === "light";
   const appThemeMode = isLegacyLightPreset ? "light" : normalizeAppThemeMode(theme.appThemeMode);
   const appTheme = isLegacyLightPreset ? "simplistic" : normalizeAppTheme(legacyThemeValue);
-  const appThemePalette = APP_THEME_PALETTES[appThemeMode]?.[appTheme] || APP_THEME_PALETTES.dark.default;
+  const appThemePalette = APP_THEME_PALETTES[appThemeMode]?.[appTheme] || APP_THEME_PALETTES.dark.simplistic;
   const appFontPreset = normalizeAppFontPreset(theme.appFontPreset);
   const appTextColor = typeof theme.appTextColor === "string" ? theme.appTextColor : appThemePalette.text;
   const profileNameColor = typeof theme.profileNameColor === "string" ? theme.profileNameColor : DEFAULT_PROFILE_NAME_COLOR;
@@ -1970,6 +2143,8 @@ function buildProfileForm(profile: Profile | null): ProfileForm {
   const profilePresenceStatus = normalizePresenceStatus(profile?.presence_status);
   const initialPresenceStatus = profilePresenceStatus === "away" ? "active" : profilePresenceStatus;
   return {
+    displayName: profile?.display_name?.trim() || profile?.username || "User",
+    username: profile?.username || "",
     avatarUrl: profile?.avatar_url || "",
     bannerUrl: profile?.banner_url || "",
     bio: profile?.bio || "",
@@ -2008,6 +2183,8 @@ function buildProfileForm(profile: Profile | null): ProfileForm {
     notifyGlytchMessages,
     notifyFriendRequests,
     notifyFriendRequestAccepted,
+    notifyInAppDmBanners,
+    gameActivitySharingEnabled,
     thirdPartyIntegrationsEnabled,
     mutedDmConversationIds,
     accessibilityReduceMotion,
@@ -2059,6 +2236,8 @@ function buildProfileThemePayload(form: ProfileForm): Record<string, unknown> {
     notifyGlytchMessages: form.notifyGlytchMessages,
     notifyFriendRequests: form.notifyFriendRequests,
     notifyFriendRequestAccepted: form.notifyFriendRequestAccepted,
+    notifyInAppDmBanners: form.notifyInAppDmBanners,
+    gameActivitySharingEnabled: form.gameActivitySharingEnabled,
     thirdPartyIntegrationsEnabled: form.thirdPartyIntegrationsEnabled,
     mutedDmConversationIds: form.mutedDmConversationIds,
     accessibilityReduceMotion: form.accessibilityReduceMotion,
@@ -2115,6 +2294,7 @@ type HoverGifImageProps = {
   src: string;
   alt: string;
   className: string;
+  onError?: () => void;
 };
 
 type DesktopUpdatePlatform = "windows" | "mac" | "linux";
@@ -2131,7 +2311,7 @@ type DesktopUpdatePayload = {
   sha256: string | null;
 };
 
-function HoverGifImage({ src, alt, className }: HoverGifImageProps) {
+function HoverGifImage({ src, alt, className, onError }: HoverGifImageProps) {
   const [isHovering, setIsHovering] = useState(false);
   const [stillSrc, setStillSrc] = useState<string | null>(() => (GIF_STILL_CACHE.has(src) ? GIF_STILL_CACHE.get(src) || null : null));
   const [stillResolved, setStillResolved] = useState<boolean>(() => GIF_STILL_CACHE.has(src));
@@ -2168,7 +2348,7 @@ function HoverGifImage({ src, alt, className }: HoverGifImageProps) {
       onPointerCancel={() => setIsHovering(false)}
     >
       {displaySrc ? (
-        <img src={displaySrc} alt={alt} className={className} loading="lazy" draggable={false} />
+        <img src={displaySrc} alt={alt} className={className} loading="lazy" draggable={false} onError={onError} />
       ) : (
         <span className="messageMedia messageMediaGifPlaceholder">{stillResolved ? "GIF" : "Loading GIF..."}</span>
       )}
@@ -2251,6 +2431,28 @@ type PatchNoteEntry = {
 };
 
 const PATCH_NOTES: PatchNoteEntry[] = [
+  {
+    version: "0.2.0",
+    date: "2026-02-20",
+    bugFixes: [
+      "Fixed unified Group Chats flow so new group creation is available from both the left panel and the group grid page.",
+      "Fixed Identity username display for legacy short usernames by showing a consistent 6-character suffix fallback.",
+      "Fixed Switch Glytch action to open the My Glytches grid instead of jumping to Discover.",
+      "Fixed top-right call button visibility so it only appears while inside an active DM or voice channel context.",
+      "Fixed Friends panel clutter by removing the redundant Back to DMs action in unified sidebar mode.",
+      "Improved GIF picker resilience by continuing to load GIF results even before a chat target is selected.",
+    ],
+    newFeatures: [
+      "Added a dedicated Create Group Chat form directly on the Group directory screen.",
+      "Added a unified sidebar Create Group Chat flow with multi-friend selection.",
+      "Upgraded online-friends layout to a controlled grid with a maximum of three cards per row.",
+      "Updated patch notes to the 0.2.0 release format with expanded known-issues tracking.",
+    ],
+    knownIssues: [
+      "Live GIF provider results still depend on backend environment variables; if GIPHY/Tenor keys are missing, fallback GIFs are shown.",
+      "If the username migration SQL has not been fully applied, legacy account usernames in storage may still need backend migration to match the new format everywhere.",
+    ],
+  },
   {
     version: "0.1.5",
     date: "2026-02-18",
@@ -2385,8 +2587,7 @@ function loadVoiceMicSettingsFromStorage(): VoiceMicSettings {
         typeof source.echoCancellation === "boolean" ? source.echoCancellation : DEFAULT_VOICE_MIC_SETTINGS.echoCancellation,
       noiseSuppression:
         typeof source.noiseSuppression === "boolean" ? source.noiseSuppression : DEFAULT_VOICE_MIC_SETTINGS.noiseSuppression,
-      autoGainControl:
-        typeof source.autoGainControl === "boolean" ? source.autoGainControl : DEFAULT_VOICE_MIC_SETTINGS.autoGainControl,
+      autoGainControl: false,
       voiceIsolation: typeof source.voiceIsolation === "boolean" ? source.voiceIsolation : DEFAULT_VOICE_MIC_SETTINGS.voiceIsolation,
       inputGainPercent: normalizeMicInputGainPercent(source.inputGainPercent),
     };
@@ -2434,6 +2635,10 @@ export default function ChatDashboard({
 }: ChatDashboardProps) {
   const [viewMode, setViewMode] = useState<ViewMode>("dm");
   const [dmPanelMode, setDmPanelMode] = useState<DmPanelMode>("dms");
+  const [unifiedSidebarView, setUnifiedSidebarView] = useState<UnifiedSidebarView>("dms");
+  const [unifiedSidebarSearchDraft, setUnifiedSidebarSearchDraft] = useState("");
+  const [dmMessageSearchDraft, setDmMessageSearchDraft] = useState("");
+  const [dmInAppBanner, setDmInAppBanner] = useState<DmInAppBanner | null>(null);
 
   const [friendUsername, setFriendUsername] = useState("");
   const [dmError, setDmError] = useState("");
@@ -2594,6 +2799,9 @@ export default function ChatDashboard({
   const [dismissedDmMessageIds, setDismissedDmMessageIds] = useState<Record<number, true>>({});
   const [messageContextMenu, setMessageContextMenu] = useState<MessageContextMenuState | null>(null);
   const [messageContextMenuReactionsExpanded, setMessageContextMenuReactionsExpanded] = useState(false);
+  const [editingMessageId, setEditingMessageId] = useState<number | null>(null);
+  const [editingMessageDraft, setEditingMessageDraft] = useState("");
+  const [messageEditBusy, setMessageEditBusy] = useState(false);
   const [composerReplyTarget, setComposerReplyTarget] = useState<ComposerReplyTarget | null>(null);
   const [hasDraftText, setHasDraftText] = useState(false);
   const [composerAttachment, setComposerAttachment] = useState<ComposerAttachment | null>(null);
@@ -2695,6 +2903,11 @@ export default function ChatDashboard({
   const remoteScreenPromoteTimeoutsRef = useRef<Map<string, number>>(new Map());
   const remoteScreenDemoteTimeoutsRef = useRef<Map<string, number>>(new Map());
   const remoteAudioElsRef = useRef<Map<string, HTMLAudioElement>>(new Map());
+  const remoteOutputAudioContextRef = useRef<AudioContext | null>(null);
+  const remoteVoiceAudioSourceNodesRef = useRef<Map<string, MediaElementAudioSourceNode>>(new Map());
+  const remoteVoiceGainNodesRef = useRef<Map<string, GainNode>>(new Map());
+  const remoteScreenAudioSourceNodesRef = useRef<Map<string, MediaElementAudioSourceNode>>(new Map());
+  const remoteScreenGainNodesRef = useRef<Map<string, GainNode>>(new Map());
   const speakingAnalyserCleanupRef = useRef<Map<string, () => void>>(new Map());
   const livekitAudioTrackRef = useRef<LivekitAudioTrackAdapter | null>(null);
   const livekitProcessorRef = useRef<LivekitKrispProcessorAdapter | null>(null);
@@ -2731,8 +2944,12 @@ export default function ChatDashboard({
   const soundContextRef = useRef<AudioContext | null>(null);
   const notificationSoundLastPlayedAtRef = useRef(0);
   const incomingCallRingLastPlayedAtRef = useRef(0);
+  const dmInAppBannerTimeoutRef = useRef<number | null>(null);
+  const publishedCurrentGameRef = useRef<string | null>(null);
+  const messageAttachmentRetryCountsRef = useRef<Record<number, number>>({});
   const notificationPermissionRequestedRef = useRef(false);
   const dmLatestMessageIdsRef = useRef<Record<number, number>>({});
+  const dmNotificationLatestMessageIdsRef = useRef<Record<number, number>>({});
   const dmMessageNotificationSeededRef = useRef(false);
   const groupLatestMessageIdsRef = useRef<Record<number, number>>({});
   const groupMessageNotificationSeededRef = useRef(false);
@@ -2770,11 +2987,28 @@ export default function ChatDashboard({
     [dms, activeConversationId],
   );
   const sortedDms = useMemo(() => sortDmsByPinned(dms, dmLatestMessageIds), [dmLatestMessageIds, dms]);
+  const unifiedSidebarSearchQuery = unifiedSidebarSearchDraft.trim().toLowerCase();
+  const dmMessageSearchQuery = dmMessageSearchDraft.trim().toLowerCase();
   const filteredDms = useMemo(() => {
     const query = dmSearchDraft.trim().toLowerCase();
     if (!query) return sortedDms;
     return sortedDms.filter((dm) => dm.friendName.toLowerCase().includes(query));
   }, [dmSearchDraft, sortedDms]);
+  const filteredUnifiedSidebarGlytches = useMemo(() => {
+    if (!unifiedSidebarSearchQuery) return glytches;
+    return glytches.filter((glytch) => {
+      const bio = (glytch.bio || "").toLowerCase();
+      return (
+        glytch.name.toLowerCase().includes(unifiedSidebarSearchQuery) ||
+        bio.includes(unifiedSidebarSearchQuery) ||
+        String(glytch.id).includes(unifiedSidebarSearchQuery)
+      );
+    });
+  }, [glytches, unifiedSidebarSearchQuery]);
+  const filteredUnifiedSidebarGroups = useMemo(() => {
+    if (!unifiedSidebarSearchQuery) return groupChats;
+    return groupChats.filter((chat) => chat.name.toLowerCase().includes(unifiedSidebarSearchQuery));
+  }, [groupChats, unifiedSidebarSearchQuery]);
   const activeGroupChat = useMemo(
     () => groupChats.find((chat) => chat.groupChatId === activeGroupChatId) || null,
     [groupChats, activeGroupChatId],
@@ -3036,7 +3270,9 @@ export default function ChatDashboard({
     () => viewMode === "group" && Boolean(activeGroupChatId),
     [viewMode, activeGroupChatId],
   );
-  const shouldShowVoiceControls = viewMode === "dm" || (viewMode === "glytch" && activeChannel?.kind === "voice");
+  const shouldShowVoiceControls =
+    (viewMode === "dm" && (Boolean(activeConversationId) || Boolean(voiceRoomKey))) ||
+    (viewMode === "glytch" && activeChannel?.kind === "voice");
   const shouldRenderHeaderActions = shouldShowVoiceControls || shouldShowQuickThemeControl;
   const effectiveVoiceMuted = voiceMuted || voiceDeafened;
   const canModerateCurrentVoiceRoom =
@@ -3060,6 +3296,29 @@ export default function ChatDashboard({
       setSelectedDiscoverGlytchId(publicGlytchResults[0].id);
     }
   }, [publicGlytchResults, selectedDiscoverGlytchId]);
+
+  useEffect(() => {
+    setDmMessageSearchDraft("");
+  }, [activeConversationId]);
+
+  useEffect(() => {
+    if (viewMode === "dm" && activeConversationId && dmInAppBanner?.conversationId === activeConversationId) {
+      setDmInAppBanner(null);
+      if (dmInAppBannerTimeoutRef.current !== null) {
+        window.clearTimeout(dmInAppBannerTimeoutRef.current);
+        dmInAppBannerTimeoutRef.current = null;
+      }
+    }
+  }, [activeConversationId, dmInAppBanner, viewMode]);
+
+  useEffect(() => {
+    if (profileForm.notifyInAppDmBanners) return;
+    if (dmInAppBannerTimeoutRef.current !== null) {
+      window.clearTimeout(dmInAppBannerTimeoutRef.current);
+      dmInAppBannerTimeoutRef.current = null;
+    }
+    setDmInAppBanner(null);
+  }, [profileForm.notifyInAppDmBanners]);
 
   useEffect(() => {
     return () => {
@@ -3309,6 +3568,50 @@ export default function ChatDashboard({
       }
     },
     [ensureNotificationPermission, playNotificationSound],
+  );
+
+  const showDmInAppBanner = useCallback((payload: DmInAppBanner) => {
+    if (typeof window === "undefined") return;
+    if (!profileForm.notifyInAppDmBanners) return;
+    if (dmInAppBannerTimeoutRef.current !== null) {
+      window.clearTimeout(dmInAppBannerTimeoutRef.current);
+      dmInAppBannerTimeoutRef.current = null;
+    }
+    setDmInAppBanner(payload);
+    dmInAppBannerTimeoutRef.current = window.setTimeout(() => {
+      setDmInAppBanner((current) => (current?.conversationId === payload.conversationId ? null : current));
+      dmInAppBannerTimeoutRef.current = null;
+    }, 5000);
+  }, [profileForm.notifyInAppDmBanners]);
+
+  useEffect(() => {
+    return () => {
+      if (dmInAppBannerTimeoutRef.current !== null) {
+        window.clearTimeout(dmInAppBannerTimeoutRef.current);
+        dmInAppBannerTimeoutRef.current = null;
+      }
+    };
+  }, []);
+
+  const handleMessageAttachmentLoadError = useCallback(
+    async (messageId: number, attachmentUrl: string | null | undefined) => {
+      const normalizedUrl = typeof attachmentUrl === "string" ? attachmentUrl.trim() : "";
+      if (!normalizedUrl) return;
+      const previousRetries = messageAttachmentRetryCountsRef.current[messageId] || 0;
+      if (previousRetries >= 1) return;
+      messageAttachmentRetryCountsRef.current[messageId] = previousRetries + 1;
+
+      try {
+        const refreshedUrl = await resolveMessageAttachmentUrl(accessToken, normalizedUrl);
+        if (!refreshedUrl || refreshedUrl === normalizedUrl) return;
+        setMessages((prev) =>
+          prev.map((msg) => (msg.id === messageId && msg.attachmentUrl === normalizedUrl ? { ...msg, attachmentUrl: refreshedUrl } : msg)),
+        );
+      } catch {
+        // Keep rendering stable when media URL refresh fails.
+      }
+    },
+    [accessToken],
   );
 
   const ensureSoundContext = async () => {
@@ -3684,15 +3987,15 @@ export default function ChatDashboard({
         presenceNode.type = "peaking";
         presenceNode.frequency.value = 2550;
         presenceNode.Q.value = 1.05;
-        presenceNode.gain.value = profileIsBalanced ? 1.3 : profileIsUltra ? 3.5 : 2.5;
+        presenceNode.gain.value = profileIsBalanced ? 0.75 : profileIsUltra ? 1.5 : 1.1;
 
         deEssNode.type = "highshelf";
         deEssNode.frequency.value = 6400;
         deEssNode.gain.value = profileIsBalanced ? -0.8 : profileIsUltra ? -2.5 : -1.7;
 
-        compressorNode.threshold.value = profileIsBalanced ? -25 : profileIsUltra ? -35 : -31;
+        compressorNode.threshold.value = profileIsBalanced ? -21 : profileIsUltra ? -25 : -23;
         compressorNode.knee.value = 24;
-        compressorNode.ratio.value = profileIsBalanced ? 3.2 : profileIsUltra ? 6.2 : 4.6;
+        compressorNode.ratio.value = profileIsBalanced ? 2.2 : profileIsUltra ? 2.9 : 2.5;
         compressorNode.attack.value = 0.003;
         compressorNode.release.value = profileIsUltra ? 0.2 : 0.18;
 
@@ -3708,7 +4011,7 @@ export default function ChatDashboard({
         gateFrequencyAnalyser.smoothingTimeConstant = 0.72;
         gateGainNode.gain.value = 1;
 
-        outputGainNode.gain.value = normalizeMicInputGainPercent(settings.inputGainPercent) / 100;
+        outputGainNode.gain.value = Math.min(1, normalizeMicInputGainPercent(settings.inputGainPercent) / 100);
 
         sourceNode.connect(highpassNode);
         highpassNode.connect(lowShelfNode);
@@ -4125,7 +4428,7 @@ export default function ChatDashboard({
             deviceId: selectedDeviceId === "default" ? undefined : { ideal: selectedDeviceId },
             echoCancellation: voiceMicSettings.echoCancellation,
             noiseSuppression: voiceMicSettings.noiseSuppression,
-            autoGainControl: voiceMicSettings.autoGainControl,
+            autoGainControl: false,
             channelCount: 1,
           },
           video: false,
@@ -4149,15 +4452,106 @@ export default function ChatDashboard({
     });
   }, []);
 
+  const disconnectRemoteAudioOutputNode = useCallback((userId: string, kind: "voice" | "screen" | "all" = "all") => {
+    const disconnectNodePair = (
+      sourceMap: Map<string, MediaElementAudioSourceNode>,
+      gainMap: Map<string, GainNode>,
+      targetUserId: string,
+    ) => {
+      const sourceNode = sourceMap.get(targetUserId);
+      const gainNode = gainMap.get(targetUserId);
+      if (sourceNode) {
+        try {
+          sourceNode.disconnect();
+        } catch {
+          // Ignore stale source-node disconnect failures.
+        }
+        sourceMap.delete(targetUserId);
+      }
+      if (gainNode) {
+        try {
+          gainNode.disconnect();
+        } catch {
+          // Ignore stale gain-node disconnect failures.
+        }
+        gainMap.delete(targetUserId);
+      }
+    };
+
+    if (kind === "all" || kind === "voice") {
+      disconnectNodePair(remoteVoiceAudioSourceNodesRef.current, remoteVoiceGainNodesRef.current, userId);
+    }
+    if (kind === "all" || kind === "screen") {
+      disconnectNodePair(remoteScreenAudioSourceNodesRef.current, remoteScreenGainNodesRef.current, userId);
+    }
+  }, []);
+
+  const ensureRemoteAudioGainNode = useCallback(
+    (userId: string, audioEl: HTMLAudioElement, kind: "voice" | "screen"): GainNode | null => {
+      const sourceMap = kind === "voice" ? remoteVoiceAudioSourceNodesRef.current : remoteScreenAudioSourceNodesRef.current;
+      const gainMap = kind === "voice" ? remoteVoiceGainNodesRef.current : remoteScreenGainNodesRef.current;
+      const existingSourceNode = sourceMap.get(userId);
+      const existingGainNode = gainMap.get(userId);
+
+      if (existingSourceNode && existingGainNode) {
+        if (existingSourceNode.mediaElement === audioEl) {
+          return existingGainNode;
+        }
+        disconnectRemoteAudioOutputNode(userId, kind);
+      }
+
+      try {
+        let outputAudioContext = remoteOutputAudioContextRef.current;
+        if (!outputAudioContext) {
+          outputAudioContext = new AudioContext({ latencyHint: "interactive" });
+          remoteOutputAudioContextRef.current = outputAudioContext;
+        }
+        if (outputAudioContext.state !== "running") {
+          void outputAudioContext.resume().catch(() => undefined);
+        }
+        if (outputAudioContext.state === "closed") {
+          return null;
+        }
+
+        const sourceNode = outputAudioContext.createMediaElementSource(audioEl);
+        const gainNode = outputAudioContext.createGain();
+        sourceNode.connect(gainNode);
+        gainNode.connect(outputAudioContext.destination);
+        sourceMap.set(userId, sourceNode);
+        gainMap.set(userId, gainNode);
+        return gainNode;
+      } catch {
+        return null;
+      }
+    },
+    [disconnectRemoteAudioOutputNode],
+  );
+
   const applyRemoteAudioOutput = useCallback(
     (targetUserId?: string) => {
       const applyToVoiceAudio = (userId: string, audioEl: HTMLAudioElement) => {
+        const requestedVolume = clampVoiceVolume(remoteUserVolumes[userId] ?? 1);
+        const gainNode = ensureRemoteAudioGainNode(userId, audioEl, "voice");
+        audioEl.muted = false;
+        audioEl.volume = 1;
+        if (gainNode) {
+          gainNode.gain.value = voiceDeafened ? 0 : requestedVolume;
+          return;
+        }
         audioEl.muted = voiceDeafened;
-        audioEl.volume = clampVoiceVolume(remoteUserVolumes[userId] ?? 1);
+        audioEl.volume = Math.min(1, requestedVolume);
       };
       const applyToScreenShareAudio = (userId: string, audioEl: HTMLAudioElement) => {
+        const requestedVolume = clampVoiceVolume(remoteUserVolumes[userId] ?? 1);
+        const gainNode = ensureRemoteAudioGainNode(userId, audioEl, "screen");
+        audioEl.muted = false;
+        audioEl.volume = 1;
+        if (gainNode) {
+          gainNode.gain.value = voiceDeafened || screenShareAudioMuted ? 0 : requestedVolume;
+          return;
+        }
         audioEl.muted = voiceDeafened || screenShareAudioMuted;
-        audioEl.volume = clampVoiceVolume(remoteUserVolumes[userId] ?? 1);
+        audioEl.volume = Math.min(1, requestedVolume);
       };
 
       if (targetUserId) {
@@ -4179,7 +4573,7 @@ export default function ChatDashboard({
         applyToScreenShareAudio(userId, audioEl);
       });
     },
-    [remoteUserVolumes, screenShareAudioMuted, voiceDeafened],
+    [ensureRemoteAudioGainNode, remoteUserVolumes, screenShareAudioMuted, voiceDeafened],
   );
 
   const handleSetRemoteUserVolume = useCallback(
@@ -4189,15 +4583,25 @@ export default function ChatDashboard({
         ...prev,
         [userId]: nextVolume,
       }));
-      const audioEl = remoteAudioElsRef.current.get(userId);
-      if (audioEl) {
-        audioEl.volume = nextVolume;
-        audioEl.muted = voiceDeafened;
+
+      const voiceGainNode = remoteVoiceGainNodesRef.current.get(userId);
+      if (voiceGainNode) {
+        voiceGainNode.gain.value = voiceDeafened ? 0 : nextVolume;
+      }
+      const screenGainNode = remoteScreenGainNodesRef.current.get(userId);
+      if (screenGainNode) {
+        screenGainNode.gain.value = voiceDeafened || screenShareAudioMuted ? 0 : nextVolume;
+      }
+
+      const voiceAudioEl = remoteAudioElsRef.current.get(userId);
+      if (voiceAudioEl) {
+        voiceAudioEl.muted = false;
+        voiceAudioEl.volume = voiceGainNode ? 1 : Math.min(1, nextVolume);
       }
       const screenAudioEl = remoteScreenAudioElsRef.current.get(userId);
       if (screenAudioEl) {
-        screenAudioEl.volume = nextVolume;
-        screenAudioEl.muted = voiceDeafened || screenShareAudioMuted;
+        screenAudioEl.muted = false;
+        screenAudioEl.volume = screenGainNode ? 1 : Math.min(1, nextVolume);
       }
     },
     [screenShareAudioMuted, voiceDeafened],
@@ -4377,6 +4781,18 @@ export default function ChatDashboard({
     },
     [currentUserId, currentUserPresenceStatus, knownProfiles],
   );
+  const filteredUnifiedDmRows = useMemo(() => {
+    if (!unifiedSidebarSearchQuery) return filteredDms;
+    return filteredDms.filter((dm) => dm.friendName.toLowerCase().includes(unifiedSidebarSearchQuery));
+  }, [filteredDms, unifiedSidebarSearchQuery]);
+  const onlineDmRows = useMemo(
+    () =>
+      sortedDms.filter((dm) => {
+        const status = resolvePresenceForUser(dm.friendUserId);
+        return status === "active" || status === "away";
+      }),
+    [resolvePresenceForUser, sortedDms],
+  );
 
   const highestRoleByUserId = useMemo(() => {
     const roleById = new Map(glytchRoles.map((role) => [role.id, role]));
@@ -4473,7 +4889,9 @@ export default function ChatDashboard({
   );
 
   const sidebarAvatar = profileForm.avatarUrl || currentProfile?.avatar_url || "";
-  const displayName = currentProfile?.username || currentUserName;
+  const displayName = (currentProfile?.display_name || currentProfile?.username || currentUserName || "User").trim() || "User";
+  const rawSettingsUsername = (profileForm.username || currentProfile?.username || currentUserName || "").trim().toLowerCase();
+  const settingsUsername = formatUsernameWithId(rawSettingsUsername, currentUserId);
   const resizeProfileBioInput = useCallback(() => {
     const textarea = profileBioInputRef.current;
     if (!textarea) return;
@@ -4510,6 +4928,64 @@ export default function ChatDashboard({
     desktopLatestVersion.length > 0 &&
     desktopUpdateDownloadUrl.length > 0 &&
     compareSemanticVersions(desktopLatestVersion, desktopAppVersion || "0.0.0") > 0;
+
+  useEffect(() => {
+    publishedCurrentGameRef.current = currentProfile?.current_game?.trim() || null;
+  }, [currentProfile?.current_game]);
+
+  useEffect(() => {
+    if (!isElectronRuntime || !window.electronAPI?.detectActiveGame) return;
+    let cancelled = false;
+    let polling = false;
+
+    const publishCurrentGame = async (nextGameName: string | null) => {
+      try {
+        const updated = await updateMyProfileCustomization(accessToken, currentUserId, {
+          current_game: nextGameName,
+          current_game_updated_at: new Date().toISOString(),
+        });
+        if (cancelled) return;
+        const nextProfile = updated[0] || null;
+        if (nextProfile) {
+          setCurrentProfile(nextProfile);
+          setKnownProfiles((prev) => ({ ...prev, [nextProfile.user_id]: nextProfile }));
+          setViewedProfile((prev) => (prev?.user_id === nextProfile.user_id ? nextProfile : prev));
+        }
+      } catch {
+        // Keep activity detection silent if OS process inspection is unavailable.
+      }
+    };
+
+    const pollGameActivity = async () => {
+      if (polling || cancelled) return;
+      polling = true;
+      try {
+        let detectedGameName: string | null = null;
+        if (profileForm.gameActivitySharingEnabled) {
+          const result = await window.electronAPI!.detectActiveGame!();
+          if (result?.ok && typeof result.gameName === "string" && result.gameName.trim()) {
+            detectedGameName = result.gameName.trim().slice(0, 96);
+          }
+        }
+
+        if (detectedGameName === publishedCurrentGameRef.current) return;
+        publishedCurrentGameRef.current = detectedGameName;
+        await publishCurrentGame(detectedGameName);
+      } finally {
+        polling = false;
+      }
+    };
+
+    void pollGameActivity();
+    const intervalId = window.setInterval(() => {
+      void pollGameActivity();
+    }, 12_000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [accessToken, currentUserId, isElectronRuntime, profileForm.gameActivitySharingEnabled]);
 
   const checkForDesktopAppUpdate = useCallback(async () => {
     if (!isElectronRuntime) return;
@@ -4721,7 +5197,7 @@ export default function ChatDashboard({
   useEffect(() => {
     const gainNode = voiceEnhancementOutputGainNodeRef.current;
     if (!gainNode) return;
-    const gainValue = normalizeMicInputGainPercent(voiceMicSettings.inputGainPercent) / 100;
+    const gainValue = Math.min(1, normalizeMicInputGainPercent(voiceMicSettings.inputGainPercent) / 100);
     try {
       gainNode.gain.setTargetAtTime(gainValue, gainNode.context.currentTime, 0.05);
     } catch {
@@ -4849,7 +5325,7 @@ export default function ChatDashboard({
             userId,
             shareKind,
             stream,
-            name: profile?.username || profile?.display_name || (userId === currentUserId ? displayName : "User"),
+            name: profile?.display_name || profile?.username || (userId === currentUserId ? displayName : "User"),
           };
         })
         .filter((entry): entry is { shareId: string; userId: string; shareKind: LocalVideoShareKind; stream: MediaStream; name: string } => Boolean(entry)),
@@ -5337,13 +5813,20 @@ export default function ChatDashboard({
     setMessageContextMenuReactionsExpanded(false);
   }, [messageContextMenu]);
 
+  useEffect(() => {
+    setEditingMessageId(null);
+    setEditingMessageDraft("");
+  }, [activeChannelId, activeConversationId, activeGroupChatId, viewMode]);
+
   const openDmMessageContextMenuAt = useCallback((
     anchorSource: HTMLElement,
     messageId: number,
     sender: UiMessage["sender"],
     clickPoint?: { x: number; y: number },
   ) => {
-    if (viewMode !== "dm") return;
+    const canOpenInCurrentView =
+      viewMode === "dm" || viewMode === "group" || (viewMode === "glytch" && activeChannel?.kind !== "voice");
+    if (!canOpenInCurrentView) return;
 
     if (!Number.isFinite(messageId) || messageId <= 0) return;
 
@@ -5353,8 +5836,10 @@ export default function ChatDashboard({
     if (!menuContainer) return;
 
     const menuWidth = 220;
-    const canDelete = sender === "me";
-    const menuHeight = canDelete ? 150 : 116;
+    const canDelete = sender === "me" && viewMode === "dm";
+    const canEdit = sender === "me";
+    const canReply = viewMode === "dm";
+    const menuHeight = 74 + (canReply ? 34 : 0) + (canEdit ? 34 : 0) + (canDelete ? 34 : 0);
     const anchorRect = messageBody.getBoundingClientRect();
     const containerRect = menuContainer.getBoundingClientRect();
     const rowElement = messageBody.closest(".messageRow");
@@ -5386,8 +5871,10 @@ export default function ChatDashboard({
       x: safeX,
       y: safeY,
       canDelete,
+      canEdit,
+      canReply,
     });
-  }, [viewMode]);
+  }, [activeChannel?.kind, viewMode]);
 
   useEffect(() => {
     if (!showGifPicker) return;
@@ -5397,15 +5884,6 @@ export default function ChatDashboard({
       setGifError("Third-party integrations are disabled in settings.");
       return;
     }
-    const canCompose =
-      viewMode === "dm"
-        ? !!activeConversationId
-        : viewMode === "group"
-          ? !!activeGroupChatId
-        : viewMode === "glytch"
-          ? !!activeChannelId && activeChannel?.kind !== "voice" && activeChannel?.text_post_mode !== "text_only"
-          : false;
-    if (!canCompose) return;
 
     let cancelled = false;
     const timeoutId = window.setTimeout(async () => {
@@ -5433,12 +5911,6 @@ export default function ChatDashboard({
     showGifPicker,
     accessToken,
     gifQueryDraft,
-    viewMode,
-    activeConversationId,
-    activeGroupChatId,
-    activeChannelId,
-    activeChannel?.kind,
-    activeChannel?.text_post_mode,
     thirdPartyIntegrationsEnabled,
   ]);
 
@@ -5552,7 +6024,7 @@ export default function ChatDashboard({
       return {
         conversationId: conv.id,
         friendUserId,
-        friendName: profile?.username || profile?.display_name || "User",
+        friendName: profile?.display_name || profile?.username || "User",
         friendAvatarUrl: profile?.avatar_url || "",
         sharedBackground: isForcedDefault ? null : normalizeBackgroundGradient(conv.dm_theme),
         isPinned: stateMap.get(conv.id)?.isPinned || false,
@@ -5591,8 +6063,8 @@ export default function ChatDashboard({
     setUnreadDmCounts(nextUnreadCounts);
 
     const currentConversationId = activeConversationIdRef.current;
-    if (sortedDms.length > 0 && !sortedDms.some((dm) => dm.conversationId === currentConversationId)) {
-      setActiveConversationId(sortedDms[0].conversationId);
+    if (sortedDms.length > 0 && currentConversationId !== null && !sortedDms.some((dm) => dm.conversationId === currentConversationId)) {
+      setActiveConversationId(null);
     }
     if (sortedDms.length === 0) {
       setActiveConversationId(null);
@@ -5692,9 +6164,8 @@ export default function ChatDashboard({
       if (!Number.isFinite(conversationId) || conversationId <= 0) return;
       setDmSidebarContextMenu(null);
       setActiveConversationId(conversationId);
-      if (unreadCount <= 0) return;
       setUnreadDmCounts((prev) => {
-        if (!prev[conversationId]) return prev;
+        if (unreadCount <= 0 && !prev[conversationId]) return prev;
         return { ...prev, [conversationId]: 0 };
       });
       flushDmConversationReadOnLeave(conversationId);
@@ -5804,7 +6275,7 @@ export default function ChatDashboard({
         .map((role) => role.name);
       return {
         userId: member.user_id,
-        name: profile?.username || profile?.display_name || "User",
+        name: profile?.display_name || profile?.username || "User",
         avatarUrl: profile?.avatar_url || "",
         roles: sortedRoleNames,
       };
@@ -5816,10 +6287,10 @@ export default function ChatDashboard({
       const bannerProfile = profileMap.get(ban.banned_by);
       return {
         userId: ban.user_id,
-        name: bannedProfile?.username || bannedProfile?.display_name || "User",
+        name: bannedProfile?.display_name || bannedProfile?.username || "User",
         avatarUrl: bannedProfile?.avatar_url || "",
         reason: ban.reason || null,
-        bannedByName: bannerProfile?.username || bannerProfile?.display_name || "Moderator",
+        bannedByName: bannerProfile?.display_name || bannerProfile?.username || "Moderator",
         bannedAt: ban.banned_at,
       };
     });
@@ -5830,7 +6301,7 @@ export default function ChatDashboard({
       return {
         requestId: request.id,
         userId: request.user_id,
-        name: requestedByProfile?.username || requestedByProfile?.display_name || "User",
+        name: requestedByProfile?.display_name || requestedByProfile?.username || "User",
         avatarUrl: requestedByProfile?.avatar_url || "",
         message: request.message || null,
         requestedAt: request.requested_at,
@@ -6318,6 +6789,7 @@ export default function ChatDashboard({
   useEffect(() => {
     if (dms.length === 0) {
       dmLatestMessageIdsRef.current = {};
+      dmNotificationLatestMessageIdsRef.current = {};
       setDmLatestMessageIds({});
       dmMessageNotificationSeededRef.current = false;
       return;
@@ -6340,7 +6812,7 @@ export default function ChatDashboard({
           }
         });
 
-        const previousByConversation = dmLatestMessageIdsRef.current;
+        const previousByConversation = dmNotificationLatestMessageIdsRef.current;
         const nextByConversation: Record<number, number> = {};
 
         for (const dm of dms) {
@@ -6356,12 +6828,20 @@ export default function ChatDashboard({
             latest.sender_id !== currentUserId &&
             latest.id > previousId;
           if (!hasNewIncomingMessage) continue;
-          if (!dmMessageNotificationsEnabled) continue;
           if (mutedDmConversationIdSet.has(dm.conversationId)) continue;
 
           const viewingThisDm =
             viewMode === "dm" && activeConversationId === dm.conversationId && isAppVisibleAndFocused();
           if (viewingThisDm) continue;
+
+          showDmInAppBanner({
+            conversationId: dm.conversationId,
+            friendName: dm.friendName,
+            friendAvatarUrl: dm.friendAvatarUrl,
+            preview: dmMessagePreviewText(latest),
+          });
+
+          if (!dmMessageNotificationsEnabled) continue;
 
           void triggerDesktopNotification({
             title: `New message from ${dm.friendName}`,
@@ -6369,6 +6849,7 @@ export default function ChatDashboard({
             tag: `dm-message-${dm.conversationId}`,
             icon: dm.friendAvatarUrl || undefined,
             onClick: () => {
+              setUnifiedSidebarView("dms");
               setViewMode("dm");
               setDmPanelMode("dms");
               setActiveConversationId(dm.conversationId);
@@ -6376,6 +6857,7 @@ export default function ChatDashboard({
           });
         }
 
+        dmNotificationLatestMessageIdsRef.current = nextByConversation;
         dmLatestMessageIdsRef.current = nextByConversation;
         setDmLatestMessageIds((prev) => {
           const prevKeys = Object.keys(prev);
@@ -6419,6 +6901,7 @@ export default function ChatDashboard({
     isAppVisibleAndFocused,
     mutedDmConversationIdSet,
     shouldPauseBackgroundPolling,
+    showDmInAppBanner,
     triggerDesktopNotification,
     viewMode,
   ]);
@@ -6470,7 +6953,7 @@ export default function ChatDashboard({
           if (viewingThisGroupChat) continue;
 
           const senderProfile = knownProfiles[latest.sender_id];
-          const senderName = senderProfile?.username || senderProfile?.display_name || "Someone";
+          const senderName = senderProfile?.display_name || senderProfile?.username || "Someone";
 
           void triggerDesktopNotification({
             title: `Group · ${groupChat.name}`,
@@ -6478,6 +6961,7 @@ export default function ChatDashboard({
             tag: `group-message-${groupChat.groupChatId}`,
             icon: senderProfile?.avatar_url || undefined,
             onClick: () => {
+              setUnifiedSidebarView("groups");
               setViewMode("group");
               setActiveGroupChatId(groupChat.groupChatId);
             },
@@ -6594,7 +7078,7 @@ export default function ChatDashboard({
           const channelMeta = channelMetaById.get(channelId);
           if (!channelMeta) continue;
           const senderProfile = knownProfiles[latest.sender_id];
-          const senderName = senderProfile?.username || senderProfile?.display_name || "Someone";
+          const senderName = senderProfile?.display_name || senderProfile?.username || "Someone";
 
           void triggerDesktopNotification({
             title: `${channelMeta.glytchName} · #${channelMeta.channelName}`,
@@ -6602,6 +7086,7 @@ export default function ChatDashboard({
             tag: `glytch-message-${channelId}`,
             icon: senderProfile?.avatar_url || undefined,
             onClick: () => {
+              setUnifiedSidebarView("glytches");
               setViewMode("glytch");
               setShowGlytchDirectory(false);
               setActiveGlytchId(channelMeta.glytchId);
@@ -6659,7 +7144,7 @@ export default function ChatDashboard({
         if (!friendRequestNotificationsEnabled) return;
         const viewingFriendsPanel = viewMode === "dm" && dmPanelMode === "friends" && isAppVisibleAndFocused();
         if (viewingFriendsPanel) return;
-        const senderName = req.sender_profile?.username || req.sender_profile?.display_name || "Someone";
+        const senderName = req.sender_profile?.display_name || req.sender_profile?.username || "Someone";
         void triggerDesktopNotification({
           title: "New friend request",
           body: `${senderName} sent you a friend request.`,
@@ -6680,7 +7165,7 @@ export default function ChatDashboard({
         previousStatus !== "accepted"
       ) {
         if (!friendRequestAcceptedNotificationsEnabled) return;
-        const receiverName = req.receiver_profile?.username || req.receiver_profile?.display_name || "Your friend";
+        const receiverName = req.receiver_profile?.display_name || req.receiver_profile?.username || "Your friend";
         const receiverDm = dms.find((dm) => dm.friendUserId === req.receiver_id) || null;
         void triggerDesktopNotification({
           title: "Friend request accepted",
@@ -6980,9 +7465,10 @@ export default function ChatDashboard({
             attachmentType: row.attachment_type || null,
             timestamp: new Date(row.created_at),
             sender: row.sender_id === currentUserId ? ("me" as const) : ("other" as const),
-            senderName: row.sender_id === currentUserId ? currentUserName : activeDm?.friendName || "Friend",
+            senderName: row.sender_id === currentUserId ? displayName : activeDm?.friendName || "Friend",
             senderAvatarUrl: row.sender_id === currentUserId ? currentProfile?.avatar_url || "" : activeDm?.friendAvatarUrl || "",
             readAt: row.read_by_receiver_at ? new Date(row.read_by_receiver_at) : null,
+            editedAt: row.edited_at ? new Date(row.edited_at) : null,
             reactions: reactionMap.get(row.id) || [],
           })),
         );
@@ -7035,7 +7521,7 @@ export default function ChatDashboard({
     accessToken,
     activeConversationId,
     currentUserId,
-    currentUserName,
+    displayName,
     currentProfile?.avatar_url,
     activeDm?.friendName,
     activeDm?.friendAvatarUrl,
@@ -7093,13 +7579,14 @@ export default function ChatDashboard({
             sender: row.sender_id === currentUserId ? ("me" as const) : ("other" as const),
             senderName:
               row.sender_id === currentUserId
-                ? currentUserName
-                : profileMap.get(row.sender_id)?.username || profileMap.get(row.sender_id)?.display_name || "Member",
+                ? displayName
+                : profileMap.get(row.sender_id)?.display_name || profileMap.get(row.sender_id)?.username || "Member",
             senderAvatarUrl:
               row.sender_id === currentUserId
                 ? currentProfile?.avatar_url || ""
                 : profileMap.get(row.sender_id)?.avatar_url || "",
             readAt: null,
+            editedAt: row.edited_at ? new Date(row.edited_at) : null,
             reactions: reactionMap.get(row.id) || [],
           })),
         );
@@ -7152,7 +7639,7 @@ export default function ChatDashboard({
     accessToken,
     activeGroupChatId,
     currentUserId,
-    currentUserName,
+    displayName,
     currentProfile?.avatar_url,
     isElectronRuntime,
     shouldDeferMessagePolling,
@@ -7207,13 +7694,14 @@ export default function ChatDashboard({
             sender: row.sender_id === currentUserId ? ("me" as const) : ("other" as const),
             senderName:
               row.sender_id === currentUserId
-                ? currentUserName
-                : profileMap.get(row.sender_id)?.username || profileMap.get(row.sender_id)?.display_name || "Member",
+                ? displayName
+                : profileMap.get(row.sender_id)?.display_name || profileMap.get(row.sender_id)?.username || "Member",
             senderAvatarUrl:
               row.sender_id === currentUserId
                 ? currentProfile?.avatar_url || ""
                 : profileMap.get(row.sender_id)?.avatar_url || "",
             readAt: null,
+            editedAt: row.edited_at ? new Date(row.edited_at) : null,
             reactions: reactionMap.get(row.id) || [],
           })),
         );
@@ -7267,7 +7755,7 @@ export default function ChatDashboard({
     activeChannelId,
     activeChannel?.kind,
     currentUserId,
-    currentUserName,
+    displayName,
     currentProfile?.avatar_url,
     isElectronRuntime,
     shouldDeferMessagePolling,
@@ -7336,7 +7824,7 @@ export default function ChatDashboard({
           const profile = row.user_id === currentUserId ? currentProfile : knownProfiles[row.user_id];
           return {
             userId: row.user_id,
-            name: profile?.username || profile?.display_name || (row.user_id === currentUserId ? displayName : "User"),
+            name: profile?.display_name || profile?.username || (row.user_id === currentUserId ? displayName : "User"),
             avatarUrl: profile?.avatar_url || "",
             muted: row.muted,
             deafened: row.deafened,
@@ -7444,7 +7932,7 @@ export default function ChatDashboard({
               row.user_id === currentUserId ? currentProfile : knownProfiles[row.user_id] || fetchedProfileMap.get(row.user_id);
             return {
               userId: row.user_id,
-              name: profile?.username || profile?.display_name || (row.user_id === currentUserId ? displayName : "User"),
+              name: profile?.display_name || profile?.username || (row.user_id === currentUserId ? displayName : "User"),
               avatarUrl: profile?.avatar_url || "",
               muted: row.muted,
               deafened: row.deafened,
@@ -7658,7 +8146,7 @@ export default function ChatDashboard({
 
   const handleAddFriend = async (e: FormEvent) => {
     e.preventDefault();
-    const username = friendUsername.trim().toLowerCase();
+    const username = normalizeUsernameLookupInput(friendUsername);
     if (!username) {
       setDmError("Enter a username.");
       return;
@@ -7914,7 +8402,7 @@ export default function ChatDashboard({
     }
 
     const inviterName =
-      (currentProfile?.username || currentProfile?.display_name || currentUserName || "User").trim() || "User";
+      (currentProfile?.display_name || currentProfile?.username || currentUserName || "User").trim() || "User";
 
     try {
       setGlytchInviteBusyConversationId(dm.conversationId);
@@ -8017,6 +8505,116 @@ export default function ChatDashboard({
       messageInputRef.current?.focus();
     });
   }, [messageContextMenu, messages]);
+
+  const handleStartEditingMessageFromContextMenu = useCallback(() => {
+    if (!messageContextMenu || !messageContextMenu.canEdit) return;
+
+    const target = messages.find((message) => message.id === messageContextMenu.messageId);
+    setMessageContextMenu(null);
+    if (!target || target.sender !== "me") return;
+
+    if (viewMode === "dm" && parseGlytchInviteMessage(target.text || "")) {
+      setChatError("Invite messages cannot be edited.");
+      return;
+    }
+
+    const replyPayload = viewMode === "dm" ? parseDmReplyMessage(target.text || "") : null;
+    const initialDraft = replyPayload ? replyPayload.body : target.text;
+    setEditingMessageId(target.id);
+    setEditingMessageDraft(initialDraft || "");
+  }, [messageContextMenu, messages, viewMode]);
+
+  const handleCancelMessageEdit = useCallback(() => {
+    if (messageEditBusy) return;
+    setEditingMessageId(null);
+    setEditingMessageDraft("");
+  }, [messageEditBusy]);
+
+  const handleSaveMessageEdit = useCallback(async () => {
+    if (!editingMessageId || messageEditBusy) return;
+    const trimmed = editingMessageDraft.trim();
+    if (!trimmed) {
+      setChatError("Edited message cannot be empty.");
+      return;
+    }
+
+    const target = messages.find((message) => message.id === editingMessageId);
+    if (!target || target.sender !== "me") {
+      setEditingMessageId(null);
+      setEditingMessageDraft("");
+      return;
+    }
+
+    setMessageEditBusy(true);
+    setChatError("");
+
+    try {
+      let editedText = trimmed;
+      if (viewMode === "dm") {
+        const existingReplyPayload = parseDmReplyMessage(target.text || "");
+        if (existingReplyPayload) {
+          editedText = serializeDmReplyMessage({
+            replyToMessageId: existingReplyPayload.replyToMessageId,
+            replyToSenderName: existingReplyPayload.replyToSenderName,
+            replyPreview: existingReplyPayload.replyPreview,
+            body: trimmed,
+          });
+        }
+      }
+
+      let editedAt = new Date();
+      if (viewMode === "dm") {
+        if (!activeConversationId) return;
+        const updated = await updateDmMessage(accessToken, editingMessageId, editedText);
+        if (updated[0]?.edited_at) {
+          editedAt = new Date(updated[0].edited_at);
+        }
+      } else if (viewMode === "group") {
+        if (!activeGroupChatId) return;
+        const updated = await updateGroupChatMessage(accessToken, editingMessageId, editedText);
+        if (updated[0]?.edited_at) {
+          editedAt = new Date(updated[0].edited_at);
+        }
+      } else if (viewMode === "glytch") {
+        if (!activeChannelId || activeChannel?.kind === "voice") return;
+        const updated = await updateGlytchMessage(accessToken, editingMessageId, editedText);
+        if (updated[0]?.edited_at) {
+          editedAt = new Date(updated[0].edited_at);
+        }
+      } else {
+        return;
+      }
+
+      setMessages((prev) =>
+        prev.map((message) =>
+          message.id === editingMessageId
+            ? {
+                ...message,
+                text: editedText,
+                editedAt,
+              }
+            : message,
+        ),
+      );
+      setEditingMessageId(null);
+      setEditingMessageDraft("");
+    } catch (err) {
+      setChatError(err instanceof Error ? err.message : "Could not edit message.");
+    } finally {
+      setMessageEditBusy(false);
+    }
+  }, [
+    accessToken,
+    activeChannel?.kind,
+    activeChannelId,
+    activeConversationId,
+    activeGroupChatId,
+    editingMessageDraft,
+    editingMessageId,
+    messageEditBusy,
+    messages,
+    viewMode,
+  ]);
 
   const openDmNavContextMenu = useCallback((event: ReactMouseEvent<HTMLElement>) => {
     event.preventDefault();
@@ -8271,7 +8869,9 @@ export default function ChatDashboard({
   }, [accessToken, dmSidebarContextMenu, dms]);
 
   const handleDmMessageContextMenuCapture = useCallback((event: ReactMouseEvent<HTMLElement>) => {
-    if (viewMode !== "dm") return;
+    const canOpenInCurrentView =
+      viewMode === "dm" || viewMode === "group" || (viewMode === "glytch" && activeChannel?.kind !== "voice");
+    if (!canOpenInCurrentView) return;
     const rawTarget = event.target;
     const targetElement =
       rawTarget instanceof Element
@@ -8287,7 +8887,7 @@ export default function ChatDashboard({
     const sender = messageRow.dataset.sender === "me" ? "me" : "other";
     event.preventDefault();
     openDmMessageContextMenuAt(messageRow, messageId, sender, { x: event.clientX, y: event.clientY });
-  }, [openDmMessageContextMenuAt, viewMode]);
+  }, [activeChannel?.kind, openDmMessageContextMenuAt, viewMode]);
 
   const handleCreateChannel = async (e: FormEvent) => {
     e.preventDefault();
@@ -8644,7 +9244,9 @@ export default function ChatDashboard({
     setProfileSaveError("");
 
     try {
+      const nextDisplayName = profileForm.displayName.trim() || profileForm.username || "User";
       const updated = await updateMyProfileCustomization(accessToken, currentUserId, {
+        display_name: nextDisplayName,
         avatar_url: profileForm.avatarUrl.trim() || null,
         banner_url: profileForm.bannerUrl.trim() || null,
         bio: profileForm.bio.trim() || null,
@@ -8700,6 +9302,30 @@ export default function ChatDashboard({
       }
     } catch (err) {
       setProfileSaveError(err instanceof Error ? err.message : "Could not save notification settings.");
+    } finally {
+      setProfileSaveBusy(false);
+    }
+  };
+
+  const handleSavePrivacySettings = async (e: FormEvent) => {
+    e.preventDefault();
+    setProfileSaveBusy(true);
+    setProfileSaveError("");
+
+    try {
+      const updated = await updateMyProfileCustomization(accessToken, currentUserId, {
+        profile_theme: buildProfileThemePayload(profileForm),
+      });
+
+      const nextProfile = updated[0] || null;
+      setCurrentProfile(nextProfile);
+      if (nextProfile) {
+        setKnownProfiles((prev) => ({ ...prev, [nextProfile.user_id]: nextProfile }));
+        setViewedProfile((prev) => (prev?.user_id === nextProfile.user_id ? nextProfile : prev));
+        setProfileForm((prev) => ({ ...buildProfileForm(nextProfile), presenceStatus: prev.presenceStatus }));
+      }
+    } catch (err) {
+      setProfileSaveError(err instanceof Error ? err.message : "Could not save privacy settings.");
     } finally {
       setProfileSaveBusy(false);
     }
@@ -9922,9 +10548,10 @@ export default function ChatDashboard({
             attachmentUrl: await resolveMessageAttachmentUrl(accessToken, row.attachment_url || uploadedAttachmentUrl || null),
             attachmentType: row.attachment_type || uploadedAttachmentType || null,
             timestamp: new Date(row.created_at),
-            senderName: currentUserName,
+            senderName: displayName,
             senderAvatarUrl: currentProfile?.avatar_url || "",
             readAt: row.read_by_receiver_at ? new Date(row.read_by_receiver_at) : null,
+            editedAt: row.edited_at ? new Date(row.edited_at) : null,
             reactions: [],
           })),
         );
@@ -9984,9 +10611,10 @@ export default function ChatDashboard({
             attachmentUrl: await resolveMessageAttachmentUrl(accessToken, row.attachment_url || uploadedAttachmentUrl || null),
             attachmentType: row.attachment_type || uploadedAttachmentType || null,
             timestamp: new Date(row.created_at),
-            senderName: currentUserName,
+            senderName: displayName,
             senderAvatarUrl: currentProfile?.avatar_url || "",
             readAt: null,
+            editedAt: row.edited_at ? new Date(row.edited_at) : null,
             reactions: [],
           })),
         );
@@ -10027,9 +10655,10 @@ export default function ChatDashboard({
             attachmentUrl: await resolveMessageAttachmentUrl(accessToken, row.attachment_url || uploadedAttachmentUrl || null),
             attachmentType: row.attachment_type || uploadedAttachmentType || null,
             timestamp: new Date(row.created_at),
-            senderName: currentUserName,
+            senderName: displayName,
             senderAvatarUrl: currentProfile?.avatar_url || "",
             readAt: null,
+            editedAt: row.edited_at ? new Date(row.edited_at) : null,
             reactions: [],
           })),
         );
@@ -10557,12 +11186,12 @@ export default function ChatDashboard({
       const avg = sum / data.length;
       smoothedLevel = smoothedLevel * 0.82 + avg * 0.18;
       const nowMs = Date.now();
-      const activateThreshold = 28;
-      const deactivateThreshold = 17;
+      const activateThreshold = 19;
+      const deactivateThreshold = 11;
 
       if (smoothedLevel >= activateThreshold) {
         speakingState = true;
-        holdUntilMs = nowMs + 320;
+        holdUntilMs = nowMs + 480;
       } else if (speakingState && smoothedLevel <= deactivateThreshold && nowMs > holdUntilMs) {
         speakingState = false;
       }
@@ -10842,6 +11471,7 @@ export default function ChatDashboard({
     if (audio) {
       remoteStreamsRef.current.delete(userId);
     }
+    disconnectRemoteAudioOutputNode(userId);
 
     const audioEl = remoteAudioElsRef.current.get(userId);
     if (audioEl) {
@@ -10894,7 +11524,7 @@ export default function ChatDashboard({
     });
 
     pendingCandidatesRef.current.delete(userId);
-  }, [syncRemoteScreenShareUsers]);
+  }, [disconnectRemoteAudioOutputNode, syncRemoteScreenShareUsers]);
 
   const teardownVoice = useCallback(() => {
     Array.from(peerConnectionsRef.current.keys()).forEach(closePeerConnection);
@@ -10949,6 +11579,15 @@ export default function ChatDashboard({
       window.clearTimeout(timeoutId);
     }
     remoteScreenDemoteTimeoutsRef.current.clear();
+    remoteVoiceAudioSourceNodesRef.current.clear();
+    remoteVoiceGainNodesRef.current.clear();
+    remoteScreenAudioSourceNodesRef.current.clear();
+    remoteScreenGainNodesRef.current.clear();
+    const remoteOutputAudioContext = remoteOutputAudioContextRef.current;
+    remoteOutputAudioContextRef.current = null;
+    if (remoteOutputAudioContext) {
+      void remoteOutputAudioContext.close().catch(() => undefined);
+    }
     setRemoteScreenShareUserIds([]);
     setRemoteVideoShareKinds({});
     setScreenShareAudioMuted(false);
@@ -11608,7 +12247,12 @@ export default function ChatDashboard({
     () => {
       const visibleMessages =
         (messages.length > MAX_RENDERED_MESSAGES ? messages.slice(messages.length - MAX_RENDERED_MESSAGES) : messages)
-          .filter((msg) => !(viewMode === "dm" && dismissedDmMessageIds[msg.id]));
+          .filter((msg) => !(viewMode === "dm" && dismissedDmMessageIds[msg.id]))
+          .filter((msg) => {
+            if (viewMode !== "dm" || !dmMessageSearchQuery) return true;
+            const searchableText = `${msg.senderName} ${msg.text || ""}`.toLowerCase();
+            return searchableText.includes(dmMessageSearchQuery);
+          });
       const rows: ReactNode[] = [];
       const shouldRenderDateDividers = viewMode === "dm";
       let previousDateDividerKey = "";
@@ -11625,6 +12269,8 @@ export default function ChatDashboard({
 
         const invitePayload = viewMode === "dm" ? parseGlytchInviteMessage(msg.text || "") : null;
         const replyPayload = viewMode === "dm" ? parseDmReplyMessage(msg.text || "") : null;
+        const messageBodyText = replyPayload ? replyPayload.body : msg.text;
+        const isEditingMessage = editingMessageId === msg.id && msg.sender === "me" && !invitePayload;
         rows.push(
           <article
             key={msg.id}
@@ -11686,8 +12332,33 @@ export default function ChatDashboard({
                         <p className="messageReplyText">{replyPayload.replyPreview}</p>
                       </div>
                     )}
-                    {((replyPayload && replyPayload.body) || (!replyPayload && msg.text)) && (
-                      <div className="msg">{replyPayload ? replyPayload.body : msg.text}</div>
+                    {isEditingMessage ? (
+                      <form
+                        className="messageEditForm"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          void handleSaveMessageEdit();
+                        }}
+                      >
+                        <input
+                          value={editingMessageDraft}
+                          onChange={(event) => setEditingMessageDraft(event.target.value)}
+                          autoFocus
+                          maxLength={4000}
+                          disabled={messageEditBusy}
+                          aria-label="Edit message text"
+                        />
+                        <div className="messageEditActions">
+                          <button type="submit" disabled={messageEditBusy || !editingMessageDraft.trim()}>
+                            {messageEditBusy ? "Saving..." : "Save"}
+                          </button>
+                          <button type="button" className="ghostButton" onClick={handleCancelMessageEdit} disabled={messageEditBusy}>
+                            Cancel
+                          </button>
+                        </div>
+                      </form>
+                    ) : (
+                      messageBodyText && <div className="msg">{messageBodyText}</div>
                     )}
                   </>
                 )}
@@ -11698,6 +12369,9 @@ export default function ChatDashboard({
                         src={msg.attachmentUrl}
                         alt={`${msg.senderName} attachment`}
                         className="messageMedia gif"
+                        onError={() => {
+                          void handleMessageAttachmentLoadError(msg.id, msg.attachmentUrl);
+                        }}
                       />
                     ) : (
                       <img
@@ -11705,6 +12379,9 @@ export default function ChatDashboard({
                         alt={`${msg.senderName} attachment`}
                         className="messageMedia"
                         loading="lazy"
+                        onError={() => {
+                          void handleMessageAttachmentLoadError(msg.id, msg.attachmentUrl);
+                        }}
                       />
                     )}
                   </a>
@@ -11772,6 +12449,7 @@ export default function ChatDashboard({
               </div>
               <div className="msgMeta">
                 <time className="msgTime">{shouldRenderDateDividers ? formatMessageTimestamp(msg.timestamp) : formatTime(msg.timestamp)}</time>
+                {msg.editedAt && <span className="msgEdited">(edited)</span>}
                 {msg.sender === "me" && latestSeenOutgoingMessageId === msg.id && <span className="msgSeen">Seen</span>}
               </div>
             </div>
@@ -11781,13 +12459,20 @@ export default function ChatDashboard({
       return rows;
     },
     [
+      editingMessageDraft,
+      editingMessageId,
       handleJoinInviteFromDmMessage,
+      handleCancelMessageEdit,
       dismissedDmMessageIds,
       handleRejectInviteFromDmMessage,
+      handleSaveMessageEdit,
+      handleMessageAttachmentLoadError,
       handleToggleMessageReaction,
       joinInviteBusyMessageId,
       latestSeenOutgoingMessageId,
+      messageEditBusy,
       messages,
+      dmMessageSearchQuery,
       reactionBusyKey,
       reactionPickerMessageId,
       viewMode,
@@ -11844,7 +12529,7 @@ export default function ChatDashboard({
     typeof viewedTheme.avatarDecorationBackground === "string"
       ? viewedTheme.avatarDecorationBackground
       : DEFAULT_AVATAR_DECORATION_BG;
-  const viewedDisplayName = viewedProfile?.username || viewedProfile?.display_name || "User";
+  const viewedDisplayName = viewedProfile?.display_name || viewedProfile?.username || "User";
   const viewedProfileUserId = viewedProfile?.user_id || null;
   const viewedPresenceStatus = viewedProfileUserId ? resolvePresenceForUser(viewedProfileUserId) : "offline";
   const viewedPresenceLabel = presenceStatusLabel(viewedPresenceStatus);
@@ -11911,7 +12596,7 @@ export default function ChatDashboard({
           authorUserId: row.author_user_id,
           content: row.content,
           createdAt: row.created_at,
-          authorName: authorProfile?.username || authorProfile?.display_name || "User",
+          authorName: authorProfile?.display_name || authorProfile?.username || "User",
           authorAvatarUrl: authorProfile?.avatar_url || "",
         };
       });
@@ -12000,7 +12685,7 @@ export default function ChatDashboard({
   const showcaseLimitReached = profileForm.showcases.length >= SHOWCASE_MAX_MODULES;
   const voiceSpeakingRingColor = profileForm.speakingRingColor.trim() || "#00ffff";
   const appThemePalette =
-    APP_THEME_PALETTES[profileForm.appThemeMode]?.[profileForm.appTheme] || APP_THEME_PALETTES.dark.default;
+    APP_THEME_PALETTES[profileForm.appThemeMode]?.[profileForm.appTheme] || APP_THEME_PALETTES.dark.simplistic;
   const appFontPreset = APP_FONT_PRESET_STYLES[profileForm.appFontPreset] || APP_FONT_PRESET_STYLES.cyber;
   const appTextColorRaw = profileForm.appTextColor.trim() || appThemePalette.text;
   const appTextColor = ensureReadableTextColor(
@@ -12030,7 +12715,17 @@ export default function ChatDashboard({
       ? "#2f404d"
       : "#85ebd9"
     : appThemePalette.cardBorder;
-  const textOnAccentColor = profileForm.appThemeMode === "light" ? "#15262d" : "#0d1e2a";
+  const accentColorParsed = parseHexColor(appThemePalette.accent);
+  const darkAccentText = parseHexColor("#0b0f1a");
+  const lightAccentText = parseHexColor("#f3f4f6");
+  const textOnAccentColor =
+    accentColorParsed && darkAccentText && lightAccentText
+      ? contrastRatio(darkAccentText, accentColorParsed) >= contrastRatio(lightAccentText, accentColorParsed)
+        ? "#0b0f1a"
+        : "#f3f4f6"
+      : profileForm.appThemeMode === "light"
+        ? "#15262d"
+        : "#f3f4f6";
   const pageStyle = useMemo(
     () =>
       ({
@@ -12167,7 +12862,7 @@ export default function ChatDashboard({
 
   const handleOpenGlytchDirectory = useCallback(() => {
     setShowGlytchDirectory(true);
-    setGlytchDirectoryTab("discover");
+    setGlytchDirectoryTab("my");
     setActiveGlytchId(null);
     setActiveChannelId(null);
     setMessages([]);
@@ -12195,6 +12890,7 @@ export default function ChatDashboard({
     },
     [],
   );
+  const useUnifiedSidebar = true;
 
   const pageClassName = [
     "page",
@@ -12208,7 +12904,9 @@ export default function ChatDashboard({
   return (
     <div className={pageClassName} style={pageStyle}>
       <aside className="sidemenu">
-        <nav className="primaryNav" aria-label="Main sections">
+        {!useUnifiedSidebar && (
+          <>
+            <nav className="primaryNav" aria-label="Main sections">
           {shouldShowGlytchRailIcon && activeGlytch && (
             <button
               type="button"
@@ -12360,16 +13058,7 @@ export default function ChatDashboard({
               title="System settings"
               onClick={() => openSettingsView("system", "updates")}
             >
-              <svg viewBox="0 0 24 24" role="presentation" aria-hidden="true">
-                <path
-                  d="M12 8.1a3.9 3.9 0 1 1 0 7.8 3.9 3.9 0 0 1 0-7.8Zm8.2 3.9-1.9-.5a6.8 6.8 0 0 0-.6-1.4l1-1.7-1.8-1.8-1.7 1a6.8 6.8 0 0 0-1.4-.6l-.5-1.9h-2.6l-.5 1.9a6.8 6.8 0 0 0-1.4.6l-1.7-1-1.8 1.8 1 1.7a6.8 6.8 0 0 0-.6 1.4l-1.9.5v2.6l1.9.5c.1.5.3.9.6 1.4l-1 1.7 1.8 1.8 1.7-1c.5.3.9.5 1.4.6l.5 1.9h2.6l.5-1.9c.5-.1.9-.3 1.4-.6l1.7 1 1.8-1.8-1-1.7c.3-.5.5-.9.6-1.4l1.9-.5v-2.6Z"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.6"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
+              <AppGlyphIcon kind="settings" size="medium" />
             </button>
             <button
               className="avatarButton railAvatarButton withPresence"
@@ -12480,7 +13169,7 @@ export default function ChatDashboard({
                       {pendingIncoming.length === 0 && <p className="smallMuted">None</p>}
                       {pendingIncoming.map((req) => (
                         <div key={req.id} className="requestCard">
-                          <p>{req.sender_profile?.username || req.sender_profile?.display_name || "User"}</p>
+                          <p>{req.sender_profile?.display_name || req.sender_profile?.username || "User"}</p>
                           <div className="requestActions">
                             <button
                               type="button"
@@ -12506,7 +13195,7 @@ export default function ChatDashboard({
                       {pendingOutgoing.map((req) => (
                         <div key={req.id} className="requestActions">
                           <p className="smallMuted">
-                            {req.receiver_profile?.username || req.receiver_profile?.display_name || "User"}
+                            {req.receiver_profile?.display_name || req.receiver_profile?.username || "User"}
                           </p>
                           <button
                             type="button"
@@ -12736,7 +13425,7 @@ export default function ChatDashboard({
                       {activeGroupChat.members
                         .map((member) => {
                           const profile = knownProfiles[member.user_id];
-                          return profile?.username || profile?.display_name || "User";
+                          return profile?.display_name || profile?.username || "User";
                         })
                         .join(", ")}
                     </p>
@@ -12860,7 +13549,7 @@ export default function ChatDashboard({
                             setViewMode("glytch-settings");
                           }}
                         >
-                          ⚙
+                          <img src={settingsIconAssetUrl} alt="" aria-hidden="true" />
                         </button>
                       )}
                     </div>
@@ -13202,6 +13891,658 @@ export default function ChatDashboard({
           </div>
 
         </div>
+          </>
+        )}
+
+        {useUnifiedSidebar && (
+          <div className="unifiedSidebarFlow">
+            <div className="unifiedSidebarTopBar">
+              <button
+                type="button"
+                className="unifiedSidebarBrandButton"
+                onClick={() => {
+                  setUnifiedSidebarView("dms");
+                  setViewMode("dm");
+                  setDmPanelMode("dms");
+                  setActiveConversationId(null);
+                }}
+                aria-label="Open direct messages"
+                title="Glytch Chat"
+              >
+                <span className="unifiedSidebarBrandLogo" aria-hidden="true">
+                  <img src={logoAssetUrl} alt="" />
+                </span>
+                <span className="unifiedSidebarBrandName">Glytch Chat</span>
+              </button>
+              <input
+                className="unifiedSidebarGlobalSearch"
+                value={unifiedSidebarSearchDraft}
+                onChange={(e) => setUnifiedSidebarSearchDraft(e.target.value)}
+                placeholder="Search this panel"
+                aria-label="Search the left panel"
+              />
+              <button
+                type="button"
+                className={dmPanelMode === "friends" ? "railSystemButton active unifiedSidebarFriendsToggle" : "railSystemButton unifiedSidebarFriendsToggle"}
+                aria-label="Open friends"
+                title="Friends"
+                onClick={() => {
+                  setUnifiedSidebarView("dms");
+                  setViewMode("dm");
+                  setActiveConversationId(null);
+                  setDmPanelMode((prev) => (prev === "friends" ? "dms" : "friends"));
+                }}
+              >
+                <AppGlyphIcon kind="friends" size="medium" />
+              </button>
+            </div>
+
+            <nav className="unifiedSidebarNavList" aria-label="Primary sections">
+              {viewMode === "settings" ? (
+                <>
+                  <button
+                    type="button"
+                    className={settingsSection === "profile" ? "channelItem unifiedSidebarNavItem active" : "channelItem unifiedSidebarNavItem"}
+                    onClick={() => {
+                      setSettingsSection("profile");
+                      if (!PROFILE_SETTINGS_TABS.includes(settingsTab)) {
+                        setSettingsTab("edit");
+                      }
+                    }}
+                  >
+                    <AppGlyphIcon kind="friends" className="unifiedSidebarSectionIcon" />
+                    Profile Settings
+                  </button>
+                  <button
+                    type="button"
+                    className={settingsSection === "system" ? "channelItem unifiedSidebarNavItem active" : "channelItem unifiedSidebarNavItem"}
+                    onClick={() => {
+                      setSettingsSection("system");
+                      if (!SYSTEM_SETTINGS_TABS.includes(settingsTab)) {
+                        setSettingsTab("updates");
+                      }
+                    }}
+                  >
+                    <AppGlyphIcon kind="settings" className="unifiedSidebarSectionIcon" />
+                    System Settings
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    className={unifiedSidebarView === "dms" ? "channelItem unifiedSidebarNavItem active" : "channelItem unifiedSidebarNavItem"}
+                    onClick={() => {
+                      setUnifiedSidebarView("dms");
+                      setViewMode("dm");
+                      setDmPanelMode("dms");
+                      setActiveConversationId(null);
+                    }}
+                  >
+                    <AppGlyphIcon kind="group" className="unifiedSidebarSectionIcon" />
+                    Direct Messages
+                  </button>
+                  <button
+                    type="button"
+                    className={unifiedSidebarView === "glytches" ? "channelItem unifiedSidebarNavItem active" : "channelItem unifiedSidebarNavItem"}
+                    onClick={() => {
+                      setUnifiedSidebarView("glytches");
+                      setViewMode("glytch");
+                      setShowGlytchDirectory(true);
+                      setGlytchDirectoryTab("my");
+                      setActiveChannelId(null);
+                    }}
+                  >
+                    <AppGlyphIcon kind="glytch" className="unifiedSidebarSectionIcon" />
+                    Glytches
+                  </button>
+                  <button
+                    type="button"
+                    className={unifiedSidebarView === "groups" ? "channelItem unifiedSidebarNavItem active" : "channelItem unifiedSidebarNavItem"}
+                    onClick={() => {
+                      setUnifiedSidebarView("groups");
+                      setViewMode("group");
+                      setActiveGroupChatId(null);
+                    }}
+                  >
+                    <AppGlyphIcon kind="friends" className="unifiedSidebarSectionIcon" />
+                    Groups
+                  </button>
+                </>
+              )}
+            </nav>
+
+            <div className="unifiedSidebarBody">
+              {viewMode === "settings" ? (
+                <section className="requestSection unifiedSidebarSection unifiedSidebarPrimarySection" aria-label="Settings menu">
+                  <p className="sectionLabel">
+                    <AppGlyphIcon kind="settings" className="unifiedSidebarSectionIcon" />
+                    {settingsSection === "profile" ? "Profile Options" : "System Options"}
+                  </p>
+                  <div className="patchNotesSidebarVersions">
+                    {(settingsSection === "profile" ? PROFILE_SETTINGS_TABS : SYSTEM_SETTINGS_TABS).map((tab) => (
+                      <button
+                        key={`settings-sidebar-tab-${tab}`}
+                        className={settingsTab === tab ? "channelItem friendItem active unifiedListItem" : "channelItem friendItem unifiedListItem"}
+                        type="button"
+                        onClick={() => setSettingsTab(tab)}
+                      >
+                        <span>
+                          {tab === "edit"
+                            ? "Identity"
+                            : tab === "theme"
+                              ? "Appearance"
+                              : tab === "accessibility"
+                                ? "Accessibility"
+                                : tab === "mic"
+                                  ? "Voice & Mic"
+                                  : tab === "updates"
+                                    ? "Updates"
+                                  : tab === "showcases"
+                                    ? "Showcase Modules"
+                                    : tab === "notifications"
+                                      ? "Notifications"
+                                      : tab === "privacy"
+                                        ? "Privacy"
+                                      : "Live Preview"}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              ) : unifiedSidebarView === "dms" ? (
+                <section
+                  className="requestSection unifiedSidebarSection unifiedSidebarPrimarySection"
+                  aria-label="Direct messages"
+                  onContextMenu={dmPanelMode === "dms" ? openDmNavContextMenu : undefined}
+                >
+                  {dmNavContextMenu && (
+                    <div
+                      className="dmNavContextMenu"
+                      role="menu"
+                      aria-label="DM options"
+                      style={{ left: dmNavContextMenu.x, top: dmNavContextMenu.y }}
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onContextMenu={(event) => event.preventDefault()}
+                    >
+                      <button
+                        type="button"
+                        className="dmNavContextMenuItem"
+                        role="menuitem"
+                        onClick={() => void handleMarkAllDmsSeenFromNavContextMenu()}
+                        disabled={dmSidebarActionBusyKey === "seen-all" || Object.values(unreadDmCounts).every((count) => (count || 0) <= 0)}
+                      >
+                        Mark all as seen
+                      </button>
+                    </div>
+                  )}
+
+                  {dmPanelMode === "friends" ? (
+                    <>
+                      <div className="unifiedSidebarHeadingRow">
+                        <p className="sectionLabel">Friends</p>
+                      </div>
+                      <form className="addFriendForm unifiedSidebarAddFriendForm" onSubmit={handleAddFriend}>
+                        <input
+                          value={friendUsername}
+                          onChange={(e) => setFriendUsername(e.target.value)}
+                          placeholder="Friend username"
+                          aria-label="Friend username"
+                        />
+                        <button type="submit">Add</button>
+                      </form>
+
+                      {dmError && <p className="chatError">{dmError}</p>}
+
+                      <section className="requestSection" aria-label="Incoming requests">
+                        <p className="sectionLabel">Incoming Requests</p>
+                        {pendingIncoming.length === 0 && <p className="smallMuted">None</p>}
+                        {pendingIncoming.map((req) => (
+                          <div key={req.id} className="requestCard">
+                            <p>{req.sender_profile?.display_name || req.sender_profile?.username || "User"}</p>
+                            <div className="requestActions">
+                              <button
+                                type="button"
+                                className="ghostButton"
+                                onClick={() => void openProfileViewer(req.sender_id)}
+                              >
+                                View
+                              </button>
+                              <button type="button" onClick={() => void handleAccept(req.id)}>
+                                Accept
+                              </button>
+                              <button type="button" className="ghostButton" onClick={() => void handleReject(req.id)}>
+                                Reject
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </section>
+
+                      <section className="requestSection" aria-label="Sent requests">
+                        <p className="sectionLabel">Sent Requests</p>
+                        {pendingOutgoing.length === 0 && <p className="smallMuted">None</p>}
+                        {pendingOutgoing.map((req) => (
+                          <div key={req.id} className="requestActions">
+                            <p className="smallMuted">
+                              {req.receiver_profile?.display_name || req.receiver_profile?.username || "User"}
+                            </p>
+                            <button
+                              type="button"
+                              className="ghostButton"
+                              onClick={() => void openProfileViewer(req.receiver_id)}
+                            >
+                              View
+                            </button>
+                          </div>
+                        ))}
+                      </section>
+                    </>
+                  ) : (
+                    <>
+                      <p className="sectionLabel">Direct Messages</p>
+                      <div className="dmSearchRow">
+                        <input
+                          className="dmSearchInput"
+                          value={dmSearchDraft}
+                          onChange={(e) => setDmSearchDraft(e.target.value)}
+                          placeholder="Search direct messages"
+                          aria-label="Search direct messages"
+                        />
+                      </div>
+                      {filteredUnifiedDmRows.length === 0 ? (
+                        <p className="smallMuted">{sortedDms.length === 0 ? "No DMs yet." : "No direct messages matched your search."}</p>
+                      ) : (
+                        <nav className="channelList unifiedSidebarList" aria-label="Direct messages" ref={dmSidebarListRef}>
+                          {filteredUnifiedDmRows.map((dm) => {
+                            const unreadCount = unreadDmCounts[dm.conversationId] || 0;
+                            const unreadLabel = unreadCount > 99 ? "99+" : String(unreadCount);
+                            const incomingCallCount = dmIncomingCallCounts[dm.conversationId] || 0;
+                            const isDmMuted = mutedDmConversationIdSet.has(dm.conversationId);
+                            const dmPresenceStatus = resolvePresenceForUser(dm.friendUserId);
+                            const dmPresenceTitle = `Status: ${presenceStatusLabel(dmPresenceStatus)}`;
+                            return (
+                              <div
+                                key={`unified-dm-${dm.conversationId}`}
+                                className="friendRow mainDmRow"
+                                onContextMenu={(event) =>
+                                  openDmSidebarContextMenu(event, dm.conversationId, unreadCount, dm.isPinned, isDmMuted)
+                                }
+                              >
+                                <button
+                                  className="friendAvatarButton"
+                                  type="button"
+                                  aria-label={`View ${dm.friendName} profile`}
+                                  onClick={() => {
+                                    setDmSidebarContextMenu(null);
+                                    void openProfileViewer(dm.friendUserId);
+                                  }}
+                                >
+                                  <span className="friendAvatar withPresence" title={dmPresenceTitle}>
+                                    {dm.friendAvatarUrl ? <img src={dm.friendAvatarUrl} alt="" /> : <span>{initialsFromName(dm.friendName)}</span>}
+                                    <span className={`presenceDot ${dmPresenceStatus}`} aria-hidden="true" />
+                                  </span>
+                                </button>
+                                <button
+                                  className={
+                                    viewMode === "dm" && dm.conversationId === activeConversationId
+                                      ? "channelItem friendItem active unifiedListItem"
+                                      : "channelItem friendItem unifiedListItem"
+                                  }
+                                  type="button"
+                                  onClick={() => {
+                                    setViewMode("dm");
+                                    setDmPanelMode("dms");
+                                    handleOpenDmConversation(dm.conversationId, unreadCount);
+                                  }}
+                                >
+                                  <span className="dmNameRow">
+                                    <span className="dmNameText">{dm.friendName}</span>
+                                    {dm.isPinned && <span className="dmPinnedBadge" title="Pinned DM" aria-hidden="true" />}
+                                    {isDmMuted && (
+                                      <span className="dmMutedBadge" title="Conversation muted" aria-hidden="true">
+                                        🔕
+                                      </span>
+                                    )}
+                                  </span>
+                                  {(incomingCallCount > 0 || unreadCount > 0) && (
+                                    <span className="dmAlertBubbles">
+                                      {incomingCallCount > 0 && (
+                                        <span
+                                          className="callBubble"
+                                          aria-label={`${dm.friendName} is calling`}
+                                          title={`${dm.friendName} is calling`}
+                                        >
+                                          <svg viewBox="0 0 24 24" role="presentation" aria-hidden="true">
+                                            <path
+                                              d="M7.4 3.8h3.2l1.3 3.5-1.8 1.5a12.3 12.3 0 0 0 5.1 5.1l1.5-1.8 3.5 1.3v3.2l-2.2.8c-1.1.4-2.3.4-3.3-.1a17.3 17.3 0 0 1-8-8 3.6 3.6 0 0 1-.1-3.3l.8-2.2Z"
+                                              fill="none"
+                                              stroke="currentColor"
+                                              strokeWidth="1.8"
+                                              strokeLinecap="round"
+                                              strokeLinejoin="round"
+                                            />
+                                          </svg>
+                                        </span>
+                                      )}
+                                      {unreadCount > 0 && <span className="unreadBubble">{unreadLabel}</span>}
+                                    </span>
+                                  )}
+                                </button>
+                              </div>
+                            );
+                          })}
+                          {dmSidebarContextMenu && (
+                            <div
+                              className="dmSidebarContextMenu"
+                              role="menu"
+                              aria-label="Direct message options"
+                              style={{ left: dmSidebarContextMenu.x, top: dmSidebarContextMenu.y }}
+                              onPointerDown={(event) => event.stopPropagation()}
+                              onContextMenu={(event) => event.preventDefault()}
+                            >
+                              <button
+                                type="button"
+                                className="dmSidebarContextMenuItem"
+                                role="menuitem"
+                                onClick={() => void handleMarkDmSeenFromSidebarContextMenu()}
+                                disabled={
+                                  dmSidebarContextMenu.unreadCount === 0 ||
+                                  dmSidebarActionBusyKey === `seen:${dmSidebarContextMenu.conversationId}`
+                                }
+                              >
+                                Mark as seen
+                              </button>
+                              <button
+                                type="button"
+                                className="dmSidebarContextMenuItem"
+                                role="menuitem"
+                                onClick={() => void handleTogglePinDmFromSidebarContextMenu()}
+                                disabled={dmSidebarActionBusyKey === `pin:${dmSidebarContextMenu.conversationId}`}
+                              >
+                                {dmSidebarContextMenu.isPinned ? "Unpin DM" : "Pin DM"}
+                              </button>
+                              <button
+                                type="button"
+                                className="dmSidebarContextMenuItem"
+                                role="menuitem"
+                                onClick={() => void handleToggleMuteDmFromSidebarContextMenu()}
+                                disabled={dmSidebarActionBusyKey === `mute:${dmSidebarContextMenu.conversationId}`}
+                              >
+                                {dmSidebarContextMenu.isMuted ? "Unmute conversation" : "Mute conversation"}
+                              </button>
+                              <button
+                                type="button"
+                                className="dmSidebarContextMenuItem danger"
+                                role="menuitem"
+                                onClick={() => void handleDeleteDmFromSidebarContextMenu()}
+                                disabled={dmSidebarActionBusyKey === `delete:${dmSidebarContextMenu.conversationId}`}
+                              >
+                                Delete DM
+                              </button>
+                            </div>
+                          )}
+                        </nav>
+                      )}
+                    </>
+                  )}
+                </section>
+              ) : unifiedSidebarView === "glytches" ? (
+                <section className="requestSection unifiedSidebarSection unifiedSidebarPrimarySection" aria-label="Glytches">
+                  <p className="sectionLabel">
+                    <AppGlyphIcon kind="glytch" className="unifiedSidebarSectionIcon" />
+                    Glytches
+                  </p>
+                  {showGlytchDirectory || !activeGlytch ? (
+                    <>
+                      <p className="smallMuted">Choose and switch Glytches from the grid in the main panel.</p>
+                      <button
+                        type="button"
+                        className="channelItem unifiedSidebarBackButton unifiedListItem"
+                        onClick={() => {
+                          setUnifiedSidebarView("glytches");
+                          setViewMode("glytch");
+                          setShowGlytchDirectory(true);
+                          setGlytchDirectoryTab("my");
+                          setActiveChannelId(null);
+                        }}
+                      >
+                        Open Glytch Grid
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <div className="activeGlytchSummaryRow">
+                        <span className="glytchItemIcon" aria-hidden="true">
+                          {activeGlytch.icon_url ? <img src={activeGlytch.icon_url} alt="" /> : <span>{initialsFromName(activeGlytch.name)}</span>}
+                        </span>
+                        <span className="activeGlytchSummaryName">{activeGlytch.name}</span>
+                      </div>
+                      <button
+                        type="button"
+                        className="ghostButton activeGlytchSwitchButton"
+                        onClick={handleOpenGlytchDirectory}
+                      >
+                        Switch Glytch
+                      </button>
+                      <div className="unifiedSidebarChannelList" aria-label={`${activeGlytch.name} channels`}>
+                        {channels.length === 0 && <p className="smallMuted">No channels in this Glytch.</p>}
+                        {categorizedChannels.map((group) => (
+                          <div key={`unified-category-${group.category.id}`} className="channelCategoryGroup">
+                            <p className="channelCategoryTitle">{group.category.name}</p>
+                            <div className="channelCategoryChannels">
+                              {group.channels.map((channel) => {
+                                const channelParticipants = voiceParticipantsByChannelId[channel.id] || [];
+                                return (
+                                  <button
+                                    key={`unified-channel-${channel.id}`}
+                                    className={channel.id === activeChannelId ? "channelItem active unifiedListItem" : "channelItem unifiedListItem"}
+                                    type="button"
+                                    onClick={() => {
+                                      setViewMode("glytch");
+                                      setShowGlytchDirectory(false);
+                                      setActiveChannelId(channel.id);
+                                    }}
+                                  >
+                                    {channel.kind === "voice" ? "🔊" : "#"} {channel.name}
+                                    {channel.kind === "voice" && channel.voice_user_limit
+                                      ? ` (${channelParticipants.length}/${channel.voice_user_limit})`
+                                      : ""}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        ))}
+                        {uncategorizedChannels.length > 0 && (
+                          <div className="channelCategoryGroup">
+                            <p className="channelCategoryTitle">Uncategorized</p>
+                            <div className="channelCategoryChannels">
+                              {uncategorizedChannels.map((channel) => {
+                                const channelParticipants = voiceParticipantsByChannelId[channel.id] || [];
+                                return (
+                                  <button
+                                    key={`unified-uncategorized-${channel.id}`}
+                                    className={channel.id === activeChannelId ? "channelItem active unifiedListItem" : "channelItem unifiedListItem"}
+                                    type="button"
+                                    onClick={() => {
+                                      setViewMode("glytch");
+                                      setShowGlytchDirectory(false);
+                                      setActiveChannelId(channel.id);
+                                    }}
+                                  >
+                                    {channel.kind === "voice" ? "🔊" : "#"} {channel.name}
+                                    {channel.kind === "voice" && channel.voice_user_limit
+                                      ? ` (${channelParticipants.length}/${channel.voice_user_limit})`
+                                      : ""}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  )}
+                </section>
+              ) : unifiedSidebarView === "groups" ? (
+                <section className="requestSection unifiedSidebarSection unifiedSidebarPrimarySection" aria-label="Group chats">
+                  <p className="sectionLabel">
+                    <AppGlyphIcon kind="friends" className="unifiedSidebarSectionIcon" />
+                    Group Chats
+                  </p>
+                  {groupError && <p className="chatError">{groupError}</p>}
+                  <form className="stackedForm" onSubmit={handleCreateGroupChat}>
+                    <input
+                      value={groupNameDraft}
+                      onChange={(e) => setGroupNameDraft(e.target.value)}
+                      placeholder="Group chat name"
+                      aria-label="Group chat name"
+                      disabled={groupCreateBusy}
+                    />
+                    <div className="glytchInviteList" aria-label="Select group members">
+                      {dms.length === 0 ? (
+                        <p className="smallMuted">Add friends first to include them in a group chat.</p>
+                      ) : (
+                        dms.map((dm) => (
+                          <label key={dm.friendUserId} className="permissionToggle">
+                            <input
+                              type="checkbox"
+                              checked={groupCreateMemberIds.includes(dm.friendUserId)}
+                              onChange={(e) => handleToggleGroupCreateMember(dm.friendUserId, e.target.checked)}
+                              disabled={groupCreateBusy}
+                            />
+                            <span>{dm.friendName}</span>
+                          </label>
+                        ))
+                      )}
+                    </div>
+                    <button type="submit" disabled={groupCreateBusy}>
+                      {groupCreateBusy ? "Creating..." : "Create Group Chat"}
+                    </button>
+                  </form>
+                  <button
+                    type="button"
+                    className="channelItem unifiedSidebarBackButton unifiedListItem"
+                    onClick={() => {
+                      setUnifiedSidebarView("groups");
+                      setViewMode("group");
+                      setActiveGroupChatId(null);
+                    }}
+                  >
+                    Open Group Grid
+                  </button>
+                </section>
+              ) : (
+                <section className="requestSection unifiedSidebarSection unifiedSidebarPrimarySection" aria-label="Patch notes">
+                  <p className="sectionLabel">
+                    <AppGlyphIcon kind="patch" className="unifiedSidebarSectionIcon" />
+                    Patch Notes
+                  </p>
+                  <div className="patchNotesSidebarVersions">
+                    {PATCH_NOTES.map((entry) => (
+                      <button
+                        key={`sidebar-patch-${entry.version}`}
+                        className={
+                          selectedPatchNoteVersion === entry.version
+                            ? "channelItem friendItem active unifiedListItem"
+                            : "channelItem friendItem unifiedListItem"
+                        }
+                        type="button"
+                        onClick={() => {
+                          setViewMode("patch-notes");
+                          setSelectedPatchNoteVersion(entry.version);
+                        }}
+                      >
+                        <span>v{entry.version}</span>
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              )}
+            </div>
+
+            <div className="unifiedSidebarFooter">
+              <div className="identityCard unifiedSidebarIdentity">
+                <div className="unifiedSidebarProfileWrap">
+                  <button
+                    className="avatarButton withPresence unifiedSidebarProfileButton"
+                    type="button"
+                    title={`Status: ${currentUserPresenceLabel}`}
+                    onClick={() => void openProfileViewer(currentUserId)}
+                  >
+                    <span className="avatarButtonMedia">
+                      {sidebarAvatar ? (
+                        <img src={sidebarAvatar} alt="Profile" />
+                      ) : (
+                        <span>{initialsFromName(displayName)}</span>
+                      )}
+                    </span>
+                    {renderAvatarDecoration(profileForm.avatarDecoration, {
+                      color: profileForm.avatarDecorationColor,
+                      background: profileForm.avatarDecorationBackground,
+                      size: "small",
+                    })}
+                    <span className={`presenceDot ${currentUserPresenceStatus}`} aria-hidden="true" />
+                  </button>
+                  <div className="identityCard unifiedSidebarProfilePopover">
+                    <div className="identityMeta">
+                      <p className="signedInAs">Signed in as</p>
+                      <p className="userName">{displayName}</p>
+                      <p className={`presenceLabel ${currentUserPresenceStatus}`}>{currentUserPresenceLabel}</p>
+                      <label className="presenceSelectLabel">
+                        Status
+                        <select
+                          value={profileForm.presenceStatus}
+                          onChange={(e) => {
+                            const nextStatus = normalizePresenceStatus(e.target.value);
+                            void handleChangePresenceStatus(nextStatus);
+                          }}
+                        >
+                          <option value="active">Active</option>
+                          <option value="away">Away</option>
+                          <option value="busy">Busy</option>
+                          <option value="offline">Offline</option>
+                        </select>
+                      </label>
+                      <button className="settingsLink" type="button" onClick={() => openSettingsView("profile", "edit")}>
+                        Profile Settings
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <div className="identityMeta unifiedSidebarIdentityMeta">
+                  <p className="signedInAs">Signed in as</p>
+                  <p className="userName">{displayName}</p>
+                  <p className={`presenceLabel ${currentUserPresenceStatus}`}>{currentUserPresenceLabel}</p>
+                </div>
+                <div className="unifiedSidebarFooterActions">
+                  <button
+                    className={viewMode === "patch-notes" ? "railSystemButton active" : "railSystemButton"}
+                    type="button"
+                    aria-label="Open patch notes"
+                    title="Patch notes"
+                    onClick={() => {
+                      setUnifiedSidebarView("patch-notes");
+                      setViewMode("patch-notes");
+                    }}
+                  >
+                    <AppGlyphIcon kind="patch" size="medium" />
+                  </button>
+                  <button
+                    className="railSystemButton"
+                    type="button"
+                    aria-label="Open system settings"
+                    title="System settings"
+                    onClick={() => openSettingsView("system", "updates")}
+                  >
+                    <AppGlyphIcon kind="settings" size="medium" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </aside>
 
       <main className="glytchapp">
@@ -13220,15 +14561,64 @@ export default function ChatDashboard({
                 <span>Direct Messages</span>
               )
             ) : viewMode === "glytch" ? (
-              <span>
-                {activeGlytch && activeChannel
-                  ? `${activeGlytch.name} / ${activeChannel.kind === "voice" ? "🔊" : "#"}${activeChannel.name}`
-                  : activeGlytch
-                    ? activeGlytch.name
-                  : "Discover"}
-              </span>
+              <div className="chatHeaderTitleWithSwitch">
+                <span>
+                  {activeGlytch && activeChannel
+                    ? `${activeGlytch.name} / ${activeChannel.kind === "voice" ? "🔊" : "#"}${activeChannel.name}`
+                    : activeGlytch
+                      ? activeGlytch.name
+                    : "Discover"}
+                </span>
+                {activeGlytch && glytches.length > 1 && (
+                  <select
+                    className="headerSwitchSelect"
+                    value={activeGlytch.id}
+                    onChange={(e) => {
+                      const nextGlytchId = Number.parseInt(e.target.value, 10);
+                      if (!Number.isFinite(nextGlytchId) || nextGlytchId <= 0) return;
+                      setUnifiedSidebarView("glytches");
+                      setViewMode("glytch");
+                      setShowGlytchDirectory(false);
+                      setGlytchDirectoryTab("my");
+                      setActiveGlytchId(nextGlytchId);
+                      setActiveChannelId(null);
+                    }}
+                    aria-label="Switch Glytch"
+                    title="Switch Glytch"
+                  >
+                    {glytches.map((glytch) => (
+                      <option key={`header-glytch-switch-${glytch.id}`} value={glytch.id}>
+                        {glytch.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
             ) : viewMode === "group" ? (
-              <span>{activeGroupChat ? `Group Chat / ${activeGroupChat.name}` : "Group Chats"}</span>
+              <div className="chatHeaderTitleWithSwitch">
+                <span>{activeGroupChat ? `Group Chat / ${activeGroupChat.name}` : "Group Chats"}</span>
+                {activeGroupChat && groupChats.length > 1 && (
+                  <select
+                    className="headerSwitchSelect"
+                    value={activeGroupChat.groupChatId}
+                    onChange={(e) => {
+                      const nextGroupId = Number.parseInt(e.target.value, 10);
+                      if (!Number.isFinite(nextGroupId) || nextGroupId <= 0) return;
+                      setUnifiedSidebarView("groups");
+                      setViewMode("group");
+                      setActiveGroupChatId(nextGroupId);
+                    }}
+                    aria-label="Switch Group Chat"
+                    title="Switch Group Chat"
+                  >
+                    {groupChats.map((groupChat) => (
+                      <option key={`header-group-switch-${groupChat.groupChatId}`} value={groupChat.groupChatId}>
+                        {groupChat.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
             ) : viewMode === "patch-notes" ? (
               <span>Patch Notes</span>
             ) : viewMode === "glytch-settings" ? (
@@ -13706,37 +15096,26 @@ export default function ChatDashboard({
 
         {viewMode === "settings" ? (
           <section className="settingsPage" aria-label="Profile settings">
-            <div className="settingsTabs settingsSubTabs">
-              {(settingsSection === "profile" ? PROFILE_SETTINGS_TABS : SYSTEM_SETTINGS_TABS).map((tab) => (
-                <button
-                  key={tab}
-                  className={settingsTab === tab ? "tab active" : "tab"}
-                  type="button"
-                  onClick={() => setSettingsTab(tab)}
-                >
-                  {tab === "edit"
-                    ? "Identity"
-                    : tab === "theme"
-                      ? "Appearance"
-                    : tab === "accessibility"
-                      ? "Accessibility"
-                      : tab === "mic"
-                        ? "Voice & Mic"
-                      : tab === "updates"
-                        ? "Updates"
-                      : tab === "showcases"
-                        ? "Showcase Modules"
-                        : tab === "notifications"
-                          ? "Notifications"
-                          : "Live Preview"}
-                </button>
-              ))}
-            </div>
-
             {profileSaveError && <p className="chatError">{profileSaveError}</p>}
 
             {settingsTab === "edit" ? (
               <form className="settingsForm" onSubmit={handleSaveProfile}>
+                <label>
+                  Display Name
+                  <input
+                    type="text"
+                    value={profileForm.displayName}
+                    onChange={(e) => setProfileForm((prev) => ({ ...prev, displayName: e.target.value }))}
+                    placeholder="How your name appears in chat"
+                    maxLength={48}
+                  />
+                </label>
+                <label>
+                  Username (used to add friends)
+                  <input type="text" value={settingsUsername} readOnly disabled />
+                </label>
+                <p className="smallMuted">Usernames are unique and include a built-in 6-character ID suffix.</p>
+
                 <label>
                   Profile Picture
                   <input
@@ -13967,9 +15346,10 @@ export default function ChatDashboard({
                     value={profileForm.appTheme}
                     onChange={(e) => setProfileForm((prev) => ({ ...prev, appTheme: normalizeAppTheme(e.target.value) }))}
                   >
-                    <option value="default">Default</option>
+                    <option value="simplistic">Simplistic (Default)</option>
+                    <option value="default">Glitch Neon</option>
+                    <option value="legacy">Legacy (0.1)</option>
                     <option value="neon">Neon</option>
-                    <option value="simplistic">Simplistic</option>
                     <option value="ocean">Ocean</option>
                     <option value="sunset">Sunset</option>
                     <option value="mint">Mint</option>
@@ -14406,6 +15786,50 @@ export default function ChatDashboard({
                   {profileSaveBusy ? "Saving..." : "Save Notification Settings"}
                 </button>
               </form>
+            ) : settingsTab === "privacy" ? (
+              <form className="settingsForm" onSubmit={handleSavePrivacySettings}>
+                <p className="sectionLabel">Privacy</p>
+                <label className="permissionToggle settingsToggle">
+                  <input
+                    type="checkbox"
+                    checked={profileForm.notifyInAppDmBanners}
+                    onChange={(e) =>
+                      setProfileForm((prev) => ({
+                        ...prev,
+                        notifyInAppDmBanners: e.target.checked,
+                      }))
+                    }
+                  />
+                  <span>Show in-app DM popup banners</span>
+                </label>
+                <p className="smallMuted">When enabled, new DM alerts appear in the top-right for 5 seconds.</p>
+
+                <label className="permissionToggle settingsToggle">
+                  <input
+                    type="checkbox"
+                    checked={profileForm.gameActivitySharingEnabled}
+                    onChange={(e) =>
+                      setProfileForm((prev) => ({
+                        ...prev,
+                        gameActivitySharingEnabled: e.target.checked,
+                      }))
+                    }
+                    disabled={!isElectronRuntime}
+                  />
+                  <span>Detect and share currently playing game</span>
+                </label>
+                {isElectronRuntime ? (
+                  <p className="smallMuted">
+                    Enabled by default. Glytch Chat scans local process names to show what game you are currently playing.
+                  </p>
+                ) : (
+                  <p className="smallMuted">Game activity detection is available in the desktop Electron app.</p>
+                )}
+
+                <button type="submit" disabled={profileSaveBusy}>
+                  {profileSaveBusy ? "Saving..." : "Save Privacy Settings"}
+                </button>
+              </form>
             ) : settingsTab === "accessibility" ? (
               <form className="settingsForm" onSubmit={handleSaveAccessibilitySettings}>
                 <p className="sectionLabel">Accessibility</p>
@@ -14553,14 +15977,10 @@ export default function ChatDashboard({
                   <input
                     type="checkbox"
                     checked={voiceMicSettings.autoGainControl}
-                    onChange={(e) =>
-                      setVoiceMicSettings((prev) => ({
-                        ...prev,
-                        autoGainControl: e.target.checked,
-                      }))
-                    }
+                    onChange={() => {}}
+                    disabled
                   />
-                  <span>Automatic gain control</span>
+                  <span>Automatic gain control (disabled to prevent volume boosting)</span>
                 </label>
                 <label className="permissionToggle settingsToggle">
                   <input
@@ -14593,6 +16013,9 @@ export default function ChatDashboard({
                 </label>
                 <p className="smallMuted">
                   Max mode uses dual-pass RNNoise plus voice-only AI gating with keyboard click/fan rejection, voice-focused EQ, compression, and limiting.
+                </p>
+                <p className="smallMuted">
+                  Voice AI keeps output at or below your original loudness and focuses on clarity/noise cleanup instead of amplification.
                 </p>
                 <p className="smallMuted">For best echo reduction, use headphones instead of open speakers.</p>
                 <div className="moderationActionRow">
@@ -14740,6 +16163,7 @@ export default function ChatDashboard({
                   <span className={`profilePresenceDot ${currentUserPresenceStatus}`} aria-hidden="true" />
                 </div>
                 <h2>{displayName}</h2>
+                <p className="profileUsernameTag">@{settingsUsername || profileForm.username || currentProfile?.username || currentUserName}</p>
                 <p className={`profilePresenceText ${currentUserPresenceStatus}`}>{currentUserPresenceLabel}</p>
                 <p>{profileForm.bio || "No bio yet. Edit your profile to personalize this page."}</p>
                 <p className="sectionLabel">Showcases</p>
@@ -14762,21 +16186,6 @@ export default function ChatDashboard({
         ) : viewMode === "patch-notes" ? (
           <section className="settingsPage patchNotesPage" aria-label="Patch notes">
             <div className="patchNotesLayout">
-              <aside className="patchNotesVersionsPanel" aria-label="Patch note versions">
-                <p className="sectionLabel">Versions</p>
-                <div className="patchNotesVersionsList">
-                  {PATCH_NOTES.map((entry) => (
-                    <button
-                      key={`main-patch-version-${entry.version}`}
-                      className={selectedPatchNoteVersion === entry.version ? "tab active" : "tab"}
-                      type="button"
-                      onClick={() => setSelectedPatchNoteVersion(entry.version)}
-                    >
-                      v{entry.version}
-                    </button>
-                  ))}
-                </div>
-              </aside>
               <section className="patchNotesMessagePanel" aria-label="Patch note details">
                 {!selectedPatchNoteEntry ? (
                   <p className="smallMuted">No patch notes available.</p>
@@ -15664,205 +17073,317 @@ export default function ChatDashboard({
             )}
           </section>
         ) : shouldHideGlytchMessageArea ? (
-          <section className="glytchSelectionState" aria-label="Choose a Glytch">
-            <div className="glytchSelectionPanel">
-              <div className="glytchActions glytchSelectionActions">
-                <button
-                  className={glytchActionMode === "create" ? "channelItem active" : "channelItem"}
-                  type="button"
-                  onClick={() => {
-                    setGlytchActionMode((prev) => (prev === "create" ? "none" : "create"));
-                    setJoinBannedGlytchId(null);
-                    setJoinUnbanRequestDraft("");
-                    setJoinUnbanRequestNotice("");
-                  }}
-                >
-                  Create Glytch
-                </button>
-                <button
-                  className={glytchActionMode === "join" ? "channelItem active" : "channelItem"}
-                  type="button"
-                  onClick={() => {
-                    const nextMode = glytchActionMode === "join" ? "none" : "join";
-                    setGlytchActionMode(nextMode);
-                    if (nextMode !== "join") {
+          glytchDirectoryTab === "my" ? (
+            <section className="glytchSelectionState" aria-label="Choose a Glytch">
+              <div className="glytchSelectionPanel">
+                <p className="sectionLabel">Your Glytches</p>
+                <div className="glytchDirectoryTopActions">
+                  <button
+                    type="button"
+                    className="channelItem unifiedListItem"
+                    onClick={() => {
+                      setViewMode("glytch");
+                      setShowGlytchDirectory(true);
+                      setGlytchDirectoryTab("discover");
+                    }}
+                  >
+                    <AppGlyphIcon kind="discover" className="unifiedSidebarSectionIcon" />
+                    Discover Glytches
+                  </button>
+                </div>
+                {filteredUnifiedSidebarGlytches.length === 0 ? (
+                  <p className="chatInfo">No Glytches matched your search.</p>
+                ) : (
+                  <div className="glytchSelectionList glytchDirectoryGrid">
+                    {filteredUnifiedSidebarGlytches.map((glytch) => (
+                      <button
+                        key={`my-glytch-grid-${glytch.id}`}
+                        className="channelItem glytchSelectionItem directoryGlytchCard"
+                        type="button"
+                        title={`${glytch.name} (#${glytch.id})`}
+                        onClick={() => {
+                          setUnifiedSidebarView("glytches");
+                          setActiveGlytchId(glytch.id);
+                          setActiveChannelId(null);
+                          setViewMode("glytch");
+                          setShowGlytchDirectory(false);
+                        }}
+                      >
+                        <span className="directoryGlytchVisual" aria-hidden="true">
+                          {glytch.icon_url ? <img src={glytch.icon_url} alt="" /> : <span>{initialsFromName(glytch.name)}</span>}
+                        </span>
+                        <span className="directoryGlytchName">{glytch.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </section>
+          ) : (
+            <section className="glytchSelectionState" aria-label="Discover Glytches">
+              <div className="glytchSelectionPanel">
+                <div className="glytchActions glytchSelectionActions">
+                  <button
+                    className={glytchActionMode === "create" ? "channelItem active" : "channelItem"}
+                    type="button"
+                    onClick={() => {
+                      setGlytchActionMode((prev) => (prev === "create" ? "none" : "create"));
                       setJoinBannedGlytchId(null);
                       setJoinUnbanRequestDraft("");
                       setJoinUnbanRequestNotice("");
-                    }
-                  }}
-                >
-                  Join by Invite
-                </button>
-              </div>
-              {glytchActionMode === "create" && (
-                <form className="stackedForm" onSubmit={handleCreateGlytch}>
-                  <input
-                    value={glytchNameDraft}
-                    onChange={(e) => setGlytchNameDraft(e.target.value)}
-                    placeholder="New Glytch name"
-                    aria-label="New Glytch name"
-                  />
-                  <select
-                    value={glytchCreateVisibilityDraft}
-                    onChange={(e) => setGlytchCreateVisibilityDraft(e.target.value === "public" ? "public" : "private")}
-                    aria-label="Glytch visibility"
+                    }}
                   >
-                    <option value="private">Private (invite only)</option>
-                    <option value="public">Public (discoverable)</option>
-                  </select>
-                  <input
-                    type="number"
-                    min={GLYTCH_MAX_MEMBERS_MIN}
-                    max={GLYTCH_MAX_MEMBERS_MAX}
-                    value={glytchCreateMaxMembersDraft}
-                    onChange={(e) => setGlytchCreateMaxMembersDraft(e.target.value)}
-                    placeholder={`Max users (optional, ${GLYTCH_MAX_MEMBERS_MIN}-${GLYTCH_MAX_MEMBERS_MAX})`}
-                    aria-label="Max users for Glytch"
-                  />
-                  <button type="submit">Create</button>
-                </form>
-              )}
-              {glytchActionMode === "join" && (
-                <>
-                  <form className="stackedForm" onSubmit={handleJoinGlytch}>
-                    <input
-                      value={inviteCodeDraft}
-                      onChange={(e) => {
-                        setInviteCodeDraft(e.target.value);
+                    Create Glytch
+                  </button>
+                  <button
+                    className={glytchActionMode === "join" ? "channelItem active" : "channelItem"}
+                    type="button"
+                    onClick={() => {
+                      const nextMode = glytchActionMode === "join" ? "none" : "join";
+                      setGlytchActionMode(nextMode);
+                      if (nextMode !== "join") {
                         setJoinBannedGlytchId(null);
+                        setJoinUnbanRequestDraft("");
                         setJoinUnbanRequestNotice("");
-                      }}
-                      placeholder="Invite code"
-                      aria-label="Invite code"
-                    />
-                    <button type="submit">Join</button>
-                  </form>
-                  {joinBannedGlytchId && (
-                    <form className="stackedForm" onSubmit={handleSubmitJoinUnbanRequest}>
-                      <p className="smallMuted">
-                        You are banned from this Glytch. Submit an unban request and moderators can review it.
-                      </p>
-                      <textarea
-                        value={joinUnbanRequestDraft}
-                        onChange={(e) => setJoinUnbanRequestDraft(e.target.value)}
-                        placeholder="Why should we unban you? (optional)"
-                        aria-label="Unban request message"
-                        rows={3}
-                        disabled={joinUnbanRequestBusy || Boolean(joinUnbanRequestNotice)}
-                      />
-                      <button
-                        type="submit"
-                        disabled={joinUnbanRequestBusy || Boolean(joinUnbanRequestNotice)}
-                      >
-                        {joinUnbanRequestBusy ? "Submitting..." : "Submit Unban Request"}
-                      </button>
-                      {joinUnbanRequestNotice && <p className="smallMuted">{joinUnbanRequestNotice}</p>}
-                    </form>
-                  )}
-                </>
-              )}
-              <div className="dmSearchRow">
-                <input
-                  className="dmSearchInput"
-                  value={publicGlytchSearchDraft}
-                  onChange={(e) => setPublicGlytchSearchDraft(e.target.value)}
-                  placeholder="Search public Glytches by name or #id"
-                  aria-label="Search public Glytches by name or ID"
-                />
-              </div>
-              {publicGlytchSearchError && <p className="chatError">{publicGlytchSearchError}</p>}
-              {publicGlytchSearchBusy && <p className="smallMuted">Searching public Glytches...</p>}
-              {!publicGlytchSearchBusy && !selectedDiscoverGlytch && (
-                <p className="chatInfo">No public Glytches matched your search.</p>
-              )}
-              {selectedDiscoverGlytch && (
-                <article className="discoverFeaturedCard">
-                  <div className="activeGlytchSummaryRow">
-                    <span className="glytchItemIcon" aria-hidden="true">
-                      {selectedDiscoverGlytch.icon_url ? (
-                        <img src={selectedDiscoverGlytch.icon_url} alt="" />
-                      ) : (
-                        <span>{initialsFromName(selectedDiscoverGlytch.name)}</span>
-                      )}
-                    </span>
-                    <span className="activeGlytchSummaryName">{selectedDiscoverGlytch.name}</span>
-                  </div>
-                  <p className="smallMuted">
-                    {selectedDiscoverGlytch.bio?.trim() || "No profile bio yet."}
-                  </p>
-                  <p className="smallMuted">
-                    {selectedDiscoverGlytch.member_count} member{selectedDiscoverGlytch.member_count === 1 ? "" : "s"}
-                    {typeof selectedDiscoverGlytch.max_members === "number" && Number.isFinite(selectedDiscoverGlytch.max_members)
-                      ? ` / ${Math.trunc(selectedDiscoverGlytch.max_members)}`
-                      : ""}{" "}
-                    · Public
-                  </p>
-                  {selectedDiscoverGlytch.is_joined ? (
-                    <button
-                      type="button"
-                      className="ghostButton"
-                      onClick={() => {
-                        setActiveGlytchId(selectedDiscoverGlytch.id);
-                        setActiveChannelId(null);
-                        setViewMode("glytch");
-                        setShowGlytchDirectory(false);
-                      }}
-                    >
-                      Open Glytch
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => void handleJoinPublicGlytch(selectedDiscoverGlytch)}
-                      disabled={
-                        publicGlytchJoinBusyId === selectedDiscoverGlytch.id ||
-                        (typeof selectedDiscoverGlytch.max_members === "number" &&
-                          selectedDiscoverGlytch.member_count >= selectedDiscoverGlytch.max_members)
                       }
+                    }}
+                  >
+                    Join by Invite
+                  </button>
+                </div>
+                {glytchActionMode === "create" && (
+                  <form className="stackedForm" onSubmit={handleCreateGlytch}>
+                    <input
+                      value={glytchNameDraft}
+                      onChange={(e) => setGlytchNameDraft(e.target.value)}
+                      placeholder="New Glytch name"
+                      aria-label="New Glytch name"
+                    />
+                    <select
+                      value={glytchCreateVisibilityDraft}
+                      onChange={(e) => setGlytchCreateVisibilityDraft(e.target.value === "public" ? "public" : "private")}
+                      aria-label="Glytch visibility"
                     >
-                      {publicGlytchJoinBusyId === selectedDiscoverGlytch.id
-                        ? "Joining..."
-                        : typeof selectedDiscoverGlytch.max_members === "number" &&
-                            selectedDiscoverGlytch.member_count >= selectedDiscoverGlytch.max_members
-                          ? "Glytch Full"
-                          : "Join Glytch"}
-                    </button>
-                  )}
-                </article>
-              )}
-              {publicGlytchResults.length > 1 && (
-                <div className="glytchSelectionList">
-                  {publicGlytchResults.map((glytch) => (
-                    <button
-                      key={`discover-${glytch.id}`}
-                      className={selectedDiscoverGlytch?.id === glytch.id ? "channelItem glytchSelectionItem active" : "channelItem glytchSelectionItem"}
-                      type="button"
-                      onClick={() => setSelectedDiscoverGlytchId(glytch.id)}
-                    >
-                      <span className="glytchItemLabel">
-                        <span className="glytchItemIcon" aria-hidden="true">
-                          {glytch.icon_url ? <img src={glytch.icon_url} alt="" /> : <span>{initialsFromName(glytch.name)}</span>}
+                      <option value="private">Private (invite only)</option>
+                      <option value="public">Public (discoverable)</option>
+                    </select>
+                    <input
+                      type="number"
+                      min={GLYTCH_MAX_MEMBERS_MIN}
+                      max={GLYTCH_MAX_MEMBERS_MAX}
+                      value={glytchCreateMaxMembersDraft}
+                      onChange={(e) => setGlytchCreateMaxMembersDraft(e.target.value)}
+                      placeholder={`Max users (optional, ${GLYTCH_MAX_MEMBERS_MIN}-${GLYTCH_MAX_MEMBERS_MAX})`}
+                      aria-label="Max users for Glytch"
+                    />
+                    <button type="submit">Create</button>
+                  </form>
+                )}
+                {glytchActionMode === "join" && (
+                  <>
+                    <form className="stackedForm" onSubmit={handleJoinGlytch}>
+                      <input
+                        value={inviteCodeDraft}
+                        onChange={(e) => {
+                          setInviteCodeDraft(e.target.value);
+                          setJoinBannedGlytchId(null);
+                          setJoinUnbanRequestNotice("");
+                        }}
+                        placeholder="Invite code"
+                        aria-label="Invite code"
+                      />
+                      <button type="submit">Join</button>
+                    </form>
+                    {joinBannedGlytchId && (
+                      <form className="stackedForm" onSubmit={handleSubmitJoinUnbanRequest}>
+                        <p className="smallMuted">
+                          You are banned from this Glytch. Submit an unban request and moderators can review it.
+                        </p>
+                        <textarea
+                          value={joinUnbanRequestDraft}
+                          onChange={(e) => setJoinUnbanRequestDraft(e.target.value)}
+                          placeholder="Why should we unban you? (optional)"
+                          aria-label="Unban request message"
+                          rows={3}
+                          disabled={joinUnbanRequestBusy || Boolean(joinUnbanRequestNotice)}
+                        />
+                        <button
+                          type="submit"
+                          disabled={joinUnbanRequestBusy || Boolean(joinUnbanRequestNotice)}
+                        >
+                          {joinUnbanRequestBusy ? "Submitting..." : "Submit Unban Request"}
+                        </button>
+                        {joinUnbanRequestNotice && <p className="smallMuted">{joinUnbanRequestNotice}</p>}
+                      </form>
+                    )}
+                  </>
+                )}
+                <div className="dmSearchRow">
+                  <input
+                    className="dmSearchInput"
+                    value={publicGlytchSearchDraft}
+                    onChange={(e) => setPublicGlytchSearchDraft(e.target.value)}
+                    placeholder="Search public Glytches by name or #id"
+                    aria-label="Search public Glytches by name or ID"
+                  />
+                </div>
+                {publicGlytchSearchError && <p className="chatError">{publicGlytchSearchError}</p>}
+                {publicGlytchSearchBusy && <p className="smallMuted">Searching public Glytches...</p>}
+                {!publicGlytchSearchBusy && !selectedDiscoverGlytch && (
+                  <p className="chatInfo">No public Glytches matched your search.</p>
+                )}
+                {selectedDiscoverGlytch && (
+                  <article className="discoverFeaturedCard">
+                    <div className="activeGlytchSummaryRow">
+                      <span className="glytchItemIcon" aria-hidden="true">
+                        {selectedDiscoverGlytch.icon_url ? (
+                          <img src={selectedDiscoverGlytch.icon_url} alt="" />
+                        ) : (
+                          <span>{initialsFromName(selectedDiscoverGlytch.name)}</span>
+                        )}
+                      </span>
+                      <span className="activeGlytchSummaryName">{selectedDiscoverGlytch.name}</span>
+                    </div>
+                    <p className="smallMuted">
+                      {selectedDiscoverGlytch.bio?.trim() || "No profile bio yet."}
+                    </p>
+                    <p className="smallMuted">
+                      {selectedDiscoverGlytch.member_count} member{selectedDiscoverGlytch.member_count === 1 ? "" : "s"}
+                      {typeof selectedDiscoverGlytch.max_members === "number" && Number.isFinite(selectedDiscoverGlytch.max_members)
+                        ? ` / ${Math.trunc(selectedDiscoverGlytch.max_members)}`
+                        : ""}{" "}
+                      · Public
+                    </p>
+                    {selectedDiscoverGlytch.is_joined ? (
+                      <button
+                        type="button"
+                        className="ghostButton"
+                        onClick={() => {
+                          setUnifiedSidebarView("glytches");
+                          setActiveGlytchId(selectedDiscoverGlytch.id);
+                          setActiveChannelId(null);
+                          setViewMode("glytch");
+                          setShowGlytchDirectory(false);
+                        }}
+                      >
+                        Open Glytch
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => void handleJoinPublicGlytch(selectedDiscoverGlytch)}
+                        disabled={
+                          publicGlytchJoinBusyId === selectedDiscoverGlytch.id ||
+                          (typeof selectedDiscoverGlytch.max_members === "number" &&
+                            selectedDiscoverGlytch.member_count >= selectedDiscoverGlytch.max_members)
+                        }
+                      >
+                        {publicGlytchJoinBusyId === selectedDiscoverGlytch.id
+                          ? "Joining..."
+                          : typeof selectedDiscoverGlytch.max_members === "number" &&
+                              selectedDiscoverGlytch.member_count >= selectedDiscoverGlytch.max_members
+                            ? "Glytch Full"
+                            : "Join Glytch"}
+                      </button>
+                    )}
+                  </article>
+                )}
+                {publicGlytchResults.length > 1 && (
+                  <div className="glytchSelectionList">
+                    {publicGlytchResults.map((glytch) => (
+                      <button
+                        key={`discover-${glytch.id}`}
+                        className={selectedDiscoverGlytch?.id === glytch.id ? "channelItem glytchSelectionItem active" : "channelItem glytchSelectionItem"}
+                        type="button"
+                        onClick={() => setSelectedDiscoverGlytchId(glytch.id)}
+                      >
+                        <span className="glytchItemLabel">
+                          <span className="glytchItemIcon" aria-hidden="true">
+                            {glytch.icon_url ? <img src={glytch.icon_url} alt="" /> : <span>{initialsFromName(glytch.name)}</span>}
+                          </span>
+                          <span className="glytchItemName">{glytch.name}</span>
                         </span>
-                        <span className="glytchItemName">{glytch.name}</span>
-                      </span>
-                      <span className="smallMuted">
-                        {glytch.member_count}
-                        {typeof glytch.max_members === "number" && Number.isFinite(glytch.max_members)
-                          ? `/${Math.trunc(glytch.max_members)}`
-                          : ""}{" "}
-                        members
-                      </span>
-                    </button>
-                  ))}
+                        <span className="smallMuted">
+                          {glytch.member_count}
+                          {typeof glytch.max_members === "number" && Number.isFinite(glytch.max_members)
+                            ? `/${Math.trunc(glytch.max_members)}`
+                            : ""}{" "}
+                          members
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </section>
+          )
+        ) : viewMode === "group" && !shouldShowGroupChatMessageArea ? (
+          <section className="glytchSelectionState" aria-label="Group chat directory">
+            <div className="glytchSelectionPanel">
+              <article className="requestCard groupDirectoryCreateCard">
+                <p className="sectionLabel">Create Group Chat</p>
+                <form className="stackedForm" onSubmit={handleCreateGroupChat}>
+                  <input
+                    value={groupNameDraft}
+                    onChange={(e) => setGroupNameDraft(e.target.value)}
+                    placeholder="Group chat name"
+                    aria-label="Group chat name"
+                    disabled={groupCreateBusy}
+                  />
+                  <div className="glytchInviteList" aria-label="Select group members">
+                    {dms.length === 0 ? (
+                      <p className="smallMuted">Add friends first to include them in a group chat.</p>
+                    ) : (
+                      dms.map((dm) => (
+                        <label key={`group-directory-member-${dm.friendUserId}`} className="permissionToggle">
+                          <input
+                            type="checkbox"
+                            checked={groupCreateMemberIds.includes(dm.friendUserId)}
+                            onChange={(e) => handleToggleGroupCreateMember(dm.friendUserId, e.target.checked)}
+                            disabled={groupCreateBusy}
+                          />
+                          <span>{dm.friendName}</span>
+                        </label>
+                      ))
+                    )}
+                  </div>
+                  <button type="submit" disabled={groupCreateBusy}>
+                    {groupCreateBusy ? "Creating..." : "Create Group Chat"}
+                  </button>
+                </form>
+              </article>
+              {groupError && <p className="chatError">{groupError}</p>}
+              <p className="sectionLabel">Your Groups</p>
+              {filteredUnifiedSidebarGroups.length === 0 ? (
+                <p className="chatInfo">{groupChats.length === 0 ? "No groups available." : "No groups matched your search."}</p>
+              ) : (
+                <div className="glytchSelectionList groupDirectoryGrid">
+                  {filteredUnifiedSidebarGroups.map((chat) => {
+                    const unreadCount = unreadGroupCounts[chat.groupChatId] || 0;
+                    const unreadLabel = unreadCount > 99 ? "99+" : String(unreadCount);
+                    return (
+                      <button
+                        key={`group-grid-${chat.groupChatId}`}
+                        className="channelItem friendItem directoryGroupCard"
+                        type="button"
+                        onClick={() => {
+                          setUnifiedSidebarView("groups");
+                          setViewMode("group");
+                          setActiveGroupChatId(chat.groupChatId);
+                        }}
+                      >
+                        <span className="dmNameRow">
+                          <span className="dmNameText">{chat.name}</span>
+                        </span>
+                        <span className="smallMuted">
+                          {chat.members.length} member{chat.members.length === 1 ? "" : "s"}
+                        </span>
+                        {unreadCount > 0 && <span className="unreadBubble">{unreadLabel}</span>}
+                      </button>
+                    );
+                  })}
                 </div>
               )}
-            </div>
-          </section>
-        ) : viewMode === "group" && !shouldShowGroupChatMessageArea ? (
-          <section className="glytchSelectionState" aria-label="Group chats only message view">
-            <div className="glytchSelectionPanel">
-              <p className="chatInfo">Select a group chat from the left panel to open messages.</p>
             </div>
           </section>
         ) : (
@@ -16265,7 +17786,7 @@ export default function ChatDashboard({
                                   <input
                                     type="range"
                                     min={0}
-                                    max={100}
+                                    max={200}
                                     step={5}
                                     value={volumePercent}
                                     onChange={(e) =>
@@ -16429,7 +17950,7 @@ export default function ChatDashboard({
                                   <input
                                     type="range"
                                     min={0}
-                                    max={100}
+                                    max={200}
                                     step={5}
                                     value={volumePercent}
                                     onChange={(e) => handleSetRemoteUserVolume(participant.userId, Number(e.target.value) / 100)}
@@ -16504,6 +18025,16 @@ export default function ChatDashboard({
                   )}
                 </article>
               )}
+              {viewMode === "dm" && activeConversationId && (
+                <div className="dmMessageSearchBar">
+                  <input
+                    value={dmMessageSearchDraft}
+                    onChange={(e) => setDmMessageSearchDraft(e.target.value)}
+                    placeholder="Search messages in this DM"
+                    aria-label="Search direct message history"
+                  />
+                </div>
+              )}
               <section
                 ref={messageDisplayRef}
                 className={isCurrentMessageBackgroundForcedDefault ? "messagedisplay forceDefaultBackground" : "messagedisplay"}
@@ -16513,7 +18044,41 @@ export default function ChatDashboard({
               >
                 {voiceError && <p className="chatError">{voiceError}</p>}
                 {viewMode === "dm" && !activeConversationId && (
-                  <p className="chatInfo">Add friends and accept requests to start a private DM.</p>
+                  <section className="onlineFriendsPanel" aria-label="Friends online now">
+                    <p className="sectionLabel">Friends Online</p>
+                    {onlineDmRows.length === 0 ? (
+                      <p className="chatInfo">No friends online.</p>
+                    ) : (
+                      <div className="onlineFriendsGrid">
+                        {onlineDmRows.map((dm) => {
+                          const presence = resolvePresenceForUser(dm.friendUserId);
+                          const presenceLabel = presenceStatusLabel(presence);
+                          const friendProfile = knownProfiles[dm.friendUserId];
+                          const currentGame =
+                            typeof friendProfile?.current_game === "string" && friendProfile.current_game.trim()
+                              ? friendProfile.current_game.trim()
+                              : "";
+                          return (
+                            <button
+                              key={`online-dm-${dm.conversationId}`}
+                              type="button"
+                              className="onlineFriendCard"
+                              onClick={() => handleOpenDmConversation(dm.conversationId, unreadDmCounts[dm.conversationId] || 0)}
+                            >
+                              <span className="friendAvatar withPresence">
+                                {dm.friendAvatarUrl ? <img src={dm.friendAvatarUrl} alt="" /> : <span>{initialsFromName(dm.friendName)}</span>}
+                                <span className={`presenceDot ${presence}`} aria-hidden="true" />
+                              </span>
+                              <span className="onlineFriendMeta">
+                                <strong>{dm.friendName}</strong>
+                                <span>{currentGame ? `is playing ${currentGame}` : presenceLabel}</span>
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </section>
                 )}
                 {viewMode === "group" && !activeGroupChatId && (
                   <p className="chatInfo">Create or select a group chat to start messaging.</p>
@@ -16533,6 +18098,9 @@ export default function ChatDashboard({
                 {chatError && <p className="chatError">{chatError}</p>}
 
                 {renderedMessageRows}
+                {viewMode === "dm" && activeConversationId && dmMessageSearchQuery && renderedMessageRows.length === 0 && !chatError && (
+                  <p className="chatInfo">No messages matched your search.</p>
+                )}
 
                 {(viewMode === "dm"
                   ? !!activeConversationId
@@ -16557,7 +18125,7 @@ export default function ChatDashboard({
                 <div ref={messageEndRef} />
               </section>
 
-              {viewMode === "dm" && messageContextMenu && (
+              {messageContextMenu && (
                 <div
                   className="messageContextMenu"
                   style={{ left: messageContextMenu.x, top: messageContextMenu.y }}
@@ -16566,9 +18134,16 @@ export default function ChatDashboard({
                   onPointerDown={(event) => event.stopPropagation()}
                   onContextMenu={(event) => event.preventDefault()}
                 >
-                  <button type="button" className="messageContextMenuItem" onClick={handleReplyToDmMessageFromContextMenu}>
-                    Reply
-                  </button>
+                  {messageContextMenu.canReply && (
+                    <button type="button" className="messageContextMenuItem" onClick={handleReplyToDmMessageFromContextMenu}>
+                      Reply
+                    </button>
+                  )}
+                  {messageContextMenu.canEdit && (
+                    <button type="button" className="messageContextMenuItem" onClick={handleStartEditingMessageFromContextMenu}>
+                      Edit message
+                    </button>
+                  )}
                   <div className="messageContextMenuLabel">React</div>
                   <button
                     type="button"
@@ -16816,7 +18391,6 @@ export default function ChatDashboard({
                           const isPresenting = presentingUserIds.has(member.userId);
                           const memberProfile = member.userId === currentUserId ? currentProfile : knownProfiles[member.userId];
                           const memberDisplayName = memberProfile?.display_name || member.name;
-                          const memberUsername = memberProfile?.username || member.name;
                           const memberBio = memberProfile?.bio?.trim() || "No bio set.";
                           return (
                             <div key={member.userId} className="glytchMemberRow memberHoverCardAnchor">
@@ -16864,7 +18438,6 @@ export default function ChatDashboard({
                                         </span>
                                       )}
                                     </p>
-                                    <p className="memberHoverUsername">@{memberUsername}</p>
                                     <p className={`memberHoverPresence ${status}`}>{statusLabel}</p>
                                   </div>
                                 </div>
@@ -16898,6 +18471,37 @@ export default function ChatDashboard({
           </div>
         )}
       </main>
+
+      {dmInAppBanner && (
+        <button
+          type="button"
+          className="dmInAppBanner"
+          onClick={() => {
+            if (dmInAppBannerTimeoutRef.current !== null) {
+              window.clearTimeout(dmInAppBannerTimeoutRef.current);
+              dmInAppBannerTimeoutRef.current = null;
+            }
+            setDmInAppBanner(null);
+            setUnifiedSidebarView("dms");
+            setViewMode("dm");
+            setDmPanelMode("dms");
+            handleOpenDmConversation(dmInAppBanner.conversationId, unreadDmCounts[dmInAppBanner.conversationId] || 0);
+          }}
+          aria-label={`Open conversation with ${dmInAppBanner.friendName}`}
+        >
+          <span className="friendAvatar withPresence dmInAppBannerAvatar" aria-hidden="true">
+            {dmInAppBanner.friendAvatarUrl ? (
+              <img src={dmInAppBanner.friendAvatarUrl} alt="" />
+            ) : (
+              <span>{initialsFromName(dmInAppBanner.friendName)}</span>
+            )}
+          </span>
+          <span className="dmInAppBannerMeta">
+            <strong>{dmInAppBanner.friendName}</strong>
+            <span>{dmInAppBanner.preview}</span>
+          </span>
+        </button>
+      )}
 
       {viewedProfile && (
         <div className="profileModalBackdrop" onClick={() => setViewedProfile(null)}>
@@ -16944,6 +18548,7 @@ export default function ChatDashboard({
                 <span className={`profilePresenceDot ${viewedPresenceStatus}`} aria-hidden="true" />
               </div>
               <h2>{viewedDisplayName}</h2>
+              <p className="profileUsernameTag">@{formatUsernameWithId(viewedProfile.username, viewedProfile.user_id)}</p>
               <p className={`profilePresenceText ${viewedPresenceStatus}`}>{viewedPresenceLabel}</p>
               <p>{viewedProfile.bio || "No bio yet."}</p>
               <p className="sectionLabel">Showcases</p>
