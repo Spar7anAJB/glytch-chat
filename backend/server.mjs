@@ -112,9 +112,11 @@ const MEDIA_MESSAGE_PROXY_PATH = "/api/media/message";
 const MEDIA_MESSAGE_PROXY_PREFIX = "/api/media/message/";
 const MEDIA_MESSAGE_INGEST_PATH = "/api/media/message-ingest";
 const LIVEKIT_KRISP_TOKEN_PATH = "/api/voice/livekit-token";
+const DESKTOP_UPDATER_PREFIX = "/api/desktop-updates/";
 const UPDATES_PREFIX = "/api/updates/";
 const DOWNLOADS_PREFIX = "/api/downloads/";
 const DOWNLOADS_DIR = path.join(WORKSPACE_ROOT, "public", "downloads");
+const DOWNLOADS_UPDATER_DIR = path.join(DOWNLOADS_DIR, "updater");
 const RELEASE_DIR = path.join(WORKSPACE_ROOT, "release");
 const DOWNLOADS_UPDATES_MANIFEST_PATH = path.join(DOWNLOADS_DIR, "updates.json");
 const PACKAGE_JSON_PATH = path.join(WORKSPACE_ROOT, "package.json");
@@ -1491,6 +1493,180 @@ function resolveInstallerPath(fileName) {
   return path.join(DOWNLOADS_DIR, fileName);
 }
 
+function normalizeUpdaterAssetName(rawName) {
+  if (typeof rawName !== "string") return "";
+  const trimmed = rawName.trim();
+  if (!trimmed) return "";
+  if (trimmed.includes("/") || trimmed.includes("\\") || trimmed.includes("..")) return "";
+  return trimmed;
+}
+
+function defaultUpdaterManifestName(platform) {
+  if (platform === "mac") return "latest-mac.yml";
+  if (platform === "windows") return "latest.yml";
+  if (platform === "linux") return "latest-linux.yml";
+  return "";
+}
+
+function normalizeUpdaterManifestRef(rawValue) {
+  if (typeof rawValue !== "string") return "";
+  let candidate = rawValue.trim();
+  if (!candidate) return "";
+
+  if (/^https?:\/\//i.test(candidate)) {
+    try {
+      const parsed = new URL(candidate);
+      candidate = parsed.pathname || "";
+    } catch {
+      return "";
+    }
+  }
+
+  const withoutQuery = candidate.split("?")[0]?.split("#")[0] || "";
+  if (!withoutQuery) return "";
+  const base = path.posix.basename(withoutQuery);
+  if (!base) return "";
+  try {
+    return normalizeUpdaterAssetName(decodeURIComponent(base));
+  } catch {
+    return normalizeUpdaterAssetName(base);
+  }
+}
+
+function rewriteUpdaterManifest(rawYaml) {
+  if (typeof rawYaml !== "string" || !rawYaml) return rawYaml;
+  const normalizedLines = rawYaml.split(/\r?\n/).map((line) => {
+    const match = line.match(/^(\s*(?:url|path):\s*)(["']?)([^"']+)(["']?)\s*$/i);
+    if (!match) return line;
+    const normalizedRef = normalizeUpdaterManifestRef(match[3]);
+    if (!normalizedRef) return line;
+    const quote = match[2] || match[4] || "";
+    return `${match[1]}${quote}${normalizedRef}${quote}`;
+  });
+  return normalizedLines.join("\n");
+}
+
+function contentTypeForUpdaterFile(fileName) {
+  const normalizedName = fileName.toLowerCase();
+  if (normalizedName.endsWith(".yml") || normalizedName.endsWith(".yaml")) return "text/yaml; charset=utf-8";
+  if (normalizedName.endsWith(".exe")) return "application/vnd.microsoft.portable-executable";
+  if (normalizedName.endsWith(".dmg")) return "application/x-apple-diskimage";
+  if (normalizedName.endsWith(".zip")) return "application/zip";
+  return "application/octet-stream";
+}
+
+function resolveUpdaterFilePath(platform, fileName) {
+  const normalizedName = normalizeUpdaterAssetName(fileName);
+  if (!normalizedName) return null;
+  const candidates = [
+    path.join(DOWNLOADS_UPDATER_DIR, platform, normalizedName),
+    path.join(RELEASE_DIR, normalizedName),
+  ];
+
+  for (const candidate of candidates) {
+    if (!fs.existsSync(candidate)) continue;
+    const stats = fs.statSync(candidate);
+    if (!stats.isFile()) continue;
+    return candidate;
+  }
+  return null;
+}
+
+function streamUpdaterFile(req, res, fileName, filePath) {
+  const normalizedName = fileName.toLowerCase();
+  if (normalizedName.endsWith(".yml") || normalizedName.endsWith(".yaml")) {
+    const rawManifest = fs.readFileSync(filePath, "utf8");
+    const normalizedManifest = rewriteUpdaterManifest(rawManifest);
+    const payloadBuffer = Buffer.from(normalizedManifest, "utf8");
+    res.statusCode = 200;
+    res.setHeader("Content-Type", "text/yaml; charset=utf-8");
+    res.setHeader("Content-Length", String(payloadBuffer.length));
+    res.setHeader("Cache-Control", "no-store");
+    if ((req.method || "GET") === "HEAD") {
+      res.end();
+      return;
+    }
+    res.end(payloadBuffer);
+    return;
+  }
+
+  const stats = fs.statSync(filePath);
+  res.statusCode = 200;
+  res.setHeader("Content-Type", contentTypeForUpdaterFile(fileName));
+  res.setHeader("Content-Length", String(stats.size));
+  res.setHeader("Cache-Control", "no-store");
+  if ((req.method || "GET") === "HEAD") {
+    res.end();
+    return;
+  }
+
+  const stream = fs.createReadStream(filePath);
+  stream.on("error", (error) => {
+    sendJson(res, 500, {
+      error: "Failed to stream updater artifact.",
+      message: error instanceof Error ? error.message : "Unknown file streaming error.",
+    });
+  });
+  stream.pipe(res);
+}
+
+function handleDesktopUpdaterAsset(req, res, pathname) {
+  const method = req.method || "GET";
+  if (method !== "GET" && method !== "HEAD") {
+    sendJson(res, 405, { error: "Method not allowed." });
+    return;
+  }
+
+  const suffix = pathname.slice(DESKTOP_UPDATER_PREFIX.length);
+  const routeParts = suffix.split("/").filter(Boolean);
+  if (routeParts.length < 1 || routeParts.length > 2) {
+    sendJson(res, 404, {
+      error: "Unknown updater feed route.",
+      expected: "/api/desktop-updates/{platform}/latest.yml",
+      supported: ["mac", "windows"],
+    });
+    return;
+  }
+
+  const platform = normalizeInstallerPlatform(routeParts[0]);
+  if (!platform || (platform !== "mac" && platform !== "windows")) {
+    sendJson(res, 404, {
+      error: "Unknown updater feed platform.",
+      supported: ["mac", "windows"],
+    });
+    return;
+  }
+
+  let requestedName = routeParts[1] || defaultUpdaterManifestName(platform);
+  if (routeParts[1]) {
+    try {
+      requestedName = decodeURIComponent(routeParts[1]);
+    } catch {
+      sendJson(res, 400, { error: "Invalid updater artifact path encoding." });
+      return;
+    }
+  }
+  const safeName = normalizeUpdaterAssetName(requestedName);
+  if (!safeName) {
+    sendJson(res, 400, { error: "Invalid updater artifact path." });
+    return;
+  }
+
+  const resolved = resolveUpdaterFilePath(platform, safeName);
+  if (!resolved) {
+    sendJson(res, 404, {
+      error: "Updater artifact is not available yet.",
+      platform,
+      fileName: safeName,
+      expectedDir: `public/downloads/updater/${platform}`,
+      fallbackScanDir: "release/",
+    });
+    return;
+  }
+
+  streamUpdaterFile(req, res, safeName, resolved);
+}
+
 function listFilesRecursive(dirPath) {
   if (!fs.existsSync(dirPath)) return [];
   const result = [];
@@ -1896,6 +2072,11 @@ const server = createServer(async (req, res) => {
 
   if (pathname === "/api/gifs/search") {
     await handleGifSearch(res, parsedUrl);
+    return;
+  }
+
+  if (pathname.startsWith(DESKTOP_UPDATER_PREFIX)) {
+    handleDesktopUpdaterAsset(req, res, pathname);
     return;
   }
 

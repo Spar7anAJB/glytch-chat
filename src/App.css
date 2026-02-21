@@ -98,6 +98,19 @@
   }
 }
 
+@keyframes avatar-decor-spark {
+  0%,
+  100% {
+    opacity: 0.2;
+    transform: scale(0.82);
+  }
+
+  50% {
+    opacity: 0.88;
+    transform: scale(1.12);
+  }
+}
+
 @keyframes avatar-crown-glow {
   0%,
   100% {
@@ -509,6 +522,31 @@ textarea:focus-visible {
   --focus-ring: 0 0 0 3px color-mix(in srgb, var(--accent), transparent 42%);
 }
 
+.page.a11yLargeTouchTargets button,
+.page.a11yLargeTouchTargets input,
+.page.a11yLargeTouchTargets select {
+  min-height: 42px;
+}
+
+.page.a11yLargeTouchTargets .voiceButton.iconOnly,
+.page.a11yLargeTouchTargets .composerIconButton {
+  min-width: 42px;
+  min-height: 42px;
+}
+
+.page.a11yReducedVisualNoise .sidemenu,
+.page.a11yReducedVisualNoise .profilePreviewCard,
+.page.a11yReducedVisualNoise .voicePanel,
+.page.a11yReducedVisualNoise .dmInAppBanner {
+  backdrop-filter: none;
+}
+
+.page.a11yReducedVisualNoise .sidemenu,
+.page.a11yReducedVisualNoise .chatLayout,
+.page.a11yReducedVisualNoise .membersPanel {
+  background: color-mix(in srgb, var(--panel), var(--bg) 20%) !important;
+}
+
 .page.a11yReduceMotion *,
 .page.a11yReduceMotion *::before,
 .page.a11yReduceMotion *::after {
@@ -682,6 +720,35 @@ textarea:focus-visible {
   font-size: 0.44rem;
 }
 
+.avatarDecorationSpark {
+  position: absolute;
+  color: color-mix(in srgb, var(--avatar-decor-color), #ffffff 15%);
+  line-height: 1;
+  text-shadow: 0 0 8px color-mix(in srgb, var(--avatar-decor-bg), transparent 32%);
+  animation: avatar-decor-spark 1.65s ease-in-out infinite;
+}
+
+.avatarDecorationSpark.sparkA {
+  left: -2px;
+  top: 10%;
+  font-size: 0.54rem;
+}
+
+.avatarDecorationSpark.sparkB {
+  right: -3px;
+  bottom: 9%;
+  font-size: 0.5rem;
+  animation-delay: 0.48s;
+}
+
+.avatarDecorationLayer.small .avatarDecorationSpark.sparkA {
+  font-size: 0.44rem;
+}
+
+.avatarDecorationLayer.small .avatarDecorationSpark.sparkB {
+  font-size: 0.4rem;
+}
+
 .avatarDecorationAura,
 .avatarDecorationPulse,
 .avatarDecorationTrail,
@@ -780,6 +847,7 @@ textarea:focus-visible {
 .avatarDecorationLayer.star .avatarDecorationGlyph {
   right: -3px;
   bottom: -3px;
+  animation: avatar-decor-spark 1.95s ease-in-out infinite;
 }
 
 .avatarButton img {
@@ -1269,6 +1337,15 @@ textarea:focus-visible {
 .permissionToggle input {
   width: 16px;
   height: 16px;
+}
+
+.permissionsList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 180px;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .roleAccessSection {
@@ -4813,8 +4890,8 @@ textarea:focus-visible {
     color-mix(in srgb, var(--text), transparent 90%),
     color-mix(in srgb, var(--accent), transparent 92%)
   );
-  background-size: contain;
-  background-position: center;
+  background-size: cover;
+  background-position: center 45%;
   background-repeat: no-repeat;
 }
 
@@ -6300,7 +6377,7 @@ textarea:focus-visible {
 }
 
 .dmMessageSearchBar {
-  margin: 10px 12px 0;
+  margin: 10px 12px 8px;
 }
 
 .dmMessageSearchBar input {
@@ -6380,6 +6457,13 @@ textarea:focus-visible {
     0 10px 24px color-mix(in srgb, #02040e, transparent 58%),
     inset 0 1px 0 color-mix(in srgb, #ffffff, transparent 92%);
   cursor: pointer;
+}
+
+.dmInAppBanner.call {
+  border-color: color-mix(in srgb, #4be7ff, var(--panel-border) 38%);
+  background:
+    radial-gradient(220px 120px at 100% -20%, color-mix(in srgb, #47e7ff, transparent 78%), transparent 72%),
+    color-mix(in srgb, #101b32, var(--panel) 68%);
 }
 
 .dmInAppBannerAvatar {

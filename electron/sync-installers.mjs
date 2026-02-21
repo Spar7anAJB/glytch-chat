@@ -5,6 +5,7 @@ import path from "node:path";
 const rootDir = process.cwd();
 const releaseDir = path.join(rootDir, "release");
 const downloadsDir = path.join(rootDir, "public", "downloads");
+const updaterDownloadsDir = path.join(downloadsDir, "updater");
 const updatesManifestPath = path.join(downloadsDir, "updates.json");
 const packageJsonPath = path.join(rootDir, "package.json");
 
@@ -39,6 +40,39 @@ const installers = [
     id: "linux",
     outputName: "glytch-chat.AppImage",
     test: (file) => file.name.endsWith(".AppImage"),
+  },
+];
+
+const updaterArtifacts = [
+  {
+    id: "windows",
+    outputDir: path.join(updaterDownloadsDir, "windows"),
+    hasManifest: (files) => files.some((file) => file.name.toLowerCase() === "latest.yml"),
+    test: (file) => {
+      if (file.relativePath.includes("/")) return false;
+      const normalizedName = file.name.toLowerCase();
+      if (/^latest(?:-[a-z0-9_-]+)?\.yml$/.test(normalizedName) && !normalizedName.includes("mac")) {
+        return true;
+      }
+      if (normalizedName.endsWith(".exe.blockmap")) return true;
+      return normalizedName.endsWith(".exe") && !normalizedName.includes("uninstall");
+    },
+  },
+  {
+    id: "mac",
+    outputDir: path.join(updaterDownloadsDir, "mac"),
+    hasManifest: (files) => files.some((file) => /^latest-mac(?:-[a-z0-9_-]+)?\.yml$/.test(file.name.toLowerCase())),
+    test: (file) => {
+      if (file.relativePath.includes("/")) return false;
+      const normalizedName = file.name.toLowerCase();
+      if (/^latest-mac(?:-[a-z0-9_-]+)?\.yml$/.test(normalizedName)) return true;
+      return (
+        normalizedName.endsWith(".zip") ||
+        normalizedName.endsWith(".zip.blockmap") ||
+        normalizedName.endsWith(".dmg") ||
+        normalizedName.endsWith(".dmg.blockmap")
+      );
+    },
   },
 ];
 
@@ -83,6 +117,11 @@ function ensureDownloadsDir() {
   fs.mkdirSync(downloadsDir, { recursive: true });
 }
 
+function ensureEmptyDir(dirPath) {
+  fs.rmSync(dirPath, { recursive: true, force: true });
+  fs.mkdirSync(dirPath, { recursive: true });
+}
+
 function readPackageVersion() {
   if (!fs.existsSync(packageJsonPath)) return "0.0.0";
   try {
@@ -109,6 +148,45 @@ function sha256ForFile(filePath) {
   return hash.digest("hex");
 }
 
+function newestFilesByName(files) {
+  const byName = new Map();
+  for (const file of files) {
+    const key = file.name.toLowerCase();
+    const previous = byName.get(key);
+    if (!previous || file.mtimeMs > previous.mtimeMs) {
+      byName.set(key, file);
+    }
+  }
+  return Array.from(byName.values());
+}
+
+function syncUpdaterArtifacts(files) {
+  let copiedAny = false;
+  for (const descriptor of updaterArtifacts) {
+    ensureEmptyDir(descriptor.outputDir);
+    const platformFiles = files.filter((file) => descriptor.test(file));
+    if (!descriptor.hasManifest(platformFiles)) {
+      console.log(
+        `[sync-installers] Skipping updater:${descriptor.id} because the release output is missing latest feed metadata (latest*.yml).`,
+      );
+      continue;
+    }
+    const matches = newestFilesByName(platformFiles);
+    if (matches.length === 0) {
+      console.log(`[sync-installers] No ${descriptor.id} updater artifacts found in release/.`);
+      continue;
+    }
+
+    for (const match of matches) {
+      const destination = path.join(descriptor.outputDir, match.name);
+      fs.copyFileSync(match.path, destination);
+      copiedAny = true;
+      console.log(`[sync-installers] updater:${descriptor.id}: ${match.relativePath} -> ${path.relative(rootDir, destination)}`);
+    }
+  }
+  return copiedAny;
+}
+
 function main() {
   const files = collectReleaseFiles(releaseDir);
   if (files.length === 0) {
@@ -117,6 +195,7 @@ function main() {
   }
 
   ensureDownloadsDir();
+  fs.mkdirSync(updaterDownloadsDir, { recursive: true });
   const packageVersion = readPackageVersion();
   const updatesManifest = {
     app: "Glytch Chat",
@@ -159,6 +238,10 @@ function main() {
 
   fs.writeFileSync(updatesManifestPath, `${JSON.stringify(updatesManifest, null, 2)}\n`);
   console.log("[sync-installers] wrote public/downloads/updates.json");
+
+  if (!syncUpdaterArtifacts(files)) {
+    console.log("[sync-installers] No updater feed artifacts were synced.");
+  }
 }
 
 main();

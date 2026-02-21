@@ -3278,6 +3278,26 @@ export async function kickGlytchMember(accessToken: string, glytchId: number, us
   }
 }
 
+export async function leaveGlytch(accessToken: string, glytchId: number) {
+  assertConfig();
+  try {
+    const res = await supabaseFetch(`/rest/v1/rpc/leave_glytch`, {
+      method: "POST",
+      headers: supabaseHeaders(accessToken),
+      body: JSON.stringify({
+        p_glytch_id: glytchId,
+      }),
+    });
+
+    return (await readJsonOrThrow(res)) as boolean;
+  } catch (err) {
+    if (err instanceof Error && isMissingChannelSettingsSchemaError(err.message)) {
+      throw new Error("Leave Glytch is unavailable until the latest database migrations are applied.");
+    }
+    throw err;
+  }
+}
+
 export async function assignGlytchRole(
   accessToken: string,
   glytchId: number,

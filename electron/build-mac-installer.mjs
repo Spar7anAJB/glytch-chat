@@ -147,7 +147,7 @@ function main() {
   run("npm", ["ci"], { cwd: stageDir });
 
   run("npm", ["run", "build"], { cwd: stageDir });
-  run("npx", ["--yes", "electron-builder@26", "--config", "electron/builder.config.json", "--mac", "dmg", "--publish", "never"], {
+  run("npx", ["--yes", "electron-builder@26", "--config", "electron/builder.config.json", "--mac", "--publish", "never"], {
     cwd: stageDir,
     env: {
       ...process.env,

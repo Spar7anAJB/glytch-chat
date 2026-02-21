@@ -70,6 +70,7 @@ import {
   listVoiceSignals,
   joinVoiceRoom,
   leaveVoiceRoom,
+  leaveGlytch,
   respondToFriendRequest,
   resolveMessageAttachmentUrl,
   markDmConversationRead,
@@ -193,6 +194,7 @@ type DmInAppBanner = {
   friendName: string;
   friendAvatarUrl: string;
   preview: string;
+  kind?: "message" | "call";
 };
 
 type AppGlyphKind = "glytch" | "settings" | "friends" | "group" | "discover" | "patch";
@@ -341,6 +343,8 @@ type ProfileForm = {
   accessibilityTextScale: number;
   accessibilityDyslexiaFont: boolean;
   accessibilityUnderlineLinks: boolean;
+  accessibilityLargeTouchTargets: boolean;
+  accessibilityReducedVisualNoise: boolean;
 };
 
 type ProfileCommentWithAuthor = {
@@ -434,7 +438,7 @@ const PROFILE_COMMENT_MAX_LENGTH = 400;
 const SOUNDBOARD_MAX_CLIPS = 6;
 const SOUNDBOARD_MAX_CLIP_BYTES = 2 * 1024 * 1024;
 const SOUNDBOARD_STORAGE_KEY = "glytch.soundboard.clips.v1";
-const DESKTOP_AUTO_UPDATE_WINDOWS_STORAGE_KEY = "glytch.desktopAutoUpdateWindows.v1";
+const DESKTOP_AUTO_UPDATE_STORAGE_KEY = "glytch.desktopAutoUpdate.v2";
 const VOICE_MIC_SETTINGS_STORAGE_KEY = "glytch.voice.mic.settings.v1";
 const VOICE_TARGET_PROFILE_STORAGE_KEY = "glytch.voice.targetProfile.v1";
 const LEGACY_DEFAULT_DM_CHAT_BACKGROUND: BackgroundGradient = {
@@ -1653,6 +1657,8 @@ function renderAvatarDecoration(
   const glyph = AVATAR_DECORATION_GLYPHS[decoration] || "✦";
   return (
     <span className={`avatarDecorationLayer ${decoration} ${sizeClass}`.trim()} style={style} aria-hidden="true">
+      <span className="avatarDecorationSpark sparkA">✦</span>
+      <span className="avatarDecorationSpark sparkB">✦</span>
       {decoration === "crown" && <span className="avatarDecorationAura crownAura" />}
       {decoration === "heart" && <span className="avatarDecorationPulse heartPulse" />}
       {decoration === "bolt" && <span className="avatarDecorationTrail boltTrail" />}
@@ -2279,6 +2285,8 @@ function buildProfileForm(profile: Profile | null): ProfileForm {
   const accessibilityTextScale = normalizeAccessibilityTextScale(theme.accessibilityTextScale);
   const accessibilityDyslexiaFont = Boolean(theme.accessibilityDyslexiaFont);
   const accessibilityUnderlineLinks = Boolean(theme.accessibilityUnderlineLinks);
+  const accessibilityLargeTouchTargets = Boolean(theme.accessibilityLargeTouchTargets);
+  const accessibilityReducedVisualNoise = Boolean(theme.accessibilityReducedVisualNoise);
   const dmBackgroundByConversation = normalizeBackgroundGradientMap(theme.dmBackgroundByConversation);
   const groupBackgroundByChat = normalizeBackgroundGradientMap(theme.groupBackgroundByChat);
   const glytchBackgroundByChannel = normalizeBackgroundGradientMap(theme.glytchBackgroundByChannel);
@@ -2367,6 +2375,8 @@ function buildProfileForm(profile: Profile | null): ProfileForm {
     accessibilityTextScale,
     accessibilityDyslexiaFont,
     accessibilityUnderlineLinks,
+    accessibilityLargeTouchTargets,
+    accessibilityReducedVisualNoise,
   };
 }
 
@@ -2420,6 +2430,8 @@ function buildProfileThemePayload(form: ProfileForm): Record<string, unknown> {
     accessibilityTextScale: form.accessibilityTextScale,
     accessibilityDyslexiaFont: form.accessibilityDyslexiaFont,
     accessibilityUnderlineLinks: form.accessibilityUnderlineLinks,
+    accessibilityLargeTouchTargets: form.accessibilityLargeTouchTargets,
+    accessibilityReducedVisualNoise: form.accessibilityReducedVisualNoise,
   };
 }
 
@@ -2474,16 +2486,38 @@ type HoverGifImageProps = {
 
 type DesktopUpdatePlatform = "windows" | "mac" | "linux";
 
-type DesktopUpdatePayload = {
-  platform: DesktopUpdatePlatform;
-  version: string;
-  downloadPath: string;
-  downloadUrl: string;
-  fileName: string;
-  sizeBytes: number;
-  source: string;
-  publishedAt: string | null;
-  sha256: string | null;
+type DesktopUpdaterStatus = "idle" | "checking" | "downloading" | "downloaded" | "error";
+
+type DesktopUpdaterStateSnapshot = {
+  supported: boolean;
+  platform: DesktopUpdatePlatform | null;
+  status: DesktopUpdaterStatus;
+  currentVersion: string;
+  latestVersion: string;
+  downloadedVersion: string;
+  releaseDate: string | null;
+  progressPercent: number | null;
+  bytesPerSecond: number | null;
+  transferred: number | null;
+  total: number | null;
+  feedUrl: string;
+  lastCheckedAt: string | null;
+  error: string;
+};
+
+type DesktopUpdaterEventPayload = {
+  event: string;
+  at: string;
+  message?: string;
+  version?: string;
+  releaseDate?: string | null;
+  progress?: {
+    percent: number | null;
+    bytesPerSecond: number | null;
+    transferred: number | null;
+    total: number | null;
+  };
+  state?: DesktopUpdaterStateSnapshot;
 };
 
 function HoverGifImage({ src, alt, className, onError }: HoverGifImageProps) {
@@ -2729,20 +2763,22 @@ function persistSoundboardToStorage(clips: SoundboardClip[]) {
   }
 }
 
-function loadDesktopAutoUpdateWindowsFromStorage(): boolean {
+function loadDesktopAutoUpdateFromStorage(): boolean {
   if (typeof window === "undefined") return false;
   try {
-    const raw = window.localStorage.getItem(DESKTOP_AUTO_UPDATE_WINDOWS_STORAGE_KEY);
+    const raw =
+      window.localStorage.getItem(DESKTOP_AUTO_UPDATE_STORAGE_KEY) ??
+      window.localStorage.getItem("glytch.desktopAutoUpdateWindows.v1");
     return raw === "1";
   } catch {
     return false;
   }
 }
 
-function persistDesktopAutoUpdateWindowsToStorage(enabled: boolean) {
+function persistDesktopAutoUpdateToStorage(enabled: boolean) {
   if (typeof window === "undefined") return;
   try {
-    window.localStorage.setItem(DESKTOP_AUTO_UPDATE_WINDOWS_STORAGE_KEY, enabled ? "1" : "0");
+    window.localStorage.setItem(DESKTOP_AUTO_UPDATE_STORAGE_KEY, enabled ? "1" : "0");
   } catch {
     // Ignore localStorage quota failures.
   }
@@ -2986,6 +3022,11 @@ export default function ChatDashboard({
   const [channelPermissionCanJoinVoice, setChannelPermissionCanJoinVoice] = useState(true);
   const [channelSettingsTextPostMode, setChannelSettingsTextPostMode] = useState<TextPostMode>("all");
   const [channelSettingsVoiceUserLimit, setChannelSettingsVoiceUserLimit] = useState("");
+  const [logsChannelNameDraft, setLogsChannelNameDraft] = useState("logs");
+  const [logsChannelRoleIdsDraft, setLogsChannelRoleIdsDraft] = useState<number[]>([]);
+  const [logsChannelBusy, setLogsChannelBusy] = useState(false);
+  const [logsChannelNotice, setLogsChannelNotice] = useState("");
+  const [logsChannelError, setLogsChannelError] = useState("");
   const [channelRolePermissions, setChannelRolePermissions] = useState<GlytchChannelRolePermission[]>([]);
   const [roleError, setRoleError] = useState("");
   const [glytchIconBusy, setGlytchIconBusy] = useState(false);
@@ -2999,6 +3040,8 @@ export default function ChatDashboard({
   const [glytchDeleteConfirmName, setGlytchDeleteConfirmName] = useState("");
   const [glytchDeleteBusy, setGlytchDeleteBusy] = useState(false);
   const [glytchDeleteError, setGlytchDeleteError] = useState("");
+  const [leaveGlytchBusy, setLeaveGlytchBusy] = useState(false);
+  const [leaveGlytchError, setLeaveGlytchError] = useState("");
   const [glytchSettingsTab, setGlytchSettingsTab] = useState<GlytchSettingsTab>("profile");
   const [rolesLoadedForGlytchId, setRolesLoadedForGlytchId] = useState<number | null>(null);
 
@@ -3006,18 +3049,20 @@ export default function ChatDashboard({
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("edit");
   const [currentProfile, setCurrentProfile] = useState<Profile | null>(null);
   const [profileForm, setProfileForm] = useState<ProfileForm>(buildProfileForm(null));
-  const [desktopAppVersion, setDesktopAppVersion] = useState("");
+  const [desktopAppVersion, setDesktopAppVersion] = useState(() => normalizeInstalledAppVersion(BUILD_APP_VERSION));
   const [desktopLatestVersion, setDesktopLatestVersion] = useState("");
-  const [desktopUpdateDownloadUrl, setDesktopUpdateDownloadUrl] = useState("");
   const [desktopUpdatePublishedAt, setDesktopUpdatePublishedAt] = useState<string | null>(null);
   const [desktopUpdateLastCheckedAt, setDesktopUpdateLastCheckedAt] = useState<string | null>(null);
   const [desktopUpdateBusy, setDesktopUpdateBusy] = useState(false);
+  const [desktopUpdateDownloading, setDesktopUpdateDownloading] = useState(false);
+  const [desktopUpdateDownloadProgress, setDesktopUpdateDownloadProgress] = useState<number | null>(null);
+  const [desktopUpdateReadyToInstall, setDesktopUpdateReadyToInstall] = useState(false);
   const [desktopUpdateInstallBusy, setDesktopUpdateInstallBusy] = useState(false);
   const [desktopUninstallBusy, setDesktopUninstallBusy] = useState(false);
   const [desktopUpdateNotice, setDesktopUpdateNotice] = useState("");
   const [desktopUpdateError, setDesktopUpdateError] = useState("");
-  const [desktopAutoUpdateWindowsEnabled, setDesktopAutoUpdateWindowsEnabled] = useState(() =>
-    loadDesktopAutoUpdateWindowsFromStorage(),
+  const [desktopAutoUpdateEnabled, setDesktopAutoUpdateEnabled] = useState(() =>
+    loadDesktopAutoUpdateFromStorage(),
   );
   const [voiceMicSettings, setVoiceMicSettings] = useState<VoiceMicSettings>(() => loadVoiceMicSettingsFromStorage());
   const [voiceEngineDebugOpen, setVoiceEngineDebugOpen] = useState(false);
@@ -3236,6 +3281,7 @@ export default function ChatDashboard({
   const glytchLastLoadedMessageIdRef = useRef(0);
   const desktopUpdateAutoCheckRef = useRef(false);
   const desktopAutoInstallAttemptRef = useRef("");
+  const profileLoadInitializedForUserRef = useRef<string | null>(null);
   const messageSnapshotKeyByContextRef = useRef<Record<string, string>>({});
   const activeMessageContextKeyRef = useRef<string | null>(null);
   const [membersPanelWidth, setMembersPanelWidth] = useState(() => {
@@ -3605,16 +3651,6 @@ export default function ChatDashboard({
       setSettingsTab(allowedTabs[0]);
     }
   }, [settingsSection, settingsTab]);
-
-  const selectedVoiceRoomKey = useMemo(() => {
-    if (viewMode === "dm") {
-      return activeConversationId ? `dm:${activeConversationId}` : null;
-    }
-    if (viewMode === "glytch") {
-      return activeChannelId && activeChannel?.kind === "voice" ? `glytch:${activeChannelId}` : null;
-    }
-    return null;
-  }, [viewMode, activeConversationId, activeChannelId, activeChannel?.kind]);
 
   const presenceRoomKey = useMemo(
     () =>
@@ -5721,17 +5757,24 @@ export default function ChatDashboard({
       ? null
       : normalizeDesktopUpdatePlatform(window.electronAPI?.platform) || inferDesktopPlatformFromNavigator();
   const isWindowsElectronRuntime = isElectronRuntime && electronDesktopPlatform === "windows";
-  const hasInAppInstallerUpdateBridge = typeof window !== "undefined" && Boolean(window.electronAPI?.downloadAndInstallUpdate);
-  const supportsWindowsAutoInstall = isWindowsElectronRuntime && hasInAppInstallerUpdateBridge;
+  const hasDesktopUpdaterBridge =
+    typeof window !== "undefined" &&
+    Boolean(
+      window.electronAPI?.checkForDesktopUpdates &&
+        window.electronAPI?.installDownloadedUpdate &&
+        window.electronAPI?.onDesktopUpdaterEvent,
+    );
   const supportsDesktopUpdateAction =
-    isElectronRuntime && (electronDesktopPlatform === "windows" || electronDesktopPlatform === "mac");
-  const desktopUpdateActionLabel = hasInAppInstallerUpdateBridge ? "Install Update" : "Download Update";
+    hasDesktopUpdaterBridge &&
+    isElectronRuntime &&
+    (electronDesktopPlatform === "windows" || electronDesktopPlatform === "mac");
+  const supportsDesktopAutoInstall = supportsDesktopUpdateAction;
+  const desktopUpdateActionLabel = "Install Update";
   const selectedPatchNoteEntry =
     PATCH_NOTES.find((entry) => entry.version === selectedPatchNoteVersion) || PATCH_NOTES[0] || null;
+  const installedDesktopVersion = normalizeInstalledAppVersion(desktopAppVersion);
   const isDesktopUpdateAvailable =
-    desktopLatestVersion.length > 0 &&
-    desktopUpdateDownloadUrl.length > 0 &&
-    compareSemanticVersions(desktopLatestVersion, desktopAppVersion || "0.0.0") > 0;
+    desktopLatestVersion.length > 0 && compareSemanticVersions(desktopLatestVersion, installedDesktopVersion) > 0;
 
   useEffect(() => {
     publishedCurrentGameRef.current = currentProfile?.current_game?.trim() || null;
@@ -5791,8 +5834,76 @@ export default function ChatDashboard({
     };
   }, [accessToken, currentUserId, isElectronRuntime, profileForm.gameActivitySharingEnabled]);
 
+  const applyDesktopUpdaterState = useCallback(
+    (nextState: DesktopUpdaterStateSnapshot | null | undefined) => {
+      if (!nextState || typeof nextState !== "object") return;
+
+      const nextCurrentVersion =
+        typeof nextState.currentVersion === "string" ? normalizeInstalledAppVersion(nextState.currentVersion) : "";
+      if (nextCurrentVersion) {
+        setDesktopAppVersion(nextCurrentVersion);
+      }
+
+      const nextLatestVersion = typeof nextState.latestVersion === "string" ? nextState.latestVersion.trim() : "";
+      const nextDownloadedVersion =
+        typeof nextState.downloadedVersion === "string" ? nextState.downloadedVersion.trim() : "";
+      const resolvedLatestVersion = nextLatestVersion || nextDownloadedVersion;
+      if (resolvedLatestVersion) {
+        setDesktopLatestVersion(resolvedLatestVersion);
+      }
+
+      setDesktopUpdatePublishedAt(typeof nextState.releaseDate === "string" ? nextState.releaseDate : null);
+      setDesktopUpdateLastCheckedAt(typeof nextState.lastCheckedAt === "string" ? nextState.lastCheckedAt : null);
+
+      const status = typeof nextState.status === "string" ? nextState.status : "idle";
+      setDesktopUpdateBusy(status === "checking");
+      setDesktopUpdateDownloading(status === "downloading");
+      setDesktopUpdateReadyToInstall(status === "downloaded");
+
+      const progressValue = Number(nextState.progressPercent);
+      const normalizedProgress = Number.isFinite(progressValue)
+        ? Math.max(0, Math.min(100, Math.round(progressValue)))
+        : null;
+      setDesktopUpdateDownloadProgress(normalizedProgress);
+
+      if (status === "error") {
+        setDesktopUpdateError(typeof nextState.error === "string" ? nextState.error : "Desktop updater failed.");
+      } else {
+        setDesktopUpdateError("");
+      }
+
+      if (status === "checking") {
+        setDesktopUpdateNotice("Checking for updates...");
+        return;
+      }
+      if (status === "downloading") {
+        const versionLabel = resolvedLatestVersion ? ` v${resolvedLatestVersion}` : "";
+        const progressLabel = normalizedProgress === null ? "" : ` (${normalizedProgress}%)`;
+        setDesktopUpdateNotice(`Downloading update${versionLabel}${progressLabel}...`);
+        return;
+      }
+      if (status === "downloaded") {
+        const versionLabel = resolvedLatestVersion ? `v${resolvedLatestVersion}` : "latest";
+        setDesktopUpdateNotice(`Update ${versionLabel} downloaded. Ready to install.`);
+        return;
+      }
+      if (status === "idle" && resolvedLatestVersion) {
+        setDesktopUpdateNotice(
+          compareSemanticVersions(resolvedLatestVersion, installedDesktopVersion) > 0
+            ? `Update ${resolvedLatestVersion} is available.`
+            : `You are up to date (v${installedDesktopVersion || resolvedLatestVersion}).`,
+        );
+      }
+    },
+    [installedDesktopVersion],
+  );
+
   const checkForDesktopAppUpdate = useCallback(async () => {
     if (!isElectronRuntime) return;
+    if (!supportsDesktopUpdateAction || !window.electronAPI?.checkForDesktopUpdates) {
+      setDesktopUpdateError("Desktop feed updates are not supported in this build.");
+      return;
+    }
     if (!electronDesktopPlatform) {
       setDesktopUpdateError("Desktop update checks are not supported on this platform.");
       return;
@@ -5806,94 +5917,60 @@ export default function ChatDashboard({
 
     setDesktopUpdateBusy(true);
     setDesktopUpdateError("");
-    setDesktopUpdateNotice("");
+    setDesktopUpdateNotice("Checking for updates...");
 
+    let keepBusyUntilEvent = false;
     try {
-      let installedVersion = normalizeInstalledAppVersion(desktopAppVersion);
-      if ((!desktopAppVersion || desktopAppVersion === "0.0.0") && window.electronAPI?.getAppVersion) {
+      if (window.electronAPI?.getAppVersion) {
         const resolvedVersion = normalizeInstalledAppVersion(await window.electronAPI.getAppVersion());
-        installedVersion = resolvedVersion;
         setDesktopAppVersion(resolvedVersion);
       }
 
-      const response = await fetch(`${apiBase}/api/updates/${electronDesktopPlatform}/latest`, {
-        method: "GET",
-        headers: {
-          Accept: "application/json",
-        },
-      });
-      const payload = (await response.json().catch(() => ({}))) as Partial<DesktopUpdatePayload> & { error?: string };
-      if (!response.ok) {
-        throw new Error(payload.error || "Could not check for desktop updates.");
+      const result = await window.electronAPI.checkForDesktopUpdates(apiBase);
+      if (!result?.ok) {
+        throw new Error(result?.error || "Could not check for desktop updates.");
       }
 
-      const latestVersion = typeof payload.version === "string" ? payload.version.trim() : "";
-      const downloadUrl = typeof payload.downloadUrl === "string" ? payload.downloadUrl : "";
-      const publishedAt = typeof payload.publishedAt === "string" ? payload.publishedAt : null;
-      if (!latestVersion || !downloadUrl) {
-        throw new Error("Updater response is missing version or download URL.");
+      if (result.state) {
+        applyDesktopUpdaterState(result.state as DesktopUpdaterStateSnapshot);
       }
-
-      setDesktopLatestVersion(latestVersion);
-      setDesktopUpdateDownloadUrl(downloadUrl);
-      setDesktopUpdatePublishedAt(publishedAt);
-      setDesktopUpdateNotice(
-        compareSemanticVersions(latestVersion, installedVersion) > 0
-          ? `Update ${latestVersion} is available.`
-          : `You are up to date (v${installedVersion || latestVersion}).`,
-      );
-      if (compareSemanticVersions(latestVersion, installedVersion) <= 0) {
-        desktopAutoInstallAttemptRef.current = "";
+      if (result.started) {
+        keepBusyUntilEvent = true;
+      } else {
+        setDesktopUpdateNotice("Update check already in progress.");
       }
     } catch (err) {
       setDesktopUpdateError(err instanceof Error ? err.message : "Could not check for desktop updates.");
-    } finally {
       setDesktopUpdateLastCheckedAt(new Date().toISOString());
-      setDesktopUpdateBusy(false);
+    } finally {
+      if (!keepBusyUntilEvent) {
+        setDesktopUpdateBusy(false);
+      }
     }
-  }, [desktopAppVersion, electronDesktopPlatform, isElectronRuntime]);
+  }, [applyDesktopUpdaterState, electronDesktopPlatform, isElectronRuntime, supportsDesktopUpdateAction]);
 
   const handleInstallDesktopUpdate = useCallback(async () => {
-    if (!desktopUpdateDownloadUrl) {
-      setDesktopUpdateError("No update download URL is available yet.");
+    if (!supportsDesktopUpdateAction || !window.electronAPI?.installDownloadedUpdate) {
+      setDesktopUpdateError("Desktop update install is not supported in this build.");
       return;
     }
-    if (!electronDesktopPlatform) {
-      setDesktopUpdateError("Desktop update actions are not supported on this platform.");
+    if (!desktopUpdateReadyToInstall) {
+      setDesktopUpdateError("The update is still downloading. Wait until it is marked ready to install.");
       return;
     }
 
     setDesktopUpdateInstallBusy(true);
     setDesktopUpdateError("");
-    setDesktopUpdateNotice(
-      electronDesktopPlatform === "windows" ? "Downloading update installer..." : "Opening update download...",
-    );
+    setDesktopUpdateNotice("Installing downloaded update and restarting...");
     try {
-      if (electronDesktopPlatform === "windows") {
-        if (window.electronAPI?.downloadAndInstallUpdate) {
-          await window.electronAPI.downloadAndInstallUpdate(desktopUpdateDownloadUrl);
-          setDesktopUpdateNotice("Installer launched. Glytch Chat will close so the update can be applied.");
-        } else if (typeof window !== "undefined") {
-          window.open(desktopUpdateDownloadUrl, "_blank", "noopener,noreferrer");
-          setDesktopUpdateNotice("Opened update download. Run the installer to update Glytch Chat.");
-        }
-      } else if (electronDesktopPlatform === "mac") {
-        if (window.electronAPI?.downloadAndInstallUpdate) {
-          await window.electronAPI.downloadAndInstallUpdate(desktopUpdateDownloadUrl);
-          setDesktopUpdateNotice("Update installer started. Glytch Chat will close and reopen when done.");
-        } else if (typeof window !== "undefined") {
-          window.open(desktopUpdateDownloadUrl, "_blank", "noopener,noreferrer");
-          setDesktopUpdateNotice("Opened update download. Install the latest DMG to update Glytch Chat.");
-        }
-      } else {
-        throw new Error("Desktop update actions are not supported on this platform.");
-      }
+      await window.electronAPI.installDownloadedUpdate();
+      setDesktopUpdateNotice("Restarting to apply update...");
     } catch (err) {
-      setDesktopUpdateError(err instanceof Error ? err.message : "Could not start update.");
+      setDesktopUpdateError(err instanceof Error ? err.message : "Could not start update installation.");
     } finally {
       setDesktopUpdateInstallBusy(false);
     }
-  }, [desktopUpdateDownloadUrl, electronDesktopPlatform]);
+  }, [desktopUpdateReadyToInstall, supportsDesktopUpdateAction]);
 
   const handleOpenDesktopUninstall = useCallback(async () => {
     if (!isElectronRuntime || !window.electronAPI?.openUninstall) {
@@ -5991,8 +6068,44 @@ export default function ChatDashboard({
   }, [isElectronRuntime]);
 
   useEffect(() => {
-    persistDesktopAutoUpdateWindowsToStorage(desktopAutoUpdateWindowsEnabled);
-  }, [desktopAutoUpdateWindowsEnabled]);
+    if (!isElectronRuntime || !window.electronAPI?.getDesktopUpdaterState) return;
+    let disposed = false;
+
+    void window.electronAPI
+      .getDesktopUpdaterState()
+      .then((state) => {
+        if (disposed) return;
+        applyDesktopUpdaterState(state as DesktopUpdaterStateSnapshot);
+      })
+      .catch(() => undefined);
+
+    const unsubscribe = window.electronAPI?.onDesktopUpdaterEvent?.((payload) => {
+      if (disposed) return;
+      const eventPayload = payload as DesktopUpdaterEventPayload;
+      if (eventPayload?.state) {
+        applyDesktopUpdaterState(eventPayload.state);
+        return;
+      }
+
+      if (eventPayload?.event === "error") {
+        setDesktopUpdateBusy(false);
+        setDesktopUpdateDownloading(false);
+        setDesktopUpdateReadyToInstall(false);
+        setDesktopUpdateError(eventPayload.message || "Desktop updater failed.");
+      }
+    });
+
+    return () => {
+      disposed = true;
+      if (typeof unsubscribe === "function") {
+        unsubscribe();
+      }
+    };
+  }, [applyDesktopUpdaterState, isElectronRuntime]);
+
+  useEffect(() => {
+    persistDesktopAutoUpdateToStorage(desktopAutoUpdateEnabled);
+  }, [desktopAutoUpdateEnabled]);
 
   useEffect(() => {
     persistVoiceMicSettingsToStorage(voiceMicSettings);
@@ -6174,41 +6287,59 @@ export default function ChatDashboard({
   }, [micTestSampleUrl]);
 
   useEffect(() => {
-    if (!desktopAutoUpdateWindowsEnabled) {
+    if (!desktopAutoUpdateEnabled) {
       desktopAutoInstallAttemptRef.current = "";
     }
-  }, [desktopAutoUpdateWindowsEnabled]);
+  }, [desktopAutoUpdateEnabled]);
 
   useEffect(() => {
     if (!isElectronRuntime) return;
-    if (electronDesktopPlatform !== "windows" && electronDesktopPlatform !== "mac") return;
-    if (!desktopAppVersion) return;
+    if (!supportsDesktopUpdateAction) return;
     if (desktopUpdateAutoCheckRef.current) return;
     desktopUpdateAutoCheckRef.current = true;
     void checkForDesktopAppUpdate();
-  }, [checkForDesktopAppUpdate, desktopAppVersion, electronDesktopPlatform, isElectronRuntime]);
+  }, [checkForDesktopAppUpdate, isElectronRuntime, supportsDesktopUpdateAction]);
 
   useEffect(() => {
-    if (!supportsWindowsAutoInstall) return;
-    if (!desktopAutoUpdateWindowsEnabled) return;
-    if (!isDesktopUpdateAvailable) return;
-    if (desktopUpdateBusy || desktopUpdateInstallBusy) return;
-    if (!desktopLatestVersion || !desktopUpdateDownloadUrl) return;
+    if (!supportsDesktopAutoInstall) return;
+    if (!desktopAutoUpdateEnabled) return;
+    const interval = window.setInterval(() => {
+      if (desktopUpdateBusy || desktopUpdateDownloading || desktopUpdateInstallBusy) return;
+      void checkForDesktopAppUpdate();
+    }, 30 * 60 * 1000);
 
-    const attemptKey = `${desktopLatestVersion}|${desktopUpdateDownloadUrl}`;
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, [
+    checkForDesktopAppUpdate,
+    desktopAutoUpdateEnabled,
+    desktopUpdateBusy,
+    desktopUpdateDownloading,
+    desktopUpdateInstallBusy,
+    supportsDesktopAutoInstall,
+  ]);
+
+  useEffect(() => {
+    if (!supportsDesktopAutoInstall) return;
+    if (!desktopAutoUpdateEnabled) return;
+    if (!desktopUpdateReadyToInstall) return;
+    if (desktopUpdateBusy || desktopUpdateInstallBusy) return;
+    if (!desktopLatestVersion) return;
+
+    const attemptKey = desktopLatestVersion;
     if (desktopAutoInstallAttemptRef.current === attemptKey) return;
     desktopAutoInstallAttemptRef.current = attemptKey;
 
     setDesktopUpdateNotice(`Update ${desktopLatestVersion} found. Starting automatic install...`);
     void handleInstallDesktopUpdate();
   }, [
-    supportsWindowsAutoInstall,
-    desktopAutoUpdateWindowsEnabled,
-    isDesktopUpdateAvailable,
+    supportsDesktopAutoInstall,
+    desktopAutoUpdateEnabled,
+    desktopUpdateReadyToInstall,
     desktopUpdateBusy,
     desktopUpdateInstallBusy,
     desktopLatestVersion,
-    desktopUpdateDownloadUrl,
     handleInstallDesktopUpdate,
   ]);
 
@@ -6894,7 +7025,10 @@ export default function ChatDashboard({
   const loadMyProfile = useCallback(async () => {
     const profile = await getMyProfile(accessToken, currentUserId);
     setCurrentProfile(profile);
-    setProfileForm(buildProfileForm(profile));
+    if (profileLoadInitializedForUserRef.current !== currentUserId) {
+      setProfileForm(buildProfileForm(profile));
+      profileLoadInitializedForUserRef.current = currentUserId;
+    }
     if (profile) {
       setKnownProfiles((prev) => ({ ...prev, [profile.user_id]: profile }));
     }
@@ -7422,6 +7556,10 @@ export default function ChatDashboard({
     setGlytchInviteBusyConversationId(null);
     setGlytchInviteNotice("");
     setGlytchInviteError("");
+    setLeaveGlytchError("");
+    setLogsChannelError("");
+    setLogsChannelNotice("");
+    setLogsChannelRoleIdsDraft([]);
   }, [activeGlytchId]);
 
   useEffect(() => {
@@ -7762,6 +7900,7 @@ export default function ChatDashboard({
             friendAvatarUrl: dm.friendAvatarUrl,
             preview: dmMessagePreviewText(latest),
           });
+          void playNotificationSound();
 
           if (!dmMessageNotificationsEnabled) continue;
 
@@ -7770,6 +7909,7 @@ export default function ChatDashboard({
             body: dmMessagePreviewText(latest),
             tag: `dm-message-${dm.conversationId}`,
             icon: dm.friendAvatarUrl || undefined,
+            playSound: false,
             onClick: () => {
               setUnifiedSidebarView("dms");
               setViewMode("dm");
@@ -7822,6 +7962,7 @@ export default function ChatDashboard({
     isElectronRuntime,
     isAppVisibleAndFocused,
     mutedDmConversationIdSet,
+    playNotificationSound,
     shouldPauseBackgroundPolling,
     showDmInAppBanner,
     triggerDesktopNotification,
@@ -8067,11 +8208,13 @@ export default function ChatDashboard({
         const viewingFriendsPanel = viewMode === "dm" && dmPanelMode === "friends" && isAppVisibleAndFocused();
         if (viewingFriendsPanel) return;
         const senderName = req.sender_profile?.display_name || req.sender_profile?.username || "Someone";
+        void playNotificationSound();
         void triggerDesktopNotification({
           title: "New friend request",
           body: `${senderName} sent you a friend request.`,
           tag: `friend-request-${req.id}`,
           icon: req.sender_profile?.avatar_url || undefined,
+          playSound: false,
           onClick: () => {
             setViewMode("dm");
             setDmPanelMode("friends");
@@ -8089,11 +8232,13 @@ export default function ChatDashboard({
         if (!friendRequestAcceptedNotificationsEnabled) return;
         const receiverName = req.receiver_profile?.display_name || req.receiver_profile?.username || "Your friend";
         const receiverDm = dms.find((dm) => dm.friendUserId === req.receiver_id) || null;
+        void playNotificationSound();
         void triggerDesktopNotification({
           title: "Friend request accepted",
           body: `${receiverName} accepted your friend request.`,
           tag: `friend-accepted-${req.id}`,
           icon: req.receiver_profile?.avatar_url || undefined,
+          playSound: false,
           onClick: () => {
             setViewMode("dm");
             setDmPanelMode("dms");
@@ -8116,6 +8261,7 @@ export default function ChatDashboard({
     friendRequestAcceptedNotificationsEnabled,
     friendRequestNotificationsEnabled,
     isAppVisibleAndFocused,
+    playNotificationSound,
     requests,
     triggerDesktopNotification,
     viewMode,
@@ -8159,20 +8305,29 @@ export default function ChatDashboard({
           const shouldNotifyJoinedActiveDmVoice =
             dmCallNotificationSeededRef.current && participantCountIncreased && voiceRoomKey === roomKey;
 
-          if (shouldNotifyIncomingCall && dmCallNotificationsEnabled && !isDmMuted) {
-            void playIncomingCallRing();
-            void triggerDesktopNotification({
-              title: `Incoming call from ${dm.friendName}`,
-              body: "Open this DM and join voice to answer.",
-              tag: `dm-call-${dm.conversationId}`,
-              icon: dm.friendAvatarUrl || undefined,
-              playSound: false,
-              onClick: () => {
-                setViewMode("dm");
-                setDmPanelMode("dms");
-                setActiveConversationId(dm.conversationId);
-              },
+          if (shouldNotifyIncomingCall && !isDmMuted) {
+            showDmInAppBanner({
+              conversationId: dm.conversationId,
+              friendName: dm.friendName,
+              friendAvatarUrl: dm.friendAvatarUrl,
+              preview: "Incoming call",
+              kind: "call",
             });
+            if (dmCallNotificationsEnabled) {
+              void playIncomingCallRing();
+              void triggerDesktopNotification({
+                title: `Incoming call from ${dm.friendName}`,
+                body: "Open this DM and join voice to answer.",
+                tag: `dm-call-${dm.conversationId}`,
+                icon: dm.friendAvatarUrl || undefined,
+                playSound: false,
+                onClick: () => {
+                  setViewMode("dm");
+                  setDmPanelMode("dms");
+                  setActiveConversationId(dm.conversationId);
+                },
+              });
+            }
           }
 
           if (shouldNotifyJoinedActiveDmVoice && dmCallNotificationsEnabled && !isDmMuted) {
@@ -8228,6 +8383,7 @@ export default function ChatDashboard({
     mutedDmConversationIdSet,
     playIncomingCallRing,
     playNotificationSound,
+    showDmInAppBanner,
     shouldPauseBackgroundPolling,
     triggerDesktopNotification,
     voiceRoomKey,
@@ -9035,16 +9191,6 @@ export default function ChatDashboard({
       window.clearInterval(interval);
     };
   }, [accessToken, currentUserId, voiceRoomKey]);
-  /* eslint-enable react-hooks/exhaustive-deps */
-
-  // Room-switch cleanup intentionally tracks room keys only.
-  /* eslint-disable react-hooks/exhaustive-deps */
-  useEffect(() => {
-    if (!voiceRoomKey) return;
-    if (!selectedVoiceRoomKey) return;
-    if (selectedVoiceRoomKey === voiceRoomKey) return;
-    void stopVoiceSession(true);
-  }, [selectedVoiceRoomKey, voiceRoomKey]);
   /* eslint-enable react-hooks/exhaustive-deps */
 
   useEffect(() => {
@@ -9901,6 +10047,74 @@ export default function ChatDashboard({
       setGlytchError("");
     } catch (err) {
       setGlytchError(err instanceof Error ? err.message : "Could not create category.");
+    }
+  };
+
+  const handleCreateLogsChannel = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!activeGlytchId) {
+      setLogsChannelError("Select a Glytch first.");
+      return;
+    }
+    if (!isActiveGlytchOwner) {
+      setLogsChannelError("Only the Glytch owner can create a protected logs channel.");
+      return;
+    }
+
+    const normalizedName = logsChannelNameDraft.trim().toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/-+/g, "-");
+    if (!normalizedName) {
+      setLogsChannelError("Enter a channel name.");
+      return;
+    }
+
+    setLogsChannelBusy(true);
+    setLogsChannelError("");
+    setLogsChannelNotice("");
+    try {
+      const inserted = await createGlytchChannel(
+        accessToken,
+        currentUserId,
+        activeGlytchId,
+        normalizedName,
+        "text",
+        null,
+        { text_post_mode: "all" },
+      );
+      const created = inserted[0];
+      if (!created?.id) {
+        throw new Error("Could not create logs channel.");
+      }
+
+      const selectedRoleIds = new Set(logsChannelRoleIdsDraft);
+      await Promise.all(
+        glytchRoles
+          .filter((role) => !(role.is_system && role.name === "Owner"))
+          .map((role) =>
+            setRoleChannelPermissions(
+              accessToken,
+              role.id,
+              created.id,
+              selectedRoleIds.has(role.id),
+              selectedRoleIds.has(role.id),
+              false,
+            ),
+          ),
+      );
+
+      const channelRows = await listGlytchChannels(accessToken, activeGlytchId);
+      setChannels(channelRows);
+      setActiveChannelId(created.id);
+      setLogsChannelNotice(
+        selectedRoleIds.size > 0
+          ? `Created #${created.name}. Owner and ${selectedRoleIds.size} selected role(s) can view it.`
+          : `Created #${created.name}. Only the owner can view it right now.`,
+      );
+      setLogsChannelNameDraft("logs");
+      setGlytchError("");
+    } catch (err) {
+      setLogsChannelError(err instanceof Error ? err.message : "Could not create logs channel.");
+    } finally {
+      setLogsChannelBusy(false);
     }
   };
 
@@ -10983,6 +11197,47 @@ export default function ChatDashboard({
       setGlytchDeleteError(err instanceof Error ? err.message : "Could not delete Glytch.");
     } finally {
       setGlytchDeleteBusy(false);
+    }
+  };
+
+  const handleLeaveGlytch = async () => {
+    if (!activeGlytch) {
+      setLeaveGlytchError("Select a Glytch first.");
+      return;
+    }
+    if (activeGlytch.owner_id === currentUserId) {
+      setLeaveGlytchError("The owner cannot leave this Glytch. Transfer ownership or delete the Glytch.");
+      return;
+    }
+
+    setLeaveGlytchBusy(true);
+    setLeaveGlytchError("");
+    setGlytchDeleteError("");
+    try {
+      const removed = await leaveGlytch(accessToken, activeGlytch.id);
+      if (!removed) {
+        setLeaveGlytchError("You are not a member of this Glytch anymore.");
+        return;
+      }
+
+      setGlytches((prev) => prev.filter((glytch) => glytch.id !== activeGlytch.id));
+      setActiveGlytchId(null);
+      setActiveChannelId(null);
+      setChannels([]);
+      setChannelCategories([]);
+      setMessages([]);
+      setShowGlytchDirectory(true);
+      setGlytchDirectoryTab("my");
+      setViewMode("glytch");
+      setGlytchSettingsTab("profile");
+      setGlytchProfileError("");
+      setGlytchIconError("");
+      setGlytchError("");
+      setGlytchDeleteError("");
+    } catch (err) {
+      setLeaveGlytchError(err instanceof Error ? err.message : "Could not leave Glytch.");
+    } finally {
+      setLeaveGlytchBusy(false);
     }
   };
 
@@ -13950,6 +14205,8 @@ export default function ChatDashboard({
     profileForm.accessibilityReduceMotion ? "a11yReduceMotion" : "",
     profileForm.accessibilityUnderlineLinks ? "a11yUnderlineLinks" : "",
     profileForm.accessibilityHighContrast ? "a11yHighContrast" : "",
+    profileForm.accessibilityLargeTouchTargets ? "a11yLargeTouchTargets" : "",
+    profileForm.accessibilityReducedVisualNoise ? "a11yReducedVisualNoise" : "",
   ]
     .filter(Boolean)
     .join(" ");
@@ -14971,7 +15228,7 @@ export default function ChatDashboard({
                 className="unifiedSidebarGlobalSearch"
                 value={unifiedSidebarSearchDraft}
                 onChange={(e) => setUnifiedSidebarSearchDraft(e.target.value)}
-                placeholder="Search this panel"
+                placeholder="search"
                 aria-label="Search the left panel"
               />
               <button
@@ -15804,14 +16061,14 @@ export default function ChatDashboard({
                     {isElectronRuntime && (
                       <div className="screenShareHeaderControls">
                         <label className="screenShareControl source">
-                          <span>Source</span>
+                          <span>Screen/Window</span>
                           <select
                             value={selectedDesktopSourceId}
                             onChange={(e) => setSelectedDesktopSourceId(e.target.value)}
                             disabled={screenShareBusy || isDesktopSharing}
                             aria-label="Screen share source"
                           >
-                            <option value="auto">Auto pick</option>
+                            <option value="auto">System picker</option>
                             {desktopSourceOptions.map((source) => (
                               <option key={source.id} value={source.id}>
                                 {source.kind === "screen" ? "Screen" : "Window"}: {source.name}
@@ -16954,6 +17211,32 @@ export default function ChatDashboard({
                   />
                   <span>Always underline links</span>
                 </label>
+                <label className="permissionToggle settingsToggle">
+                  <input
+                    type="checkbox"
+                    checked={profileForm.accessibilityLargeTouchTargets}
+                    onChange={(e) =>
+                      setProfileForm((prev) => ({
+                        ...prev,
+                        accessibilityLargeTouchTargets: e.target.checked,
+                      }))
+                    }
+                  />
+                  <span>Larger click/tap targets</span>
+                </label>
+                <label className="permissionToggle settingsToggle">
+                  <input
+                    type="checkbox"
+                    checked={profileForm.accessibilityReducedVisualNoise}
+                    onChange={(e) =>
+                      setProfileForm((prev) => ({
+                        ...prev,
+                        accessibilityReducedVisualNoise: e.target.checked,
+                      }))
+                    }
+                  />
+                  <span>Reduce gradients and blur</span>
+                </label>
                 <label>
                   Text Size ({profileForm.accessibilityTextScale}%)
                   <input
@@ -17222,21 +17505,39 @@ export default function ChatDashboard({
                   <p className="smallMuted">Open the desktop app to check for and install updates.</p>
                 ) : (
                   <>
-                    <p className="smallMuted">Installed: v{desktopAppVersion || "0.0.0"}</p>
+                    <p className="smallMuted">Installed: v{installedDesktopVersion}</p>
                     <p className="smallMuted">Latest: {desktopLatestVersion ? `v${desktopLatestVersion}` : "Not checked yet"}</p>
                     <p className="smallMuted">Latest build: {formatLocalDateTime(desktopUpdatePublishedAt)}</p>
                     <p className="smallMuted">Last check: {formatLocalDateTime(desktopUpdateLastCheckedAt)}</p>
+                    {desktopUpdateDownloading && (
+                      <p className="smallMuted">Download progress: {desktopUpdateDownloadProgress === null ? "--" : `${desktopUpdateDownloadProgress}%`}</p>
+                    )}
                     {desktopUpdateNotice && <p className="smallMuted">{desktopUpdateNotice}</p>}
                     {desktopUpdateError && <p className="chatError">{desktopUpdateError}</p>}
                     <div className="moderationActionRow">
-                      <button type="button" onClick={() => void checkForDesktopAppUpdate()} disabled={desktopUpdateBusy}>
+                      <button
+                        type="button"
+                        onClick={() => void checkForDesktopAppUpdate()}
+                        disabled={
+                          !supportsDesktopUpdateAction ||
+                          desktopUpdateBusy ||
+                          desktopUpdateDownloading ||
+                          desktopUpdateInstallBusy
+                        }
+                      >
                         {desktopUpdateBusy ? "Checking..." : "Check for Updates"}
                       </button>
                       {supportsDesktopUpdateAction && (
                         <button
                           type="button"
                           onClick={() => void handleInstallDesktopUpdate()}
-                          disabled={!isDesktopUpdateAvailable || desktopUpdateBusy || desktopUpdateInstallBusy}
+                          disabled={
+                            !isDesktopUpdateAvailable ||
+                            !desktopUpdateReadyToInstall ||
+                            desktopUpdateBusy ||
+                            desktopUpdateDownloading ||
+                            desktopUpdateInstallBusy
+                          }
                         >
                           {desktopUpdateInstallBusy ? "Starting..." : desktopUpdateActionLabel}
                         </button>
@@ -17248,30 +17549,23 @@ export default function ChatDashboard({
                       )}
                     </div>
                     {!supportsDesktopUpdateAction && (
-                      <p className="smallMuted">Update actions are currently available on Windows and macOS desktop builds.</p>
+                      <p className="smallMuted">Feed-based update actions are available on the latest Windows and macOS desktop builds.</p>
                     )}
-                    {electronDesktopPlatform === "mac" && (
-                      <p className="smallMuted">
-                        {hasInAppInstallerUpdateBridge
-                          ? "macOS updates now run an in-app installer flow."
-                          : "macOS updates open the latest DMG download for manual install."}
-                      </p>
-                    )}
-                    {electronDesktopPlatform === "windows" && (
+                    {supportsDesktopUpdateAction && (
                       <>
                         <label className="themeOption">
                           <input
                             type="checkbox"
-                            checked={desktopAutoUpdateWindowsEnabled}
-                            onChange={(e) => setDesktopAutoUpdateWindowsEnabled(e.target.checked)}
-                            disabled={!hasInAppInstallerUpdateBridge}
+                            checked={desktopAutoUpdateEnabled}
+                            onChange={(e) => setDesktopAutoUpdateEnabled(e.target.checked)}
+                            disabled={!supportsDesktopAutoInstall}
                           />
                           <span>Auto-install updates on startup</span>
                         </label>
                         <p className="smallMuted">
-                          {hasInAppInstallerUpdateBridge
-                            ? "When enabled, Windows checks for updates on launch and installs automatically."
-                            : "Auto-install requires the latest desktop build with in-app updater support."}
+                          {supportsDesktopAutoInstall
+                            ? "When enabled, desktop checks for feed updates on launch and periodically, then installs once the patch is downloaded."
+                            : "Auto-install requires the latest desktop updater bridge support."}
                         </p>
                       </>
                     )}
@@ -17437,6 +17731,7 @@ export default function ChatDashboard({
                 {glytchProfileError && <p className="chatError">{glytchProfileError}</p>}
                 {glytchIconError && <p className="chatError">{glytchIconError}</p>}
                 {glytchDeleteError && <p className="chatError">{glytchDeleteError}</p>}
+                {leaveGlytchError && <p className="chatError">{leaveGlytchError}</p>}
                 {activeGlytch ? (
                   <>
                     <p className="inviteCode">Invite code: {activeGlytch.invite_code}</p>
@@ -17541,6 +17836,22 @@ export default function ChatDashboard({
                             : " · Max users: Unlimited"}
                         </p>
                       </>
+                    )}
+                    {!isActiveGlytchOwner && (
+                      <div className="stackedForm dangerZone">
+                        <p className="sectionLabel">Leave Glytch</p>
+                        <p className="smallMuted">
+                          Leave this Glytch and remove yourself from channels and role access.
+                        </p>
+                        <button
+                          type="button"
+                          className="dangerButton"
+                          onClick={() => void handleLeaveGlytch()}
+                          disabled={leaveGlytchBusy}
+                        >
+                          {leaveGlytchBusy ? "Leaving..." : "Leave Glytch"}
+                        </button>
+                      </div>
                     )}
                   </>
                 ) : (
@@ -18176,6 +18487,46 @@ export default function ChatDashboard({
                         <button type="submit">Create Channel</button>
                       </form>
                     )}
+
+                    {isActiveGlytchOwner && (
+                      <form className="stackedForm" onSubmit={handleCreateLogsChannel}>
+                        <p className="sectionLabel">Create Logs Channel</p>
+                        <p className="smallMuted">
+                          Owner-only by default. Select additional roles that should have access.
+                        </p>
+                        <input
+                          value={logsChannelNameDraft}
+                          onChange={(e) => setLogsChannelNameDraft(e.target.value)}
+                          placeholder="logs"
+                          aria-label="Logs channel name"
+                          disabled={logsChannelBusy}
+                        />
+                        <div className="permissionsList">
+                          {glytchRoles
+                            .filter((role) => !(role.is_system && role.name === "Owner"))
+                            .map((role) => (
+                              <label key={`logs-role-${role.id}`} className="permissionToggle">
+                                <input
+                                  type="checkbox"
+                                  checked={logsChannelRoleIdsDraft.includes(role.id)}
+                                  onChange={(e) =>
+                                    setLogsChannelRoleIdsDraft((prev) =>
+                                      e.target.checked ? Array.from(new Set([...prev, role.id])) : prev.filter((id) => id !== role.id),
+                                    )
+                                  }
+                                  disabled={logsChannelBusy}
+                                />
+                                <span>{role.name}</span>
+                              </label>
+                            ))}
+                        </div>
+                        {logsChannelError && <p className="chatError">{logsChannelError}</p>}
+                        {logsChannelNotice && <p className="smallMuted">{logsChannelNotice}</p>}
+                        <button type="submit" disabled={logsChannelBusy}>
+                          {logsChannelBusy ? "Creating..." : "Create Logs Channel"}
+                        </button>
+                      </form>
+                    )}
                   </>
                 )}
 
@@ -18245,6 +18596,15 @@ export default function ChatDashboard({
                     <AppGlyphIcon kind="discover" className="unifiedSidebarSectionIcon" />
                     Discover Glytches
                   </button>
+                </div>
+                <div className="dmSearchRow">
+                  <input
+                    className="dmSearchInput"
+                    value={unifiedSidebarSearchDraft}
+                    onChange={(e) => setUnifiedSidebarSearchDraft(e.target.value)}
+                    placeholder="Search Glytches"
+                    aria-label="Search your Glytches"
+                  />
                 </div>
                 {filteredUnifiedSidebarGlytches.length === 0 ? (
                   <p className="chatInfo">No Glytches matched your search.</p>
@@ -19630,7 +19990,7 @@ export default function ChatDashboard({
       {dmInAppBanner && (
         <button
           type="button"
-          className="dmInAppBanner"
+          className={dmInAppBanner.kind === "call" ? "dmInAppBanner call" : "dmInAppBanner"}
           onClick={() => {
             if (dmInAppBannerTimeoutRef.current !== null) {
               window.clearTimeout(dmInAppBannerTimeoutRef.current);

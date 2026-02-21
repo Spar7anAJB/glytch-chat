@@ -28,6 +28,7 @@ Backend API routes:
 - `/api/gifs/search` (GIF search/trending)
 - `/api/voice/livekit-token` (mint short-lived LiveKit auth tokens for desktop noise suppression)
 - `/api/updates/{platform}/latest` (desktop app update manifest for in-app updater)
+- `/api/desktop-updates/{platform}/*` (generic feed metadata/artifacts for `electron-updater`)
 
 ## Environment
 
@@ -152,7 +153,10 @@ npm run electron:installer:all
 ```
 
 Builds both targets and syncs any produced artifacts into `public/downloads/`.
-The sync step now also writes `public/downloads/updates.json` with per-platform version/checksum metadata.
+The sync step writes `public/downloads/updates.json` and mirrors updater feed artifacts to:
+
+- `public/downloads/updater/windows`
+- `public/downloads/updater/mac`
 
 ### Installer download fallback
 
@@ -187,18 +191,22 @@ For static-only deployments (Cloudflare Pages/Workers assets without the Node ba
 `VITE_ELECTRON_INSTALLER_URL_MAC`, `VITE_ELECTRON_INSTALLER_URL_WIN`, and optionally `VITE_ELECTRON_INSTALLER_URL_LINUX`.
 Otherwise, the download buttons are shown as unavailable.
 
-### Desktop in-app updater (Windows + macOS)
+### Desktop live updater (Windows + macOS)
 
-The desktop app now exposes a **System Settings -> Accessibility -> Desktop App Version** panel in Electron builds.
-On Windows it can:
+Desktop updates now use `electron-updater` with a generic signed feed route, exposed in **System Settings -> Updates**.
 
-1. Check `/api/updates/{platform}/latest` for newer versions.
-2. Download installer from `/api/downloads/{platform}`.
-3. Launch installer flow and close current app so update can proceed.
+Flow:
 
-On macOS, the desktop app now attempts an in-app DMG install flow (download, mount, replace app, relaunch). If in-app update bridge is unavailable, it falls back to opening the DMG URL.
+1. App checks feed metadata at `/api/desktop-updates/{platform}/latest*.yml`.
+2. `electron-updater` downloads the update payload (with blockmap/differential support).
+3. App installs via `quitAndInstall` once download is ready.
 
-For update detection to work, bump `package.json` version before building installers.
+For this to work end-to-end:
+
+1. Bump `package.json` version before building.
+2. Build with `electron-builder` (Windows NSIS + macOS DMG/ZIP targets).
+3. Run installer sync so `public/downloads/updater/{platform}` contains `latest*.yml` and referenced artifacts.
+4. Sign release binaries for production channels (Windows code signing + macOS signing/notarization).
 
 ### Voice noise suppression (desktop)
 

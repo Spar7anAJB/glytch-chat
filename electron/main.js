@@ -1,10 +1,10 @@
 import { app, BrowserWindow, desktopCapturer, ipcMain, nativeImage, session, shell, systemPreferences } from "electron";
 import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { autoUpdater } from "electron-updater";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -16,9 +16,28 @@ const appName = "Glytch Chat";
 const initialHashRoute = "/auth";
 const isWindows = process.platform === "win32";
 const isMac = process.platform === "darwin";
-const WINDOWS_UPDATER_MIN_BYTES = 5 * 1024 * 1024;
-const MAC_UPDATER_MIN_BYTES = 20 * 1024 * 1024;
-let installUpdateInFlight = false;
+const DESKTOP_UPDATER_EVENT_CHANNEL = "electron:updater-event";
+const desktopUpdaterPlatform = isWindows ? "windows" : isMac ? "mac" : null;
+const supportsDesktopUpdater = !isDev && Boolean(desktopUpdaterPlatform);
+let desktopUpdaterListenersAttached = false;
+let desktopUpdaterCheckInFlight = false;
+let desktopUpdaterFeedUrl = "";
+const desktopUpdaterState = {
+  supported: supportsDesktopUpdater,
+  platform: desktopUpdaterPlatform,
+  status: "idle",
+  currentVersion: "0.0.0",
+  latestVersion: "",
+  downloadedVersion: "",
+  releaseDate: null,
+  progressPercent: null,
+  bytesPerSecond: null,
+  transferred: null,
+  total: null,
+  feedUrl: "",
+  lastCheckedAt: null,
+  error: "",
+};
 const logoPathCandidates = isDev
   ? [
       path.join(__dirname, "..", "public", "logo-v2.png"),
@@ -94,6 +113,24 @@ function normalizeProcessName(rawName) {
   return baseName.trim().toLowerCase();
 }
 
+function humanizeProcessName(processName) {
+  const cleaned = processName
+    .replace(/[-_.]+/g, " ")
+    .replace(/\b(x64|x86|win64|win32|shipping|launcher|client|game|retail|dx11|dx12)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned) return null;
+
+  const words = cleaned.split(" ").filter(Boolean);
+  if (words.length === 0) return null;
+  return words
+    .map((word) => {
+      if (word.length <= 3) return word.toUpperCase();
+      return `${word.slice(0, 1).toUpperCase()}${word.slice(1)}`;
+    })
+    .join(" ");
+}
+
 function runCommandCapture(command, args) {
   return new Promise((resolve, reject) => {
     execFile(command, args, { windowsHide: true, maxBuffer: 6 * 1024 * 1024 }, (error, stdout) => {
@@ -157,6 +194,16 @@ function inferActiveGameName(processNames) {
     if (processName.includes("terraria")) return "Terraria";
     if (processName.includes("roblox")) return "Roblox";
     if (processName === "osu" || processName.includes("osu")) return "osu!";
+  }
+  for (const processName of processNames) {
+    if (!processName || PROCESS_NAME_BLOCKLIST.has(processName)) continue;
+    if (processName.includes("helper") || processName.includes("service") || processName.includes("updater")) {
+      continue;
+    }
+    const readable = humanizeProcessName(processName);
+    if (readable && readable.length >= 3) {
+      return readable;
+    }
   }
   return null;
 }
@@ -250,157 +297,239 @@ function resolveDesktopAppVersion() {
 
 ipcMain.handle("electron:get-app-version", async () => resolveDesktopAppVersion());
 
-function normalizeUpdateDownloadUrl(rawUrl) {
-  if (typeof rawUrl !== "string" || !rawUrl.trim()) {
-    return null;
-  }
-
+function normalizeBackendBaseUrl(rawUrl) {
+  if (typeof rawUrl !== "string" || !rawUrl.trim()) return null;
   try {
     const parsed = new URL(rawUrl.trim());
-    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-      return null;
-    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    parsed.hash = "";
+    parsed.search = "";
+    parsed.pathname = parsed.pathname.replace(/\/+$/, "");
     return parsed.toString();
   } catch {
     return null;
   }
 }
 
-async function downloadWindowsInstaller(updateUrl) {
-  const buffer = await downloadInstallerBuffer(updateUrl, WINDOWS_UPDATER_MIN_BYTES);
-  const updatesDir = path.join(os.tmpdir(), "glytch-chat-updates");
-  fs.mkdirSync(updatesDir, { recursive: true });
-
-  const fileName = `glytch-chat-update-${Date.now()}.exe`;
-  const targetPath = path.join(updatesDir, fileName);
-  await fs.promises.writeFile(targetPath, buffer);
-  return targetPath;
+function resolveDesktopUpdaterFeedUrl(rawBackendBaseUrl) {
+  if (!desktopUpdaterPlatform) return null;
+  const normalizedBase = normalizeBackendBaseUrl(rawBackendBaseUrl);
+  if (!normalizedBase) return null;
+  return `${normalizedBase}/api/desktop-updates/${desktopUpdaterPlatform}`;
 }
 
-async function downloadInstallerBuffer(updateUrl, minimumBytes) {
-  const response = await fetch(updateUrl, {
-    method: "GET",
-    redirect: "follow",
+function cloneDesktopUpdaterState() {
+  return { ...desktopUpdaterState };
+}
+
+function updateDesktopUpdaterState(partial) {
+  Object.assign(desktopUpdaterState, partial);
+  return cloneDesktopUpdaterState();
+}
+
+function broadcastDesktopUpdaterEvent(event, payload = {}) {
+  const message = {
+    event,
+    at: new Date().toISOString(),
+    ...payload,
+  };
+
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (window.isDestroyed()) continue;
+    window.webContents.send(DESKTOP_UPDATER_EVENT_CHANNEL, message);
+  }
+}
+
+function normalizeReleaseDate(rawValue) {
+  if (!rawValue) return null;
+  const parsed = new Date(rawValue);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString();
+}
+
+function setupDesktopUpdaterListeners() {
+  if (!supportsDesktopUpdater || desktopUpdaterListenersAttached) return;
+  desktopUpdaterListenersAttached = true;
+
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.allowPrerelease = false;
+  autoUpdater.allowDowngrade = false;
+
+  autoUpdater.on("checking-for-update", () => {
+    desktopUpdaterCheckInFlight = true;
+    const state = updateDesktopUpdaterState({
+      status: "checking",
+      error: "",
+      progressPercent: null,
+      bytesPerSecond: null,
+      transferred: null,
+      total: null,
+    });
+    broadcastDesktopUpdaterEvent("checking-for-update", { state });
   });
 
-  if (!response.ok) {
-    throw new Error(`Update download failed (${response.status}).`);
-  }
-
-  const buffer = Buffer.from(await response.arrayBuffer());
-  if (buffer.length < minimumBytes) {
-    throw new Error("Downloaded update file is too small to be a valid installer.");
-  }
-  return buffer;
-}
-
-async function downloadMacInstaller(updateUrl) {
-  const buffer = await downloadInstallerBuffer(updateUrl, MAC_UPDATER_MIN_BYTES);
-  const updatesDir = path.join(os.tmpdir(), "glytch-chat-updates");
-  fs.mkdirSync(updatesDir, { recursive: true });
-
-  const fileName = `glytch-chat-update-${Date.now()}.dmg`;
-  const targetPath = path.join(updatesDir, fileName);
-  await fs.promises.writeFile(targetPath, buffer);
-  return targetPath;
-}
-
-function launchWindowsInstaller(installerPath) {
-  const child = spawn(installerPath, [], {
-    detached: true,
-    stdio: "ignore",
+  autoUpdater.on("update-available", (info) => {
+    const state = updateDesktopUpdaterState({
+      status: "downloading",
+      latestVersion: typeof info?.version === "string" ? info.version.trim() : desktopUpdaterState.latestVersion,
+      downloadedVersion: "",
+      releaseDate: normalizeReleaseDate(info?.releaseDate),
+      error: "",
+    });
+    broadcastDesktopUpdaterEvent("update-available", { version: state.latestVersion, releaseDate: state.releaseDate, state });
   });
-  child.unref();
-}
 
-function resolveMacInstalledAppBundlePath() {
-  const exePath = app.getPath("exe");
-  const appBundlePath = path.resolve(exePath, "..", "..", "..");
-  if (appBundlePath.endsWith(".app")) {
-    return appBundlePath;
-  }
-  return path.join("/Applications", `${appName}.app`);
-}
-
-function launchMacInstaller(installerPath) {
-  const targetBundlePath = resolveMacInstalledAppBundlePath();
-  const scriptPath = path.join(os.tmpdir(), `glytch-chat-macos-update-${Date.now()}.sh`);
-  const scriptContent = `#!/bin/bash
-set -euo pipefail
-
-DMG_PATH="$1"
-TARGET_APP="$2"
-APP_NAME="$(basename "$TARGET_APP")"
-MOUNT_POINT="$(mktemp -d /tmp/glytch-update-mount-XXXXXX)"
-FALLBACK_TARGET="$HOME/Applications/$APP_NAME"
-
-cleanup() {
-  hdiutil detach "$MOUNT_POINT" -quiet >/dev/null 2>&1 || true
-  rm -rf "$MOUNT_POINT" >/dev/null 2>&1 || true
-  rm -f "$DMG_PATH" >/dev/null 2>&1 || true
-  rm -f "$0" >/dev/null 2>&1 || true
-}
-trap cleanup EXIT
-
-sleep 1
-
-hdiutil attach "$DMG_PATH" -nobrowse -quiet -mountpoint "$MOUNT_POINT"
-SOURCE_APP="$(find "$MOUNT_POINT" -maxdepth 2 -type d -name "$APP_NAME" -print -quit)"
-if [ -z "$SOURCE_APP" ]; then
-  exit 1
-fi
-
-TARGET_DIR="$TARGET_APP"
-if [ ! -w "$(dirname "$TARGET_DIR")" ]; then
-  mkdir -p "$HOME/Applications"
-  TARGET_DIR="$FALLBACK_TARGET"
-fi
-
-rm -rf "$TARGET_DIR"
-cp -R "$SOURCE_APP" "$TARGET_DIR"
-open -a "$TARGET_DIR"
-`;
-
-  fs.writeFileSync(scriptPath, scriptContent, { mode: 0o700 });
-  const child = spawn("/bin/bash", [scriptPath, installerPath, targetBundlePath], {
-    detached: true,
-    stdio: "ignore",
+  autoUpdater.on("update-not-available", (info) => {
+    desktopUpdaterCheckInFlight = false;
+    const resolvedLatestVersion =
+      typeof info?.version === "string" && info.version.trim()
+        ? info.version.trim()
+        : desktopUpdaterState.currentVersion;
+    const state = updateDesktopUpdaterState({
+      status: "idle",
+      latestVersion: resolvedLatestVersion,
+      downloadedVersion: "",
+      releaseDate: normalizeReleaseDate(info?.releaseDate),
+      progressPercent: null,
+      bytesPerSecond: null,
+      transferred: null,
+      total: null,
+      lastCheckedAt: new Date().toISOString(),
+      error: "",
+    });
+    broadcastDesktopUpdaterEvent("update-not-available", { version: state.latestVersion, state });
   });
-  child.unref();
+
+  autoUpdater.on("download-progress", (progress) => {
+    const state = updateDesktopUpdaterState({
+      status: "downloading",
+      progressPercent: Number.isFinite(progress?.percent) ? Math.max(0, Math.min(100, progress.percent)) : null,
+      bytesPerSecond: Number.isFinite(progress?.bytesPerSecond) ? Math.max(0, progress.bytesPerSecond) : null,
+      transferred: Number.isFinite(progress?.transferred) ? Math.max(0, progress.transferred) : null,
+      total: Number.isFinite(progress?.total) ? Math.max(0, progress.total) : null,
+      error: "",
+    });
+    broadcastDesktopUpdaterEvent("download-progress", {
+      progress: {
+        percent: state.progressPercent,
+        bytesPerSecond: state.bytesPerSecond,
+        transferred: state.transferred,
+        total: state.total,
+      },
+      state,
+    });
+  });
+
+  autoUpdater.on("update-downloaded", (info) => {
+    desktopUpdaterCheckInFlight = false;
+    const downloadedVersion =
+      typeof info?.version === "string" && info.version.trim()
+        ? info.version.trim()
+        : desktopUpdaterState.latestVersion || desktopUpdaterState.currentVersion;
+    const state = updateDesktopUpdaterState({
+      status: "downloaded",
+      latestVersion: downloadedVersion,
+      downloadedVersion,
+      releaseDate: normalizeReleaseDate(info?.releaseDate),
+      progressPercent: 100,
+      bytesPerSecond: null,
+      transferred: null,
+      total: null,
+      lastCheckedAt: new Date().toISOString(),
+      error: "",
+    });
+    broadcastDesktopUpdaterEvent("update-downloaded", { version: downloadedVersion, state });
+  });
+
+  autoUpdater.on("error", (error) => {
+    desktopUpdaterCheckInFlight = false;
+    const message = error instanceof Error ? error.message : "Desktop updater failed.";
+    const state = updateDesktopUpdaterState({
+      status: "error",
+      lastCheckedAt: new Date().toISOString(),
+      error: message,
+    });
+    broadcastDesktopUpdaterEvent("error", { message, state });
+  });
 }
 
-ipcMain.handle("electron:download-and-install-update", async (_event, rawUrl) => {
-  if (!isWindows && !isMac) {
-    throw new Error("In-app installer updates are currently supported on Windows and macOS.");
-  }
-  if (installUpdateInFlight) {
-    throw new Error("An update install is already in progress.");
+function ensureDesktopUpdaterConfigured(rawBackendBaseUrl) {
+  if (!supportsDesktopUpdater) {
+    throw new Error("Desktop updates are only available in packaged Windows/macOS builds.");
   }
 
-  const normalizedUrl = normalizeUpdateDownloadUrl(rawUrl);
-  if (!normalizedUrl) {
-    throw new Error("Update URL is missing or invalid.");
+  setupDesktopUpdaterListeners();
+  const feedUrl = resolveDesktopUpdaterFeedUrl(rawBackendBaseUrl);
+  if (!feedUrl) {
+    throw new Error("A valid backend API URL is required to configure desktop updates.");
   }
+  if (desktopUpdaterFeedUrl !== feedUrl) {
+    autoUpdater.setFeedURL({
+      provider: "generic",
+      url: feedUrl,
+      channel: "latest",
+    });
+    desktopUpdaterFeedUrl = feedUrl;
+    updateDesktopUpdaterState({ feedUrl });
+  }
+}
 
-  installUpdateInFlight = true;
+updateDesktopUpdaterState({
+  currentVersion: resolveDesktopAppVersion(),
+});
+
+ipcMain.handle("electron:updater-get-state", async () => cloneDesktopUpdaterState());
+
+ipcMain.handle("electron:updater-check-for-updates", async (_event, rawBackendBaseUrl) => {
+  updateDesktopUpdaterState({
+    currentVersion: resolveDesktopAppVersion(),
+  });
+
   try {
-    if (isWindows) {
-      const installerPath = await downloadWindowsInstaller(normalizedUrl);
-      launchWindowsInstaller(installerPath);
-    } else {
-      const installerPath = await downloadMacInstaller(normalizedUrl);
-      launchMacInstaller(installerPath);
-    }
-
-    // Exit shortly after launching installer helper so app files can be replaced cleanly.
-    setTimeout(() => {
-      app.quit();
-    }, isMac ? 700 : 300);
-
-    return { ok: true };
-  } finally {
-    installUpdateInFlight = false;
+    ensureDesktopUpdaterConfigured(rawBackendBaseUrl);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not configure desktop updater.";
+    const state = updateDesktopUpdaterState({
+      status: "error",
+      error: message,
+      lastCheckedAt: new Date().toISOString(),
+    });
+    return { ok: false, started: false, error: message, state };
   }
+
+  if (desktopUpdaterCheckInFlight) {
+    return { ok: true, started: false, state: cloneDesktopUpdaterState() };
+  }
+
+  try {
+    await autoUpdater.checkForUpdates();
+    return { ok: true, started: true, state: cloneDesktopUpdaterState() };
+  } catch (error) {
+    desktopUpdaterCheckInFlight = false;
+    const message = error instanceof Error ? error.message : "Could not check for updates.";
+    const state = updateDesktopUpdaterState({
+      status: "error",
+      error: message,
+      lastCheckedAt: new Date().toISOString(),
+    });
+    broadcastDesktopUpdaterEvent("error", { message, state });
+    return { ok: false, started: false, error: message, state };
+  }
+});
+
+ipcMain.handle("electron:updater-quit-and-install", async () => {
+  if (!supportsDesktopUpdater) {
+    throw new Error("Desktop update install is not available on this platform.");
+  }
+  if (desktopUpdaterState.status !== "downloaded") {
+    throw new Error("No downloaded update is ready to install.");
+  }
+
+  setImmediate(() => {
+    autoUpdater.quitAndInstall(false, true);
+  });
+  return { ok: true };
 });
 
 function createWindow() {

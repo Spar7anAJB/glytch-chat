@@ -489,7 +489,7 @@ function App() {
       confirmPassword: "",
     }));
     setError("");
-    navigate(window.electronAPI?.isElectron ? "/auth" : "/");
+    navigate("/auth", true);
   };
 
   if (route === "/") {

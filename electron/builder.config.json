@@ -27,6 +27,13 @@
           "x64",
           "arm64"
         ]
+      },
+      {
+        "target": "zip",
+        "arch": [
+          "x64",
+          "arm64"
+        ]
       }
     ],
     "category": "public.app-category.social-networking",
@@ -59,7 +66,12 @@
     "runAfterFinish": true,
     "include": "electron/nsis-recovery.nsh",
     "deleteAppDataOnUninstall": false,
-    "differentialPackage": false
+    "differentialPackage": true
   },
-  "publish": null
+  "publish": [
+    {
+      "provider": "generic",
+      "url": "https://updates.invalid/glytch-chat"
+    }
+  ]
 }
